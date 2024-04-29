@@ -14,6 +14,23 @@ go version go1.22.2 linux/amd64
 $ go mod init com.zetcode/simple
 ```
 
+## Shorthand variable declaration 
+
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+    name := "John Doe"
+    age := 34
+
+    fmt.Printf("%s is %d years old\n", name, age)
+}
+```
+
 ## Type inference
 
 ```go
