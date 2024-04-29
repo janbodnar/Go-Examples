@@ -83,6 +83,8 @@ func main() {
 
 ## Using index
 
+The first argument is index, the second is the element.  
+
 ```go
 package main 
 
@@ -120,6 +122,9 @@ func main() {
 ```
 
 ## Infinite loop
+
+Using `for` without a condition creates an infinite loop. We must use `break` to  
+terminate the loop.  
 
 ```go
 package main
