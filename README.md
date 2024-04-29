@@ -1,6 +1,13 @@
 # Go examples
 
 
+## Version
+
+```
+$ go version
+go version go1.22.2 linux/amd64
+```
+
 
 ## Builder pattern 
 
