@@ -14,6 +14,8 @@ go version go1.22.2 linux/amd64
 $ go mod init com.zetcode/simple
 ```
 
+We create a new module with `go mod init` command. It produces a `go.mod` file.
+
 ## Shorthand variable declaration 
 
 
@@ -53,7 +55,36 @@ func main() {
 }
 ```
 
-We create a new module with `go mod init` command. It produces a `go.mod` file.
+
+## Swapping values in function
+
+We use pointers for this.  
+
+```go
+package main
+
+import (
+	"fmt"
+)
+
+func main() {
+
+	var x int = 5
+	var y int = 8
+
+	fmt.Println(x, y)
+
+	swap(&x, &y)
+
+	fmt.Println(x, y)
+}
+
+func swap(x, y *int) {
+	var temp int = *x
+	*x = *y
+	*y = temp
+}
+```
 
 ## Builder pattern 
 
