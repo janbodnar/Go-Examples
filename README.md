@@ -64,25 +64,23 @@ We use pointers for this.
 package main
 
 import (
-	"fmt"
+    "fmt"
 )
 
 func main() {
 
-	var x int = 5
-	var y int = 8
-
-	fmt.Println(x, y)
-
-	swap(&x, &y)
-
-	fmt.Println(x, y)
+    var x int = 5
+    var y int = 8
+	
+    fmt.Println(x, y)
+    swap(&x, &y)
+    fmt.Println(x, y)
 }
 
 func swap(x, y *int) {
-	var temp int = *x
-	*x = *y
-	*y = temp
+    var temp int = *x
+    *x = *y
+    *y = temp
 }
 ```
 
