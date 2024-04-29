@@ -33,6 +33,29 @@ func main() {
 }
 ```
 
+## Constants
+
+Constants are created with the `const` keyword. They cannot be modified.  
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+    var age int = 34
+    const WIDTH = 100
+
+    age = 35
+    age = 36
+
+    // WIDTH = 101
+
+    fmt.Println(age, WIDTH)
+}
+```
+
 ## Type inference
 
 ```go
