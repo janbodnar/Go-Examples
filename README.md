@@ -50,6 +50,7 @@ func main() {
 	client := NewBuilder().Timeout(5 * time.Second).Build()
 
 	url := "https://webcode.me"
+
 	res, err := client.Head(url)
 
 	if err != nil {
