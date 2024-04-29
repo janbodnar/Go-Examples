@@ -14,6 +14,28 @@ go version go1.22.2 linux/amd64
 $ go mod init com.zetcode/simple
 ```
 
+## Type inference
+
+```go
+package main
+
+import (
+    "fmt"
+    "reflect"
+)
+
+func main() {
+
+    var name = "John Doe"
+    var age = 34
+
+    fmt.Println(reflect.TypeOf(name))
+    fmt.Println(reflect.TypeOf(age))
+
+    fmt.Printf("%s is %d years old\n", name, age)
+}
+```
+
 We create a new module with `go mod init` command. It produces a `go.mod` file.
 
 ## Builder pattern 
