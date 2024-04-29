@@ -67,6 +67,25 @@ func main() {
 }
 ```
 
+### Using index
+
+```go
+package main 
+
+import "fmt"
+
+func main() {
+
+    words := []string{"sky", "cup", "cloud", "news", "water"}
+
+    for idx, word := range words {
+
+        fmt.Printf("%s has index %d\n", word, idx)
+    }
+}
+```
+
+
 ## Builder pattern 
 
 ```go
