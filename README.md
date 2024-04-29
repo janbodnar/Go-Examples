@@ -1,5 +1,50 @@
 # Go examples
 
+
+## For loop
+
+### C style
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+    sum := 0
+
+    for i := 0; i < 10; i++ {
+    
+        sum += i
+    }
+    
+    fmt.Println(sum)
+}
+```
+
+### Single condition
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+    sum := 0
+    i := 9
+
+    for i > 0 {
+        
+        sum += i
+        i--
+    }
+
+    fmt.Println(sum)
+}
+```
+
 ## Builder pattern 
 
 ```go
