@@ -10,7 +10,7 @@ go version go1.22.2 linux/amd64
 
 ## Create new module 
 
-```go
+```
 $ go mod init com.zetcode/simple
 ```
 
