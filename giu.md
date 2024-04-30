@@ -1,6 +1,16 @@
 # The giu library
 
+The giu is a rapid cross-platform GUI framework for Go based on Dear ImGui. Dear ImGui is a  
+bloat-free graphical user interface library for C++.  
 
+Dear ImGui uses the immediate mode GUI paradigm to define interfaces. Unlike in traditional  
+toolkits (such as Qt, Gtk or Swing) where we create separate UI objects and manage their state,  
+we directly tell the GUI library what to draw in each frame.  
+
+Immediate mode GUIs are often used in game development.  
+
+The giu is a Go wrapper over the Dear ImGui C interface. It uses a convenient builder  
+pattern to construct widgets.  
 
 ## A column of labels
 
