@@ -10,7 +10,7 @@ we directly tell the GUI library what to draw in each frame.
 Immediate mode GUIs are often used in game development.  
 
 The giu is a Go wrapper over the Dear ImGui C interface. It uses a convenient builder  
-pattern to construct widgets.  
+pattern to construct widgets.   
 
 ## A column of labels
 
