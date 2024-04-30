@@ -12,6 +12,29 @@ Immediate mode GUIs are often used in game development.
 The giu is a Go wrapper over the Dear ImGui C interface. It uses a convenient builder  
 pattern to construct widgets.  
 
+## Label 
+
+```go
+package main
+
+import (
+    g "github.com/AllenDang/giu"
+)
+
+func loop() {
+
+    g.SingleWindow().Layout(
+        g.Label("An old falcon in the sky"),
+    )
+}
+
+func main() {
+    wnd := g.NewMasterWindow("Application", 400, 200,
+        g.MasterWindowFlagsFloating)
+    wnd.Run(loop)
+}
+```
+
 ## A column of labels
 
 ```go
