@@ -18,24 +18,24 @@ pattern to construct widgets.
 package main
 
 import (
-	"github.com/AllenDang/giu"
+    "github.com/AllenDang/giu"
 )
 
 func loop() {
     giu.SingleWindow().Layout(
-		giu.Label("an old falcon"),
-		giu.Label("an old falcon"),
-		giu.Label("an old falcon"),
-		giu.Label("an old falcon"),
-		giu.Label("an old falcon"),
-		giu.Label("an old falcon"),
-		giu.Label("an old falcon"),
-	)
+        giu.Label("an old falcon"),
+        giu.Label("an old falcon"),
+        giu.Label("an old falcon"),
+        giu.Label("an old falcon"),
+        giu.Label("an old falcon"),
+        giu.Label("an old falcon"),
+        giu.Label("an old falcon"),
+    )
 }
 
 func main() {
-	wnd := giu.NewMasterWindow("Labels", 450, 400, 0)
-	wnd.Run(loop)
+    wnd := giu.NewMasterWindow("Labels", 450, 400, 0)
+    wnd.Run(loop)
 }
 ```
 
