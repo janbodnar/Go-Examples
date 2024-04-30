@@ -268,3 +268,64 @@ func main() {
     wnd.Run(loop)
 }
 ```
+
+## Key binding
+
+```go
+package main
+
+import (
+    "os"
+
+    g "github.com/AllenDang/giu"
+)
+
+func loop() {
+
+    g.SingleWindow().Layout(
+        g.Label("Ctrl + Q to exit"),
+    )
+}
+
+func main() {
+    wnd := g.NewMasterWindow("Window", 400, 200, g.MasterWindowFlagsFloating).RegisterKeyboardShortcuts(
+        g.WindowShortcut{
+            Key:      g.KeyQ,
+            Modifier: g.ModControl,
+            Callback: func() { os.Exit(0) }},
+    )
+    wnd.Run(loop)
+}
+```
+
+## Styled button
+
+```go
+package main
+
+import (
+    "fmt"
+    "image/color"
+
+    g "github.com/AllenDang/giu"
+)
+
+var mouseButton g.MouseButton
+
+func loop() {
+    g.SingleWindow().Layout(
+        g.Style().SetColor(g.StyleColorText,
+            color.RGBA{0x5, 0x92, 0xc5, 255}).SetFontSize(17).To(
+            g.Button("Click").Size(80, 30)),
+        g.Event().OnClick(mouseButton, func() {
+            fmt.Println("button clicked")
+        }),
+    )
+
+}
+
+func main() {
+    wnd := g.NewMasterWindow("Button", 400, 200, 0)
+    wnd.Run(loop)
+}
+```
