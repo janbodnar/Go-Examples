@@ -108,6 +108,45 @@ func main() {
 }
 ```
 
+## Canvas
+
+```go
+package main
+
+import (
+    "image"
+    "image/color"
+
+    g "github.com/AllenDang/giu"
+)
+
+func loop() {
+    g.SingleWindow().Layout(
+        g.Custom(func() {
+
+            canvas := g.GetCanvas()
+            col := color.RGBA{0, 140, 140, 255}
+
+            canvas.AddLine(image.Pt(25, 25), image.Pt(100, 100), col, 1)
+            canvas.AddRect(image.Pt(160, 25), image.Pt(260, 115),
+                col, 5, g.DrawFlagsRoundCornersAll, 1)
+            canvas.AddRectFilled(image.Pt(330, 25),
+                image.Pt(430, 115), col, 5, 0)
+
+            canvas.AddCircleFilled(image.Pt(150, 250), 60, col)
+            canvas.AddTriangleFilled(image.Pt(330, 300),
+                image.Pt(450, 200), image.Pt(500, 300), col)
+        }),
+    )
+}
+
+func main() {
+    wnd := g.NewMasterWindow("Canvas", 450, 300,
+        g.MasterWindowFlagsNotResizable)
+    wnd.Run(loop)
+}
+```
+
 ## Alignment 
  
 ```go
