@@ -46,65 +46,65 @@ func main() {
 package main
 
 import (
-	g "github.com/AllenDang/giu"
+    g "github.com/AllenDang/giu"
 )
 
 func loop() {
-	g.SingleWindow().Layout(
+    g.SingleWindow().Layout(
 
-		g.Row(
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-		),
+        g.Row(
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+        ),
 
-		g.Row(
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-		),
+        g.Row(
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+        ),
 
-		g.Spacing(),
-		g.Separator(),
-		g.Spacing(),
+        g.Spacing(),
+        g.Separator(),
+        g.Spacing(),
 
-		g.Row(
-			g.Label("an old falcon"),
-			g.Spacing(),
-			g.Label("an old falcon"),
-			g.Spacing(),
-			g.Label("an old falcon"),
-		),
+        g.Row(
+            g.Label("an old falcon"),
+            g.Spacing(),
+            g.Label("an old falcon"),
+            g.Spacing(),
+            g.Label("an old falcon"),
+        ),
 
-		g.Row(
-			g.Label("an old falcon"),
-			g.Spacing(),
-			g.Label("an old falcon"),
-			g.Spacing(),
-			g.Label("an old falcon"),
-		),
+        g.Row(
+            g.Label("an old falcon"),
+            g.Spacing(),
+            g.Label("an old falcon"),
+            g.Spacing(),
+            g.Label("an old falcon"),
+        ),
 
-		g.Spacing(),
-		g.Separator(),
-		g.Spacing(),
+        g.Spacing(),
+        g.Separator(),
+        g.Spacing(),
 
-		g.Row(
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-		),
+        g.Row(
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+        ),
 
-		g.Row(
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-			g.Label("an old falcon"),
-		),
-	)
+        g.Row(
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+            g.Label("an old falcon"),
+        ),
+    )
 }
 
 func main() {
-	wnd := g.NewMasterWindow("Labels", 450, 400, 0)
-	wnd.Run(loop)
+    wnd := g.NewMasterWindow("Labels", 450, 400, 0)
+    wnd.Run(loop)
 }
 ```
 
@@ -114,37 +114,37 @@ func main() {
 package main
 
 import (
-	"github.com/AllenDang/giu"
+    "github.com/AllenDang/giu"
 )
 
 func loop() {
-	giu.SingleWindow().Layout(
+    giu.SingleWindow().Layout(
 
-		giu.Align(giu.AlignCenter).To(
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-		),
+        giu.Align(giu.AlignCenter).To(
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+        ),
 
-		giu.Align(giu.AlignRight).To(
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-		),
+        giu.Align(giu.AlignRight).To(
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+        ),
 
-		giu.Align(giu.AlignLeft).To(
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-			giu.Label("an old falcon"),
-		),
-	)
+        giu.Align(giu.AlignLeft).To(
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+            giu.Label("an old falcon"),
+        ),
+    )
 }
 
 func main() {
-	wnd := giu.NewMasterWindow("Alignment demo", 640, 480, 0)
-	wnd.Run(loop)
+    wnd := giu.NewMasterWindow("Alignment demo", 640, 480, 0)
+    wnd.Run(loop)
 }
 ```
