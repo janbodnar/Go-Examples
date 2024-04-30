@@ -22,7 +22,7 @@ import (
 )
 
 func loop() {
-	giu.SingleWindow().Layout(
+    giu.SingleWindow().Layout(
 		giu.Label("an old falcon"),
 		giu.Label("an old falcon"),
 		giu.Label("an old falcon"),
