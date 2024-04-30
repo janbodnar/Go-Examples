@@ -108,6 +108,39 @@ func main() {
 }
 ```
 
+## Checkbox
+
+```go
+package main
+
+import (
+    g "github.com/AllenDang/giu"
+)
+
+var cbSelected bool = true
+
+func loop() {
+
+    g.SingleWindow().Layout(
+        g.Checkbox("Show Title", &cbSelected).OnChange(
+            func() {
+                if cbSelected {
+                    g.Context.GetPlatform().SetTitle("CheckBox")
+                } else {
+                    g.Context.GetPlatform().SetTitle("")
+                }
+            }),
+    )
+}
+
+func main() {
+    wnd := g.NewMasterWindow("CheckBox", 400, 200,
+        g.MasterWindowFlagsFloating)
+    wnd.Run(loop)
+}
+```
+
+
 ## Canvas
 
 ```go
