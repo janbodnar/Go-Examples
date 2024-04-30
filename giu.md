@@ -108,6 +108,31 @@ func main() {
 }
 ```
 
+## Quit button
+
+```go
+package main
+
+import (
+    "os"
+
+    g "github.com/AllenDang/giu"
+)
+
+func loop() {
+    g.SingleWindow().Layout(
+        g.Button("Quit").Size(80, 30).OnClick(func() {
+            os.Exit(0)
+        }),
+    )
+}
+
+func main() {
+    wnd := g.NewMasterWindow("Button", 400, 200, 0)
+    wnd.Run(loop)
+}
+```
+
 ## Checkbox
 
 ```go
