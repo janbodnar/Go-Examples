@@ -163,23 +163,47 @@ import "fmt"
 
 func main() {
 
-	var val any
-
+    var val any
+	
 	val = "hello"
 	fmt.Printf("%T\n", val)
-
+	
 	val = 3
 	fmt.Printf("%T\n", val)
-
+	
 	val = 4.5
 	fmt.Printf("%T\n", val)
-
+	
 	PrintValues(42, "hello", 3.14, true)
 }
 
 func PrintValues(values ...any) {
 	for _, value := range values {
 		fmt.Println(value)
+	}
+}
+```
+
+When dealing with values of type any, you often use type assertions or reflection to  
+handle the specific underlying type.  
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+    PrintStrings(42, "hello", 3.14, "book", true, "falcon")
+}
+
+func PrintStrings(values ...any) {
+
+	for _, val := range values {
+
+		if str, ok := val.(string); ok {
+			fmt.Println(str)
+		}
 	}
 }
 ```
