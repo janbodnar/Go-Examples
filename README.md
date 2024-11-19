@@ -164,23 +164,23 @@ import "fmt"
 func main() {
 
     var val any
-	
-	val = "hello"
-	fmt.Printf("%T\n", val)
-	
-	val = 3
-	fmt.Printf("%T\n", val)
-	
-	val = 4.5
-	fmt.Printf("%T\n", val)
-	
-	PrintValues(42, "hello", 3.14, true)
+
+    val = "hello"
+    fmt.Printf("%T\n", val)
+
+    val = 3
+    fmt.Printf("%T\n", val)
+
+    val = 4.5
+    fmt.Printf("%T\n", val)
+
+    PrintValues(42, "hello", 3.14, true)
 }
 
 func PrintValues(values ...any) {
-	for _, value := range values {
-		fmt.Println(value)
-	}
+    for _, value := range values {
+        fmt.Println(value)
+    }
 }
 ```
 
@@ -199,12 +199,12 @@ func main() {
 
 func PrintStrings(values ...any) {
 
-	for _, val := range values {
+    for _, val := range values {
 
-		if str, ok := val.(string); ok {
-			fmt.Println(str)
-		}
-	}
+        if str, ok := val.(string); ok {
+            fmt.Println(str)
+        }
+    }
 }
 ```
 
