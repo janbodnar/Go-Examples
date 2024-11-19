@@ -208,5 +208,38 @@ func PrintStrings(values ...any) {
 }
 ```
 
+Using generics:  
+
+```go
+package main
+
+import (
+    "fmt"   
+)
+
+// PrintAll is a generic function that prints all elements in a slice
+func PrintAll[T any](items []T) {
+    for _, item := range items {
+        fmt.Println(item)
+    }
+}
+
+func main() {
+    // Create slices of different types
+    intSlice := []int{1, 2, 3, 4, 5}
+    stringSlice := []string{"apple", "banana", "cherry"}
+    floatSlice := []float64{1.1, 2.2, 3.3}
+
+    // Use the generic function to print slices of different types
+    fmt.Println("Integers:")
+    PrintAll(intSlice)
+
+    fmt.Println("\nStrings:")
+    PrintAll(stringSlice)
+
+    fmt.Println("\nFloats:")
+    PrintAll(floatSlice)
+}
+```
 
 
