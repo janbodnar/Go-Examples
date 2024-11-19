@@ -150,3 +150,39 @@ func main() {
     fmt.Println(res.Status)
 }
 ```
+
+## The any type
+
+The `any` type is a built-in alias for the interface{} type, which can hold any value. Introduced in Go 1.18,  
+`any` provides a more intuitive and readable way to indicate that a variable can be of `any` type.  
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+	var val any
+
+	val = "hello"
+	fmt.Printf("%T\n", val)
+
+	val = 3
+	fmt.Printf("%T\n", val)
+
+	val = 4.5
+	fmt.Printf("%T\n", val)
+
+	PrintValues(42, "hello", 3.14, true)
+}
+
+func PrintValues(values ...any) {
+	for _, value := range values {
+		fmt.Println(value)
+	}
+}
+```
+
+
+
