@@ -1,5 +1,28 @@
 # Maps 
 
+## Empty map
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    fruits := map[string]int{}
+
+    fruits["apple"] = 5
+    fruits["banana"] = 10
+
+    fmt.Println(fruits)
+
+    capitals := make(map[string]string)
+    capitals["Slovakia"] = "Bratislava"
+    capitals["Germany"] = "Berlin"
+
+    fmt.Println(capitals)
+}
+```
+
 
 ## Access/modify/delete
 
