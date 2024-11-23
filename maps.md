@@ -60,7 +60,7 @@ func main() {
 ```
 
 ## Map of structs
-
+ 
 ```go
 package main
 
