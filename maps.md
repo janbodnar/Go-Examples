@@ -67,26 +67,26 @@ package main
 import "fmt"
 
 type Person struct {
-	Name string
-	Age  int
+    Name string
+    Age  int
 }
 
 func main() {
-	people := map[int]Person{
-		1: {"Alice", 30},
-		2: {"Bob", 25},
-	}
-	
-	// Accessing struct fields
-	fmt.Println("Alice's age:", people[1].Age)
-	
-	// Adding a new person
-	people[3] = Person{"Eve", 35}
-	
-	// Iterating over the map
-	for key, person := range people {
-		fmt.Printf("%d: %s is %d years old\n", key, person.Name, person.Age)
-	}
+    people := map[int]Person{
+        1: {"Alice", 30},
+        2: {"Bob", 25},
+    }
+    
+    // Accessing struct fields
+    fmt.Println("Alice's age:", people[1].Age)
+    
+    // Adding a new person
+    people[3] = Person{"Eve", 35}
+    
+    // Iterating over the map
+    for key, person := range people {
+        fmt.Printf("%d: %s is %d years old\n", key, person.Name, person.Age)
+    }
 }
 ```
 
@@ -147,30 +147,30 @@ package main
 import "fmt"
 
 func main() {
-	students := map[string]map[string]int{
-		"Alice": {
-			"Math":    90,
-			"Science": 85,
-		},
-		"Bob": {
-			"Math":    80,
-			"Science": 70,
-		},
-	}
+    students := map[string]map[string]int{
+        "Alice": {
+            "Math":    90,
+            "Science": 85,
+        },
+        "Bob": {
+            "Math":    80,
+            "Science": 70,
+        },
+    }
 
-	// Accessing nested maps
-	fmt.Println("Alice's Math score:", students["Alice"]["Math"])
+    // Accessing nested maps
+    fmt.Println("Alice's Math score:", students["Alice"]["Math"])
 
-	// Adding a new subject for a student
-	students["Alice"]["History"] = 75
+    // Adding a new subject for a student
+    students["Alice"]["History"] = 75
 
-	// Iterating over nested maps
-	for student, subjects := range students {
-		fmt.Printf("%s's scores:\n", student)
-		for subject, score := range subjects {
-			fmt.Printf("  %s: %d\n", subject, score)
-		}
-	}
+    // Iterating over nested maps
+    for student, subjects := range students {
+        fmt.Printf("%s's scores:\n", student)
+        for subject, score := range subjects {
+            fmt.Printf("  %s: %d\n", subject, score)
+        }
+    }
 }
 ```
 
