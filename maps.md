@@ -8,29 +8,29 @@ package main
 import "fmt"
 
 func main() {
-	// Declare and initialize a map
-	capitals := map[string]string{
-		"France":   "Paris",
-		"Japan":    "Tokyo",
-		"Slovakia": "Bratislava",
-	}
+    // Declare and initialize a map
+    capitals := map[string]string{
+        "France":   "Paris",
+        "Japan":    "Tokyo",
+        "Slovakia": "Bratislava",
+    }
 
-	// Access elements
-	fmt.Println("The capital of France is:", capitals["France"])
+    // Access elements
+    fmt.Println("The capital of France is:", capitals["France"])
 
-	// Add a new key-value pair
-	capitals["Germany"] = "Berlin"
+    // Add a new key-value pair
+    capitals["Germany"] = "Berlin"
 
-	// Modify an existing value
-	capitals["Japan"] = "Kyoto"
+    // Modify an existing value
+    capitals["Japan"] = "Kyoto"
 
-	// Delete a key-value pair
-	delete(capitals, "Slovakia")
+    // Delete a key-value pair
+    delete(capitals, "Slovakia")
 
-	// Iterate over the map
-	for country, capital := range capitals {
-		fmt.Printf("The capital of %s is %s\n", country, capital)
-	}
+    // Iterate over the map
+    for country, capital := range capitals {
+        fmt.Printf("The capital of %s is %s\n", country, capital)
+    }
 }
 ```
 
