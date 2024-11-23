@@ -104,3 +104,41 @@ func main() {
     }
 }
 ```
+
+## Nested maps
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	students := map[string]map[string]int{
+		"Alice": {
+			"Math":    90,
+			"Science": 85,
+		},
+		"Bob": {
+			"Math":    80,
+			"Science": 70,
+		},
+	}
+
+	// Accessing nested maps
+	fmt.Println("Alice's Math score:", students["Alice"]["Math"])
+
+	// Adding a new subject for a student
+	students["Alice"]["History"] = 75
+
+	// Iterating over nested maps
+	for student, subjects := range students {
+		fmt.Printf("%s's scores:\n", student)
+		for subject, score := range subjects {
+			fmt.Printf("  %s: %d\n", subject, score)
+		}
+	}
+}
+```
+
+
+
