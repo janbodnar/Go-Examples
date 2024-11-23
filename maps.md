@@ -23,6 +23,26 @@ func main() {
 }
 ```
 
+## Map size
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+    countries := map[string]string{
+        "sk": "Slovakia",
+        "ru": "Russia",
+        "de": "Germany",
+        "no": "Norway",
+    }
+
+    fmt.Printf("There are %d pairs in the map\n", len(countries))
+}
+```
+
 
 ## Access/modify/delete
 
