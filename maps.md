@@ -34,6 +34,30 @@ func main() {
 }
 ```
 
+## Check if exists
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    ages := map[string]int{
+        "Alice": 30,
+        "Bob":   25,
+        "Eve":   35,
+    }
+
+    name := "Alice"
+    age, exists := ages[name]
+    if exists {
+        fmt.Printf("%s's age is %d\n", name, age)
+    } else {
+        fmt.Printf("%s's age is not available\n", name)
+    }
+}
+```
+
 
 ## All/Keys/Values/Collect
 
