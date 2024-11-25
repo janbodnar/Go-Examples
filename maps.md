@@ -87,6 +87,32 @@ func main() {
 }
 ```
 
+## Go map is a reference type
+
+Go map is a reference type. It means that when we assign a reference to a new  
+variable or pass a map to a function, the reference to the map is copied.
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+
+    countries := map[string]string{
+        "sk": "Slovakia",
+        "ru": "Russia",
+        "de": "Germany",
+        "no": "Norway",
+    }
+
+    countries2 := countries
+
+    countries2["us"] = "USA"
+
+    fmt.Println(countries)
+}
+```
 
 ## Access/modify/delete
 
