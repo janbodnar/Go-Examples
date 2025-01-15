@@ -298,6 +298,71 @@ func main() {
 }
 ```
 
+## Horizontal line
+
+```go
+package main
+
+import (
+	"fmt"
+
+	g "github.com/AllenDang/giu"
+)
+
+var txt string
+
+func onEditChanged() {
+	fmt.Println(".")
+}
+
+func onSend() {
+	fmt.Println(txt)
+}
+
+func onClick() {
+	fmt.Println("Button clicked")
+}
+
+func onClick2() {
+	platform := g.Context.GetPlatform()
+	platform.SetTitle("new Title")
+}
+
+func loop() {
+
+	g.SingleWindow().Layout(
+		g.Label("Hello world from giu"),
+		g.Align(g.AlignCenter).To(
+			g.Label("I'm a centered label"),
+			g.Button("I'm a centered button"),
+		),
+		g.Row(
+			g.Button("Click").OnClick(onClick),
+			g.Button("Click 2").OnClick(onClick2),
+		),
+
+		g.Label("Board"),
+		g.Spacing(),
+		g.Separator(),
+		g.Spacing(),
+		g.Label("Control panel"),
+
+		g.Row(
+			g.Custom(func() {
+				availableW, _ := g.GetAvailableRegion()
+				g.InputText(&txt).Size(availableW - 60).Build()
+			}),
+			g.Button("Send").OnClick(onSend),
+		),
+	)
+}
+
+func main() {
+	wnd := g.NewMasterWindow("Hello world", 400, 200, g.MasterWindowFlagsFloating)
+	wnd.Run(loop)
+}
+```
+
 ## Styled button
 
 ```go
