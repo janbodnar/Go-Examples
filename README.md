@@ -242,4 +242,92 @@ func main() {
 }
 ```
 
+## DeepSeek via API
 
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+)
+
+type ChatRequest struct {
+    Model    string    `json:"model"`
+    Messages []Message `json:"messages"`
+}
+
+type Message struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
+
+type ChatResponse struct {
+    Choices []Choice `json:"choices"`
+}
+
+type Choice struct {
+    Message Message `json:"message"`
+}
+
+func main() {
+    apiKey := os.Getenv("DEEPSEEK_API_KEY")
+    if apiKey == "" {
+        fmt.Println("Please set the DEEPSEEK_API_KEY environment variable")
+        return
+    }
+
+    prompt := "What is NetBSD in a sentence?"
+    request := ChatRequest{
+        Model: "deepseek-chat",
+        Messages: []Message{
+            {Role: "user", Content: prompt},
+        },
+    }
+
+    jsonData, err := json.Marshal(request)
+    if err != nil {
+        fmt.Printf("Error marshaling request: %v\n", err)
+        return
+    }
+
+    req, err := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", bytes.NewBuffer(jsonData))
+    if err != nil {
+        fmt.Printf("Error creating request: %v\n", err)
+        return
+    }
+
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+apiKey)
+
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        fmt.Printf("Error sending request: %v\n", err)
+        return
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        fmt.Printf("Error reading response: %v\n", err)
+        return
+    }
+
+    var chatResp ChatResponse
+    if err := json.Unmarshal(body, &chatResp); err != nil {
+        fmt.Printf("Error unmarshaling response: %v\n", err)
+        return
+    }
+
+    if len(chatResp.Choices) > 0 {
+        fmt.Printf("Response: %s\n", chatResp.Choices[0].Message.Content)
+    } else {
+        fmt.Println("No content in response")
+    }
+}
+```
