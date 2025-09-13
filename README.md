@@ -331,3 +331,142 @@ func main() {
     }
 }
 ```
+
+## Tool call with DeepSeek API
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "time"
+)
+
+type ChatRequest struct {
+    Model    string    `json:"model"`
+    Messages []Message `json:"messages"`
+    Tools    []Tool    `json:"tools,omitempty"`
+}
+
+type Message struct {
+    Role      string     `json:"role"`
+    Content   string     `json:"content"`
+    ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+type ChatResponse struct {
+    Choices []Choice `json:"choices"`
+}
+
+type Choice struct {
+    Message Message `json:"message"`
+}
+
+type Tool struct {
+    Type     string   `json:"type"`
+    Function Function `json:"function"`
+}
+
+type Function struct {
+    Name        string                 `json:"name"`
+    Description string                 `json:"description"`
+    Parameters  map[string]interface{} `json:"parameters"`
+}
+
+type ToolCall struct {
+    ID       string   `json:"id"`
+    Type     string   `json:"type"`
+    Function Function `json:"function"`
+}
+
+func getCurrentDateTime() string {
+    return time.Now().Format("2006-01-02 15:04:05")
+}
+
+func main() {
+    apiKey := os.Getenv("DEEPSEEK_API_KEY")
+    if apiKey == "" {
+        fmt.Println("Please set the DEEPSEEK_API_KEY environment variable")
+        return
+    }
+
+    prompt := "Who was Napolen. What time is it?"
+    tool := Tool{
+        Type: "function",
+        Function: Function{
+            Name:        "get_current_datetime",
+            Description: "Get the current date and time",
+            Parameters: map[string]interface{}{
+                "type":       "object",
+                "properties": map[string]interface{}{},
+            },
+        },
+    }
+    request := ChatRequest{
+        Model: "deepseek-chat",
+        Messages: []Message{
+            {Role: "user", Content: prompt},
+        },
+        Tools: []Tool{tool},
+    }
+
+    jsonData, err := json.Marshal(request)
+    if err != nil {
+        fmt.Printf("Error marshaling request: %v\n", err)
+        return
+    }
+
+    req, err := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", bytes.NewBuffer(jsonData))
+    if err != nil {
+        fmt.Printf("Error creating request: %v\n", err)
+        return
+    }
+
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+apiKey)
+
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        fmt.Printf("Error sending request: %v\n", err)
+        return
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        fmt.Printf("Error reading response: %v\n", err)
+        return
+    }
+
+    var chatResp ChatResponse
+    if err := json.Unmarshal(body, &chatResp); err != nil {
+        fmt.Printf("Error unmarshaling response: %v\n", err)
+        return
+    }
+
+    if len(chatResp.Choices) > 0 {
+        message := chatResp.Choices[0].Message
+        if message.Content != "" {
+            fmt.Printf("Response: %s\n", message.Content)
+        }
+        if len(message.ToolCalls) > 0 {
+            for _, toolCall := range message.ToolCalls {
+                if toolCall.Function.Name == "get_current_datetime" {
+                    result := getCurrentDateTime()
+                    fmt.Printf("Tool call result: %s\n", result)
+                }
+            }
+        }
+    } else {
+        fmt.Println("No content in response")
+    }
+
+    fmt.Println("Request completed at:", time.Now().Format(time.RFC1123))
+}
+```
