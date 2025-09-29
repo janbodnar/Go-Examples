@@ -3384,3 +3384,3522 @@ management. Constants offer compile-time guarantees and eliminate magic
 numbers, while package variables enable shared state with proper  
 synchronization. Initialization functions set up default values and  
 prepare the package for use.  
+
+## Package level functions
+
+Package-level functions provide the primary API and utility functions  
+that operate on package types and data structures.  
+
+```go
+// mathutils/functions.go
+package mathutils
+
+import (
+    "errors"
+    "math"
+)
+
+// Basic arithmetic functions
+func Add(a, b float64) float64 {
+    return a + b
+}
+
+func Subtract(a, b float64) float64 {
+    return a - b
+}
+
+func Multiply(a, b float64) float64 {
+    return a * b
+}
+
+func Divide(a, b float64) (float64, error) {
+    if b == 0 {
+        return 0, errors.New("division by zero")
+    }
+    return a / b, nil
+}
+
+// Advanced mathematical functions
+func Power(base, exponent float64) float64 {
+    return math.Pow(base, exponent)
+}
+
+func Sqrt(x float64) (float64, error) {
+    if x < 0 {
+        return 0, errors.New("square root of negative number")
+    }
+    return math.Sqrt(x), nil
+}
+
+func Factorial(n int) (int64, error) {
+    if n < 0 {
+        return 0, errors.New("factorial of negative number")
+    }
+    if n == 0 || n == 1 {
+        return 1, nil
+    }
+    
+    result := int64(1)
+    for i := 2; i <= n; i++ {
+        result *= int64(i)
+    }
+    return result, nil
+}
+
+// IsPrime checks if a number is prime
+func IsPrime(n int) bool {
+    if n < 2 {
+        return false
+    }
+    if n == 2 {
+        return true
+    }
+    if n%2 == 0 {
+        return false
+    }
+    
+    limit := int(math.Sqrt(float64(n)))
+    for i := 3; i <= limit; i += 2 {
+        if n%i == 0 {
+            return false
+        }
+    }
+    return true
+}
+
+// GCD calculates the greatest common divisor
+func GCD(a, b int) int {
+    for b != 0 {
+        a, b = b, a%b
+    }
+    return a
+}
+
+// LCM calculates the least common multiple
+func LCM(a, b int) int {
+    return (a * b) / GCD(a, b)
+}
+
+// Fibonacci generates Fibonacci sequence up to n terms
+func Fibonacci(n int) []int {
+    if n <= 0 {
+        return []int{}
+    }
+    if n == 1 {
+        return []int{0}
+    }
+    if n == 2 {
+        return []int{0, 1}
+    }
+    
+    fib := make([]int, n)
+    fib[0], fib[1] = 0, 1
+    
+    for i := 2; i < n; i++ {
+        fib[i] = fib[i-1] + fib[i-2]
+    }
+    return fib
+}
+
+// Statistical functions
+func Mean(numbers []float64) float64 {
+    if len(numbers) == 0 {
+        return 0
+    }
+    
+    sum := 0.0
+    for _, num := range numbers {
+        sum += num
+    }
+    return sum / float64(len(numbers))
+}
+
+func Median(numbers []float64) float64 {
+    if len(numbers) == 0 {
+        return 0
+    }
+    
+    // Create a copy and sort it
+    sorted := make([]float64, len(numbers))
+    copy(sorted, numbers)
+    
+    // Simple bubble sort for demonstration
+    for i := 0; i < len(sorted); i++ {
+        for j := 0; j < len(sorted)-i-1; j++ {
+            if sorted[j] > sorted[j+1] {
+                sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
+            }
+        }
+    }
+    
+    mid := len(sorted) / 2
+    if len(sorted)%2 == 0 {
+        return (sorted[mid-1] + sorted[mid]) / 2
+    }
+    return sorted[mid]
+}
+
+func StandardDeviation(numbers []float64) float64 {
+    if len(numbers) == 0 {
+        return 0
+    }
+    
+    mean := Mean(numbers)
+    sumSquaredDiffs := 0.0
+    
+    for _, num := range numbers {
+        diff := num - mean
+        sumSquaredDiffs += diff * diff
+    }
+    
+    variance := sumSquaredDiffs / float64(len(numbers))
+    return math.Sqrt(variance)
+}
+
+// Trigonometric functions with degree conversion
+func SinDegrees(degrees float64) float64 {
+    radians := degrees * math.Pi / 180
+    return math.Sin(radians)
+}
+
+func CosDegrees(degrees float64) float64 {
+    radians := degrees * math.Pi / 180
+    return math.Cos(radians)
+}
+
+func TanDegrees(degrees float64) float64 {
+    radians := degrees * math.Pi / 180
+    return math.Tan(radians)
+}
+
+// Conversion functions
+func DegreesToRadians(degrees float64) float64 {
+    return degrees * math.Pi / 180
+}
+
+func RadiansToDegrees(radians float64) float64 {
+    return radians * 180 / math.Pi
+}
+
+// Utility functions
+func Min(numbers ...float64) float64 {
+    if len(numbers) == 0 {
+        return 0
+    }
+    
+    min := numbers[0]
+    for _, num := range numbers[1:] {
+        if num < min {
+            min = num
+        }
+    }
+    return min
+}
+
+func Max(numbers ...float64) float64 {
+    if len(numbers) == 0 {
+        return 0
+    }
+    
+    max := numbers[0]
+    for _, num := range numbers[1:] {
+        if num > max {
+            max = num
+        }
+    }
+    return max
+}
+
+func Abs(x float64) float64 {
+    if x < 0 {
+        return -x
+    }
+    return x
+}
+
+func Round(x float64, precision int) float64 {
+    multiplier := math.Pow(10, float64(precision))
+    return math.Round(x*multiplier) / multiplier
+}
+
+func Clamp(value, min, max float64) float64 {
+    if value < min {
+        return min
+    }
+    if value > max {
+        return max
+    }
+    return value
+}
+
+// main.go
+package main
+
+import (
+    "fmt"
+    "log"
+    "your-module/mathutils"
+)
+
+func main() {
+    fmt.Println("=== Basic Arithmetic ===")
+    fmt.Printf("10 + 5 = %.2f\n", mathutils.Add(10, 5))
+    fmt.Printf("10 - 5 = %.2f\n", mathutils.Subtract(10, 5))
+    fmt.Printf("10 * 5 = %.2f\n", mathutils.Multiply(10, 5))
+    
+    if result, err := mathutils.Divide(10, 5); err != nil {
+        log.Printf("Division error: %v", err)
+    } else {
+        fmt.Printf("10 / 5 = %.2f\n", result)
+    }
+    
+    fmt.Println("\n=== Advanced Functions ===")
+    fmt.Printf("2^8 = %.0f\n", mathutils.Power(2, 8))
+    
+    if sqrt, err := mathutils.Sqrt(25); err != nil {
+        log.Printf("Square root error: %v", err)
+    } else {
+        fmt.Printf("√25 = %.2f\n", sqrt)
+    }
+    
+    if fact, err := mathutils.Factorial(5); err != nil {
+        log.Printf("Factorial error: %v", err)
+    } else {
+        fmt.Printf("5! = %d\n", fact)
+    }
+    
+    fmt.Println("\n=== Number Theory ===")
+    fmt.Printf("Is 17 prime? %t\n", mathutils.IsPrime(17))
+    fmt.Printf("Is 21 prime? %t\n", mathutils.IsPrime(21))
+    fmt.Printf("GCD(48, 18) = %d\n", mathutils.GCD(48, 18))
+    fmt.Printf("LCM(12, 8) = %d\n", mathutils.LCM(12, 8))
+    
+    fmt.Println("\n=== Fibonacci Sequence ===")
+    fib := mathutils.Fibonacci(10)
+    fmt.Printf("First 10 Fibonacci numbers: %v\n", fib)
+    
+    fmt.Println("\n=== Statistics ===")
+    data := []float64{10, 20, 30, 40, 50, 25, 35, 45}
+    fmt.Printf("Data: %v\n", data)
+    fmt.Printf("Mean: %.2f\n", mathutils.Mean(data))
+    fmt.Printf("Median: %.2f\n", mathutils.Median(data))
+    fmt.Printf("Standard Deviation: %.2f\n", mathutils.StandardDeviation(data))
+    
+    fmt.Println("\n=== Trigonometry ===")
+    angle := 45.0
+    fmt.Printf("sin(45°) = %.4f\n", mathutils.SinDegrees(angle))
+    fmt.Printf("cos(45°) = %.4f\n", mathutils.CosDegrees(angle))
+    fmt.Printf("tan(45°) = %.4f\n", mathutils.TanDegrees(angle))
+    
+    fmt.Println("\n=== Conversions ===")
+    degrees := 180.0
+    radians := mathutils.DegreesToRadians(degrees)
+    fmt.Printf("180° = %.4f radians\n", radians)
+    fmt.Printf("π radians = %.2f degrees\n", mathutils.RadiansToDegrees(radians))
+    
+    fmt.Println("\n=== Utility Functions ===")
+    values := []float64{3.7, 1.2, 8.9, 2.4, 6.1}
+    fmt.Printf("Values: %v\n", values)
+    fmt.Printf("Min: %.2f\n", mathutils.Min(values...))
+    fmt.Printf("Max: %.2f\n", mathutils.Max(values...))
+    fmt.Printf("Absolute value of -7.3: %.2f\n", mathutils.Abs(-7.3))
+    fmt.Printf("Round 3.14159 to 2 decimals: %.2f\n", mathutils.Round(3.14159, 2))
+    fmt.Printf("Clamp 15 between 5 and 10: %.0f\n", mathutils.Clamp(15, 5, 10))
+}
+```
+
+Package-level functions form the primary API surface of a package. They  
+should be well-designed, documented, and handle edge cases appropriately.  
+Function names should be clear and follow Go naming conventions, with  
+exported functions providing the public interface.  
+
+## Package factory patterns
+
+Factory patterns in packages provide controlled object creation with  
+configuration, validation, and initialization logic.  
+
+```go
+// database/factory.go
+package database
+
+import (
+    "database/sql"
+    "fmt"
+    "time"
+    
+    _ "github.com/lib/pq"           // PostgreSQL driver
+    _ "github.com/go-sql-driver/mysql" // MySQL driver
+    _ "github.com/mattn/go-sqlite3"    // SQLite driver
+)
+
+// DatabaseType represents supported database types
+type DatabaseType string
+
+const (
+    PostgreSQL DatabaseType = "postgres"
+    MySQL      DatabaseType = "mysql" 
+    SQLite     DatabaseType = "sqlite3"
+)
+
+// Config holds database configuration
+type Config struct {
+    Type            DatabaseType  `json:"type"`
+    Host            string       `json:"host"`
+    Port            int          `json:"port"`
+    Database        string       `json:"database"`
+    Username        string       `json:"username"`
+    Password        string       `json:"password"`
+    SSLMode         string       `json:"ssl_mode"`
+    MaxConnections  int          `json:"max_connections"`
+    MaxIdleTime     time.Duration `json:"max_idle_time"`
+    MaxLifetime     time.Duration `json:"max_lifetime"`
+    ConnectTimeout  time.Duration `json:"connect_timeout"`
+    FilePath        string       `json:"file_path"` // For SQLite
+}
+
+// Connection wraps sql.DB with additional functionality
+type Connection struct {
+    db     *sql.DB
+    config Config
+    stats  ConnectionStats
+}
+
+type ConnectionStats struct {
+    TotalConnections int64
+    ActiveConnections int32
+    CreatedAt       time.Time
+}
+
+// ConnectionFactory provides methods for creating database connections
+type ConnectionFactory struct {
+    defaultConfig Config
+}
+
+// NewConnectionFactory creates a new connection factory with default settings
+func NewConnectionFactory() *ConnectionFactory {
+    return &ConnectionFactory{
+        defaultConfig: Config{
+            Type:           PostgreSQL,
+            Host:           "localhost",
+            Port:           5432,
+            SSLMode:        "disable",
+            MaxConnections: 25,
+            MaxIdleTime:    5 * time.Minute,
+            MaxLifetime:    1 * time.Hour,
+            ConnectTimeout: 10 * time.Second,
+        },
+    }
+}
+
+// SetDefaults updates the default configuration
+func (f *ConnectionFactory) SetDefaults(config Config) {
+    f.defaultConfig = config
+}
+
+// CreateConnection creates a new database connection with the given configuration
+func (f *ConnectionFactory) CreateConnection(config Config) (*Connection, error) {
+    // Merge with defaults
+    finalConfig := f.mergeWithDefaults(config)
+    
+    // Validate configuration
+    if err := f.validateConfig(finalConfig); err != nil {
+        return nil, fmt.Errorf("invalid configuration: %w", err)
+    }
+    
+    // Build connection string
+    dsn, err := f.buildDSN(finalConfig)
+    if err != nil {
+        return nil, fmt.Errorf("failed to build DSN: %w", err)
+    }
+    
+    // Open database connection
+    db, err := sql.Open(string(finalConfig.Type), dsn)
+    if err != nil {
+        return nil, fmt.Errorf("failed to open database: %w", err)
+    }
+    
+    // Configure connection pool
+    db.SetMaxOpenConns(finalConfig.MaxConnections)
+    db.SetMaxIdleConns(finalConfig.MaxConnections / 2)
+    db.SetConnMaxIdleTime(finalConfig.MaxIdleTime)
+    db.SetConnMaxLifetime(finalConfig.MaxLifetime)
+    
+    // Test connection
+    if err := db.Ping(); err != nil {
+        db.Close()
+        return nil, fmt.Errorf("failed to ping database: %w", err)
+    }
+    
+    connection := &Connection{
+        db:     db,
+        config: finalConfig,
+        stats: ConnectionStats{
+            CreatedAt: time.Now(),
+        },
+    }
+    
+    return connection, nil
+}
+
+// CreatePostgreSQLConnection creates a PostgreSQL connection
+func (f *ConnectionFactory) CreatePostgreSQLConnection(host string, port int, database, username, password string) (*Connection, error) {
+    config := Config{
+        Type:     PostgreSQL,
+        Host:     host,
+        Port:     port,
+        Database: database,
+        Username: username,
+        Password: password,
+        SSLMode:  "disable",
+    }
+    return f.CreateConnection(config)
+}
+
+// CreateMySQLConnection creates a MySQL connection
+func (f *ConnectionFactory) CreateMySQLConnection(host string, port int, database, username, password string) (*Connection, error) {
+    config := Config{
+        Type:     MySQL,
+        Host:     host,
+        Port:     port,
+        Database: database,
+        Username: username,
+        Password: password,
+    }
+    return f.CreateConnection(config)
+}
+
+// CreateSQLiteConnection creates a SQLite connection
+func (f *ConnectionFactory) CreateSQLiteConnection(filePath string) (*Connection, error) {
+    config := Config{
+        Type:     SQLite,
+        FilePath: filePath,
+    }
+    return f.CreateConnection(config)
+}
+
+func (f *ConnectionFactory) mergeWithDefaults(config Config) Config {
+    if config.Type == "" {
+        config.Type = f.defaultConfig.Type
+    }
+    if config.Host == "" {
+        config.Host = f.defaultConfig.Host
+    }
+    if config.Port == 0 {
+        config.Port = f.defaultConfig.Port
+    }
+    if config.SSLMode == "" {
+        config.SSLMode = f.defaultConfig.SSLMode
+    }
+    if config.MaxConnections == 0 {
+        config.MaxConnections = f.defaultConfig.MaxConnections
+    }
+    if config.MaxIdleTime == 0 {
+        config.MaxIdleTime = f.defaultConfig.MaxIdleTime
+    }
+    if config.MaxLifetime == 0 {
+        config.MaxLifetime = f.defaultConfig.MaxLifetime
+    }
+    if config.ConnectTimeout == 0 {
+        config.ConnectTimeout = f.defaultConfig.ConnectTimeout
+    }
+    return config
+}
+
+func (f *ConnectionFactory) validateConfig(config Config) error {
+    switch config.Type {
+    case PostgreSQL, MySQL:
+        if config.Host == "" {
+            return fmt.Errorf("host is required for %s", config.Type)
+        }
+        if config.Port <= 0 || config.Port > 65535 {
+            return fmt.Errorf("invalid port: %d", config.Port)
+        }
+        if config.Database == "" {
+            return fmt.Errorf("database name is required")
+        }
+        if config.Username == "" {
+            return fmt.Errorf("username is required")
+        }
+    case SQLite:
+        if config.FilePath == "" {
+            return fmt.Errorf("file path is required for SQLite")
+        }
+    default:
+        return fmt.Errorf("unsupported database type: %s", config.Type)
+    }
+    
+    if config.MaxConnections <= 0 {
+        return fmt.Errorf("max connections must be positive")
+    }
+    
+    return nil
+}
+
+func (f *ConnectionFactory) buildDSN(config Config) (string, error) {
+    switch config.Type {
+    case PostgreSQL:
+        return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
+            config.Host, config.Port, config.Username, config.Password, 
+            config.Database, config.SSLMode, int(config.ConnectTimeout.Seconds())), nil
+    case MySQL:
+        return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&timeout=%s",
+            config.Username, config.Password, config.Host, config.Port, 
+            config.Database, config.ConnectTimeout), nil
+    case SQLite:
+        return config.FilePath, nil
+    default:
+        return "", fmt.Errorf("unsupported database type: %s", config.Type)
+    }
+}
+
+// Connection methods
+func (c *Connection) DB() *sql.DB {
+    return c.db
+}
+
+func (c *Connection) Config() Config {
+    return c.config
+}
+
+func (c *Connection) Stats() ConnectionStats {
+    dbStats := c.db.Stats()
+    c.stats.TotalConnections = int64(dbStats.OpenConnections)
+    c.stats.ActiveConnections = int32(dbStats.InUse)
+    return c.stats
+}
+
+func (c *Connection) Close() error {
+    return c.db.Close()
+}
+
+func (c *Connection) Ping() error {
+    return c.db.Ping()
+}
+
+// Package-level factory functions for convenience
+var defaultFactory = NewConnectionFactory()
+
+func NewConnection(config Config) (*Connection, error) {
+    return defaultFactory.CreateConnection(config)
+}
+
+func NewPostgreSQLConnection(host string, port int, database, username, password string) (*Connection, error) {
+    return defaultFactory.CreatePostgreSQLConnection(host, port, database, username, password)
+}
+
+func NewMySQLConnection(host string, port int, database, username, password string) (*Connection, error) {
+    return defaultFactory.CreateMySQLConnection(host, port, database, username, password)
+}
+
+func NewSQLiteConnection(filePath string) (*Connection, error) {
+    return defaultFactory.CreateSQLiteConnection(filePath)
+}
+
+// Builder pattern for complex configurations
+type ConfigBuilder struct {
+    config Config
+}
+
+func NewConfigBuilder() *ConfigBuilder {
+    return &ConfigBuilder{
+        config: Config{
+            Type:           PostgreSQL,
+            Host:           "localhost",
+            Port:           5432,
+            SSLMode:        "disable",
+            MaxConnections: 25,
+            MaxIdleTime:    5 * time.Minute,
+            MaxLifetime:    1 * time.Hour,
+            ConnectTimeout: 10 * time.Second,
+        },
+    }
+}
+
+func (b *ConfigBuilder) WithType(dbType DatabaseType) *ConfigBuilder {
+    b.config.Type = dbType
+    return b
+}
+
+func (b *ConfigBuilder) WithHost(host string) *ConfigBuilder {
+    b.config.Host = host
+    return b
+}
+
+func (b *ConfigBuilder) WithPort(port int) *ConfigBuilder {
+    b.config.Port = port
+    return b
+}
+
+func (b *ConfigBuilder) WithDatabase(database string) *ConfigBuilder {
+    b.config.Database = database
+    return b
+}
+
+func (b *ConfigBuilder) WithCredentials(username, password string) *ConfigBuilder {
+    b.config.Username = username
+    b.config.Password = password
+    return b
+}
+
+func (b *ConfigBuilder) WithSSLMode(sslMode string) *ConfigBuilder {
+    b.config.SSLMode = sslMode
+    return b
+}
+
+func (b *ConfigBuilder) WithPoolSettings(maxConns int, maxIdleTime, maxLifetime time.Duration) *ConfigBuilder {
+    b.config.MaxConnections = maxConns
+    b.config.MaxIdleTime = maxIdleTime
+    b.config.MaxLifetime = maxLifetime
+    return b
+}
+
+func (b *ConfigBuilder) WithTimeout(timeout time.Duration) *ConfigBuilder {
+    b.config.ConnectTimeout = timeout
+    return b
+}
+
+func (b *ConfigBuilder) WithFilePath(filePath string) *ConfigBuilder {
+    b.config.FilePath = filePath
+    return b
+}
+
+func (b *ConfigBuilder) Build() Config {
+    return b.config
+}
+
+func (b *ConfigBuilder) Connect() (*Connection, error) {
+    return NewConnection(b.config)
+}
+
+// main.go
+package main
+
+import (
+    "fmt"
+    "log"
+    "time"
+    "your-module/database"
+)
+
+func main() {
+    fmt.Println("=== Database Factory Pattern Demo ===")
+    
+    // Method 1: Using factory directly
+    factory := database.NewConnectionFactory()
+    
+    // Create PostgreSQL connection
+    pgConfig := database.Config{
+        Type:     database.PostgreSQL,
+        Host:     "localhost",
+        Port:     5432,
+        Database: "testdb",
+        Username: "postgres",
+        Password: "password",
+    }
+    
+    pgConn, err := factory.CreateConnection(pgConfig)
+    if err != nil {
+        log.Printf("PostgreSQL connection error: %v", err)
+    } else {
+        fmt.Println("PostgreSQL connection created successfully")
+        fmt.Printf("Config: %+v\n", pgConn.Config())
+        pgConn.Close()
+    }
+    
+    // Method 2: Using convenience functions
+    sqliteConn, err := database.NewSQLiteConnection("./test.db")
+    if err != nil {
+        log.Printf("SQLite connection error: %v", err)
+    } else {
+        fmt.Println("SQLite connection created successfully")
+        fmt.Printf("Stats: %+v\n", sqliteConn.Stats())
+        sqliteConn.Close()
+    }
+    
+    // Method 3: Using builder pattern
+    config := database.NewConfigBuilder().
+        WithType(database.MySQL).
+        WithHost("localhost").
+        WithPort(3306).
+        WithDatabase("myapp").
+        WithCredentials("user", "password").
+        WithPoolSettings(50, 10*time.Minute, 2*time.Hour).
+        WithTimeout(15*time.Second).
+        Build()
+    
+    fmt.Printf("Built config: %+v\n", config)
+    
+    // Method 4: Builder with direct connection
+    conn, err := database.NewConfigBuilder().
+        WithType(database.SQLite).
+        WithFilePath("./app.db").
+        WithPoolSettings(10, 5*time.Minute, 1*time.Hour).
+        Connect()
+    
+    if err != nil {
+        log.Printf("Builder connection error: %v", err)
+    } else {
+        fmt.Println("Builder connection created successfully")
+        conn.Close()
+    }
+    
+    // Demonstrate different database types
+    fmt.Println("\n=== Testing Different Database Types ===")
+    
+    configs := []struct {
+        name   string
+        config database.Config
+    }{
+        {
+            name: "PostgreSQL",
+            config: database.Config{
+                Type: database.PostgreSQL,
+                Host: "localhost", Port: 5432,
+                Database: "postgres", Username: "postgres", Password: "password",
+            },
+        },
+        {
+            name: "MySQL",
+            config: database.Config{
+                Type: database.MySQL,
+                Host: "localhost", Port: 3306,
+                Database: "mysql", Username: "root", Password: "password",
+            },
+        },
+        {
+            name: "SQLite",
+            config: database.Config{
+                Type:     database.SQLite,
+                FilePath: "./test.db",
+            },
+        },
+    }
+    
+    for _, tc := range configs {
+        conn, err := database.NewConnection(tc.config)
+        if err != nil {
+            fmt.Printf("%s: Connection failed - %v\n", tc.name, err)
+        } else {
+            fmt.Printf("%s: Connection successful\n", tc.name)
+            conn.Close()
+        }
+    }
+}
+```
+
+Package factory patterns provide controlled object creation with validation,  
+configuration management, and multiple creation strategies. Factories can  
+combine with builder patterns for complex configurations and offer both  
+convenience methods and full customization options for different use cases.  
+
+## Package configuration patterns
+
+Configuration patterns in packages provide structured ways to manage  
+application settings, environment variables, and runtime parameters.  
+
+```go
+// config/types.go
+package config
+
+import (
+    "encoding/json"
+    "fmt"
+    "time"
+)
+
+// Environment represents deployment environments
+type Environment string
+
+const (
+    Development Environment = "development"
+    Staging     Environment = "staging"
+    Production  Environment = "production"
+    Testing     Environment = "testing"
+)
+
+// LogLevel represents logging levels
+type LogLevel string
+
+const (
+    DEBUG LogLevel = "debug"
+    INFO  LogLevel = "info"
+    WARN  LogLevel = "warn"
+    ERROR LogLevel = "error"
+)
+
+// DatabaseConfig holds database configuration
+type DatabaseConfig struct {
+    Driver          string        `json:"driver" yaml:"driver" env:"DB_DRIVER"`
+    Host            string        `json:"host" yaml:"host" env:"DB_HOST"`
+    Port            int           `json:"port" yaml:"port" env:"DB_PORT"`
+    Name            string        `json:"name" yaml:"name" env:"DB_NAME"`
+    Username        string        `json:"username" yaml:"username" env:"DB_USERNAME"`
+    Password        string        `json:"password" yaml:"password" env:"DB_PASSWORD"`
+    SSLMode         string        `json:"ssl_mode" yaml:"ssl_mode" env:"DB_SSL_MODE"`
+    MaxConnections  int           `json:"max_connections" yaml:"max_connections" env:"DB_MAX_CONNECTIONS"`
+    MaxIdleTime     time.Duration `json:"max_idle_time" yaml:"max_idle_time" env:"DB_MAX_IDLE_TIME"`
+    ConnectTimeout  time.Duration `json:"connect_timeout" yaml:"connect_timeout" env:"DB_CONNECT_TIMEOUT"`
+    MigrationsPath  string        `json:"migrations_path" yaml:"migrations_path" env:"DB_MIGRATIONS_PATH"`
+}
+
+// ServerConfig holds HTTP server configuration
+type ServerConfig struct {
+    Host               string        `json:"host" yaml:"host" env:"SERVER_HOST"`
+    Port               int           `json:"port" yaml:"port" env:"SERVER_PORT"`
+    ReadTimeout        time.Duration `json:"read_timeout" yaml:"read_timeout" env:"SERVER_READ_TIMEOUT"`
+    WriteTimeout       time.Duration `json:"write_timeout" yaml:"write_timeout" env:"SERVER_WRITE_TIMEOUT"`
+    IdleTimeout        time.Duration `json:"idle_timeout" yaml:"idle_timeout" env:"SERVER_IDLE_TIMEOUT"`
+    ShutdownTimeout    time.Duration `json:"shutdown_timeout" yaml:"shutdown_timeout" env:"SERVER_SHUTDOWN_TIMEOUT"`
+    MaxHeaderBytes     int           `json:"max_header_bytes" yaml:"max_header_bytes" env:"SERVER_MAX_HEADER_BYTES"`
+    EnableTLS          bool          `json:"enable_tls" yaml:"enable_tls" env:"SERVER_ENABLE_TLS"`
+    TLSCertFile        string        `json:"tls_cert_file" yaml:"tls_cert_file" env:"SERVER_TLS_CERT_FILE"`
+    TLSKeyFile         string        `json:"tls_key_file" yaml:"tls_key_file" env:"SERVER_TLS_KEY_FILE"`
+    EnableProfiling    bool          `json:"enable_profiling" yaml:"enable_profiling" env:"SERVER_ENABLE_PROFILING"`
+    EnableMetrics      bool          `json:"enable_metrics" yaml:"enable_metrics" env:"SERVER_ENABLE_METRICS"`
+}
+
+// RedisConfig holds Redis configuration
+type RedisConfig struct {
+    Host               string        `json:"host" yaml:"host" env:"REDIS_HOST"`
+    Port               int           `json:"port" yaml:"port" env:"REDIS_PORT"`
+    Password           string        `json:"password" yaml:"password" env:"REDIS_PASSWORD"`
+    Database           int           `json:"database" yaml:"database" env:"REDIS_DATABASE"`
+    MaxRetries         int           `json:"max_retries" yaml:"max_retries" env:"REDIS_MAX_RETRIES"`
+    MinRetryBackoff    time.Duration `json:"min_retry_backoff" yaml:"min_retry_backoff" env:"REDIS_MIN_RETRY_BACKOFF"`
+    MaxRetryBackoff    time.Duration `json:"max_retry_backoff" yaml:"max_retry_backoff" env:"REDIS_MAX_RETRY_BACKOFF"`
+    DialTimeout        time.Duration `json:"dial_timeout" yaml:"dial_timeout" env:"REDIS_DIAL_TIMEOUT"`
+    ReadTimeout        time.Duration `json:"read_timeout" yaml:"read_timeout" env:"REDIS_READ_TIMEOUT"`
+    WriteTimeout       time.Duration `json:"write_timeout" yaml:"write_timeout" env:"REDIS_WRITE_TIMEOUT"`
+    PoolSize           int           `json:"pool_size" yaml:"pool_size" env:"REDIS_POOL_SIZE"`
+    MinIdleConns       int           `json:"min_idle_conns" yaml:"min_idle_conns" env:"REDIS_MIN_IDLE_CONNS"`
+    MaxConnAge         time.Duration `json:"max_conn_age" yaml:"max_conn_age" env:"REDIS_MAX_CONN_AGE"`
+    PoolTimeout        time.Duration `json:"pool_timeout" yaml:"pool_timeout" env:"REDIS_POOL_TIMEOUT"`
+    IdleTimeout        time.Duration `json:"idle_timeout" yaml:"idle_timeout" env:"REDIS_IDLE_TIMEOUT"`
+    IdleCheckFrequency time.Duration `json:"idle_check_frequency" yaml:"idle_check_frequency" env:"REDIS_IDLE_CHECK_FREQUENCY"`
+}
+
+// LoggingConfig holds logging configuration
+type LoggingConfig struct {
+    Level       LogLevel `json:"level" yaml:"level" env:"LOG_LEVEL"`
+    Format      string   `json:"format" yaml:"format" env:"LOG_FORMAT"`
+    Output      string   `json:"output" yaml:"output" env:"LOG_OUTPUT"`
+    File        string   `json:"file" yaml:"file" env:"LOG_FILE"`
+    MaxSize     int      `json:"max_size" yaml:"max_size" env:"LOG_MAX_SIZE"`
+    MaxAge      int      `json:"max_age" yaml:"max_age" env:"LOG_MAX_AGE"`
+    MaxBackups  int      `json:"max_backups" yaml:"max_backups" env:"LOG_MAX_BACKUPS"`
+    Compress    bool     `json:"compress" yaml:"compress" env:"LOG_COMPRESS"`
+    EnableCaller bool    `json:"enable_caller" yaml:"enable_caller" env:"LOG_ENABLE_CALLER"`
+    EnableStacktrace bool `json:"enable_stacktrace" yaml:"enable_stacktrace" env:"LOG_ENABLE_STACKTRACE"`
+}
+
+// AuthConfig holds authentication configuration
+type AuthConfig struct {
+    JWTSecret           string        `json:"jwt_secret" yaml:"jwt_secret" env:"AUTH_JWT_SECRET"`
+    JWTExpiration       time.Duration `json:"jwt_expiration" yaml:"jwt_expiration" env:"AUTH_JWT_EXPIRATION"`
+    RefreshTokenExpiration time.Duration `json:"refresh_token_expiration" yaml:"refresh_token_expiration" env:"AUTH_REFRESH_TOKEN_EXPIRATION"`
+    PasswordMinLength   int           `json:"password_min_length" yaml:"password_min_length" env:"AUTH_PASSWORD_MIN_LENGTH"`
+    PasswordMaxLength   int           `json:"password_max_length" yaml:"password_max_length" env:"AUTH_PASSWORD_MAX_LENGTH"`
+    PasswordRequireUppercase bool     `json:"password_require_uppercase" yaml:"password_require_uppercase" env:"AUTH_PASSWORD_REQUIRE_UPPERCASE"`
+    PasswordRequireLowercase bool     `json:"password_require_lowercase" yaml:"password_require_lowercase" env:"AUTH_PASSWORD_REQUIRE_LOWERCASE"`
+    PasswordRequireNumbers   bool     `json:"password_require_numbers" yaml:"password_require_numbers" env:"AUTH_PASSWORD_REQUIRE_NUMBERS"`
+    PasswordRequireSymbols   bool     `json:"password_require_symbols" yaml:"password_require_symbols" env:"AUTH_PASSWORD_REQUIRE_SYMBOLS"`
+    MaxLoginAttempts    int           `json:"max_login_attempts" yaml:"max_login_attempts" env:"AUTH_MAX_LOGIN_ATTEMPTS"`
+    LockoutDuration     time.Duration `json:"lockout_duration" yaml:"lockout_duration" env:"AUTH_LOCKOUT_DURATION"`
+    EnableTwoFactor     bool          `json:"enable_two_factor" yaml:"enable_two_factor" env:"AUTH_ENABLE_TWO_FACTOR"`
+}
+
+// ApplicationConfig is the main configuration structure
+type ApplicationConfig struct {
+    Name        string          `json:"name" yaml:"name" env:"APP_NAME"`
+    Version     string          `json:"version" yaml:"version" env:"APP_VERSION"`
+    Environment Environment     `json:"environment" yaml:"environment" env:"APP_ENVIRONMENT"`
+    Debug       bool            `json:"debug" yaml:"debug" env:"APP_DEBUG"`
+    Timezone    string          `json:"timezone" yaml:"timezone" env:"APP_TIMEZONE"`
+    
+    Database    DatabaseConfig  `json:"database" yaml:"database"`
+    Server      ServerConfig    `json:"server" yaml:"server"`
+    Redis       RedisConfig     `json:"redis" yaml:"redis"`
+    Logging     LoggingConfig   `json:"logging" yaml:"logging"`
+    Auth        AuthConfig      `json:"auth" yaml:"auth"`
+    
+    Features    map[string]bool `json:"features" yaml:"features"`
+    Secrets     map[string]string `json:"-" yaml:"-"` // Never serialize secrets
+}
+
+// String returns a string representation hiding sensitive data
+func (c *ApplicationConfig) String() string {
+    // Create a copy for safe printing
+    safe := *c
+    safe.Database.Password = "***"
+    safe.Redis.Password = "***"
+    safe.Auth.JWTSecret = "***"
+    safe.Secrets = map[string]string{"hidden": "***"}
+    
+    data, _ := json.MarshalIndent(safe, "", "  ")
+    return string(data)
+}
+
+// GetDatabaseURL returns the database connection URL
+func (c *ApplicationConfig) GetDatabaseURL() string {
+    db := c.Database
+    switch db.Driver {
+    case "postgres":
+        return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+            db.Username, db.Password, db.Host, db.Port, db.Name, db.SSLMode)
+    case "mysql":
+        return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+            db.Username, db.Password, db.Host, db.Port, db.Name)
+    case "sqlite":
+        return db.Name
+    default:
+        return ""
+    }
+}
+
+// GetRedisURL returns the Redis connection URL
+func (c *ApplicationConfig) GetRedisURL() string {
+    r := c.Redis
+    if r.Password != "" {
+        return fmt.Sprintf("redis://:%s@%s:%d/%d", r.Password, r.Host, r.Port, r.Database)
+    }
+    return fmt.Sprintf("redis://%s:%d/%d", r.Host, r.Port, r.Database)
+}
+
+// IsProduction returns true if running in production environment
+func (c *ApplicationConfig) IsProduction() bool {
+    return c.Environment == Production
+}
+
+// IsDevelopment returns true if running in development environment
+func (c *ApplicationConfig) IsDevelopment() bool {
+    return c.Environment == Development
+}
+
+// IsDebugEnabled returns true if debug mode is enabled
+func (c *ApplicationConfig) IsDebugEnabled() bool {
+    return c.Debug || c.Environment == Development
+}
+
+// IsFeatureEnabled returns true if a feature is enabled
+func (c *ApplicationConfig) IsFeatureEnabled(feature string) bool {
+    if c.Features == nil {
+        return false
+    }
+    return c.Features[feature]
+}
+
+// SetFeature enables or disables a feature
+func (c *ApplicationConfig) SetFeature(feature string, enabled bool) {
+    if c.Features == nil {
+        c.Features = make(map[string]bool)
+    }
+    c.Features[feature] = enabled
+}
+
+// GetSecret returns a secret value
+func (c *ApplicationConfig) GetSecret(key string) string {
+    if c.Secrets == nil {
+        return ""
+    }
+    return c.Secrets[key]
+}
+
+// SetSecret sets a secret value
+func (c *ApplicationConfig) SetSecret(key, value string) {
+    if c.Secrets == nil {
+        c.Secrets = make(map[string]string)
+    }
+    c.Secrets[key] = value
+}
+
+// Validate validates the configuration
+func (c *ApplicationConfig) Validate() error {
+    if c.Name == "" {
+        return fmt.Errorf("application name is required")
+    }
+    if c.Version == "" {
+        return fmt.Errorf("application version is required")
+    }
+    
+    // Validate database config
+    if c.Database.Driver == "" {
+        return fmt.Errorf("database driver is required")
+    }
+    if c.Database.Driver != "sqlite" {
+        if c.Database.Host == "" {
+            return fmt.Errorf("database host is required")
+        }
+        if c.Database.Port <= 0 {
+            return fmt.Errorf("database port must be positive")
+        }
+        if c.Database.Name == "" {
+            return fmt.Errorf("database name is required")
+        }
+    }
+    
+    // Validate server config
+    if c.Server.Port <= 0 || c.Server.Port > 65535 {
+        return fmt.Errorf("server port must be between 1 and 65535")
+    }
+    if c.Server.ReadTimeout <= 0 {
+        return fmt.Errorf("server read timeout must be positive")
+    }
+    if c.Server.WriteTimeout <= 0 {
+        return fmt.Errorf("server write timeout must be positive")
+    }
+    
+    // Validate auth config
+    if c.Auth.JWTSecret == "" {
+        return fmt.Errorf("JWT secret is required")
+    }
+    if len(c.Auth.JWTSecret) < 32 {
+        return fmt.Errorf("JWT secret must be at least 32 characters")
+    }
+    if c.Auth.JWTExpiration <= 0 {
+        return fmt.Errorf("JWT expiration must be positive")
+    }
+    
+    return nil
+}
+```
+
+Configuration patterns provide structured approaches to application settings  
+management. They support multiple formats (JSON, YAML, environment variables),  
+validation, type safety, and secure handling of sensitive data. Proper  
+configuration design improves maintainability and deployment flexibility.  
+
+## Package testing patterns
+
+Package testing patterns provide comprehensive testing strategies including  
+unit tests, integration tests, benchmarks, and test utilities.  
+
+```go
+// calculator/calculator.go
+package calculator
+
+import (
+    "errors"
+    "math"
+)
+
+// Calculator provides mathematical operations
+type Calculator struct {
+    precision int
+    history   []Operation
+}
+
+// Operation represents a calculation operation
+type Operation struct {
+    Type   string
+    A      float64
+    B      float64
+    Result float64
+}
+
+// New creates a new calculator with default precision
+func New() *Calculator {
+    return &Calculator{
+        precision: 2,
+        history:   make([]Operation, 0),
+    }
+}
+
+// NewWithPrecision creates a calculator with custom precision
+func NewWithPrecision(precision int) *Calculator {
+    if precision < 0 {
+        precision = 0
+    }
+    if precision > 10 {
+        precision = 10
+    }
+    return &Calculator{
+        precision: precision,
+        history:   make([]Operation, 0),
+    }
+}
+
+func (c *Calculator) addToHistory(op Operation) {
+    c.history = append(c.history, op)
+}
+
+func (c *Calculator) roundResult(result float64) float64 {
+    multiplier := math.Pow(10, float64(c.precision))
+    return math.Round(result*multiplier) / multiplier
+}
+
+// Add performs addition
+func (c *Calculator) Add(a, b float64) float64 {
+    result := c.roundResult(a + b)
+    c.addToHistory(Operation{Type: "add", A: a, B: b, Result: result})
+    return result
+}
+
+// Subtract performs subtraction
+func (c *Calculator) Subtract(a, b float64) float64 {
+    result := c.roundResult(a - b)
+    c.addToHistory(Operation{Type: "subtract", A: a, B: b, Result: result})
+    return result
+}
+
+// Multiply performs multiplication
+func (c *Calculator) Multiply(a, b float64) float64 {
+    result := c.roundResult(a * b)
+    c.addToHistory(Operation{Type: "multiply", A: a, B: b, Result: result})
+    return result
+}
+
+// Divide performs division
+func (c *Calculator) Divide(a, b float64) (float64, error) {
+    if b == 0 {
+        return 0, errors.New("division by zero")
+    }
+    result := c.roundResult(a / b)
+    c.addToHistory(Operation{Type: "divide", A: a, B: b, Result: result})
+    return result, nil
+}
+
+// Power raises a to the power of b
+func (c *Calculator) Power(a, b float64) float64 {
+    result := c.roundResult(math.Pow(a, b))
+    c.addToHistory(Operation{Type: "power", A: a, B: b, Result: result})
+    return result
+}
+
+// Sqrt calculates square root
+func (c *Calculator) Sqrt(x float64) (float64, error) {
+    if x < 0 {
+        return 0, errors.New("square root of negative number")
+    }
+    result := c.roundResult(math.Sqrt(x))
+    c.addToHistory(Operation{Type: "sqrt", A: x, B: 0, Result: result})
+    return result, nil
+}
+
+// GetHistory returns calculation history
+func (c *Calculator) GetHistory() []Operation {
+    history := make([]Operation, len(c.history))
+    copy(history, c.history)
+    return history
+}
+
+// ClearHistory clears calculation history
+func (c *Calculator) ClearHistory() {
+    c.history = c.history[:0]
+}
+
+// GetPrecision returns current precision setting
+func (c *Calculator) GetPrecision() int {
+    return c.precision
+}
+
+// SetPrecision updates precision setting
+func (c *Calculator) SetPrecision(precision int) {
+    if precision >= 0 && precision <= 10 {
+        c.precision = precision
+    }
+}
+
+// calculator/calculator_test.go
+package calculator
+
+import (
+    "math"
+    "testing"
+)
+
+func TestNew(t *testing.T) {
+    calc := New()
+    if calc == nil {
+        t.Fatal("New() returned nil")
+    }
+    if calc.precision != 2 {
+        t.Errorf("Expected precision 2, got %d", calc.precision)
+    }
+    if len(calc.history) != 0 {
+        t.Errorf("Expected empty history, got %d items", len(calc.history))
+    }
+}
+
+func TestNewWithPrecision(t *testing.T) {
+    tests := []struct {
+        name      string
+        precision int
+        expected  int
+    }{
+        {"Valid precision", 4, 4},
+        {"Negative precision", -1, 0},
+        {"Too high precision", 15, 10},
+        {"Zero precision", 0, 0},
+        {"Max precision", 10, 10},
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            calc := NewWithPrecision(tt.precision)
+            if calc.precision != tt.expected {
+                t.Errorf("Expected precision %d, got %d", tt.expected, calc.precision)
+            }
+        })
+    }
+}
+
+func TestAdd(t *testing.T) {
+    calc := New()
+    
+    tests := []struct {
+        name     string
+        a, b     float64
+        expected float64
+    }{
+        {"Positive numbers", 5.5, 2.3, 7.8},
+        {"Negative numbers", -3.2, -1.8, -5.0},
+        {"Mixed signs", 10.0, -3.0, 7.0},
+        {"Zeros", 0.0, 0.0, 0.0},
+        {"Large numbers", 1e6, 1e6, 2e6},
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            result := calc.Add(tt.a, tt.b)
+            if result != tt.expected {
+                t.Errorf("Add(%f, %f) = %f, expected %f", tt.a, tt.b, result, tt.expected)
+            }
+        })
+    }
+    
+    // Verify history
+    history := calc.GetHistory()
+    if len(history) != len(tests) {
+        t.Errorf("Expected %d operations in history, got %d", len(tests), len(history))
+    }
+}
+
+func TestDivide(t *testing.T) {
+    calc := New()
+    
+    // Test normal division
+    result, err := calc.Divide(10.0, 2.0)
+    if err != nil {
+        t.Errorf("Unexpected error: %v", err)
+    }
+    if result != 5.0 {
+        t.Errorf("Expected 5.0, got %f", result)
+    }
+    
+    // Test division by zero
+    _, err = calc.Divide(10.0, 0.0)
+    if err == nil {
+        t.Error("Expected error for division by zero")
+    }
+    if err.Error() != "division by zero" {
+        t.Errorf("Expected 'division by zero', got '%s'", err.Error())
+    }
+}
+
+func TestSqrt(t *testing.T) {
+    calc := New()
+    
+    // Test positive number
+    result, err := calc.Sqrt(25.0)
+    if err != nil {
+        t.Errorf("Unexpected error: %v", err)
+    }
+    if result != 5.0 {
+        t.Errorf("Expected 5.0, got %f", result)
+    }
+    
+    // Test negative number
+    _, err = calc.Sqrt(-25.0)
+    if err == nil {
+        t.Error("Expected error for square root of negative number")
+    }
+    
+    // Test zero
+    result, err = calc.Sqrt(0.0)
+    if err != nil {
+        t.Errorf("Unexpected error: %v", err)
+    }
+    if result != 0.0 {
+        t.Errorf("Expected 0.0, got %f", result)
+    }
+}
+
+func TestPrecision(t *testing.T) {
+    calc := NewWithPrecision(3)
+    
+    result := calc.Add(1.2345, 2.6789)
+    expected := 3.913 // Rounded to 3 decimal places
+    
+    if result != expected {
+        t.Errorf("Expected %f, got %f", expected, result)
+    }
+}
+
+func TestHistory(t *testing.T) {
+    calc := New()
+    
+    // Perform operations
+    calc.Add(5, 3)
+    calc.Multiply(2, 4)
+    calc.Subtract(10, 6)
+    
+    history := calc.GetHistory()
+    if len(history) != 3 {
+        t.Errorf("Expected 3 operations, got %d", len(history))
+    }
+    
+    // Check first operation
+    if history[0].Type != "add" || history[0].A != 5 || history[0].B != 3 || history[0].Result != 8 {
+        t.Errorf("First operation incorrect: %+v", history[0])
+    }
+    
+    // Clear history
+    calc.ClearHistory()
+    history = calc.GetHistory()
+    if len(history) != 0 {
+        t.Errorf("Expected empty history after clear, got %d items", len(history))
+    }
+}
+
+// Test helper functions
+func assertFloat64Equal(t *testing.T, expected, actual float64) {
+    t.Helper()
+    if math.Abs(expected-actual) > 1e-10 {
+        t.Errorf("Expected %f, got %f", expected, actual)
+    }
+}
+
+func assertError(t *testing.T, err error, expectedMsg string) {
+    t.Helper()
+    if err == nil {
+        t.Errorf("Expected error with message '%s', got nil", expectedMsg)
+        return
+    }
+    if err.Error() != expectedMsg {
+        t.Errorf("Expected error message '%s', got '%s'", expectedMsg, err.Error())
+    }
+}
+
+func TestWithHelpers(t *testing.T) {
+    calc := New()
+    
+    result := calc.Add(0.1, 0.2)
+    assertFloat64Equal(t, 0.3, result)
+    
+    _, err := calc.Divide(1, 0)
+    assertError(t, err, "division by zero")
+}
+
+// Benchmark tests
+func BenchmarkAdd(b *testing.B) {
+    calc := New()
+    for i := 0; i < b.N; i++ {
+        calc.Add(float64(i), float64(i+1))
+    }
+}
+
+func BenchmarkMultiply(b *testing.B) {
+    calc := New()
+    for i := 0; i < b.N; i++ {
+        calc.Multiply(float64(i), 2.5)
+    }
+}
+
+func BenchmarkPower(b *testing.B) {
+    calc := New()
+    for i := 0; i < b.N; i++ {
+        calc.Power(2.0, float64(i%10))
+    }
+}
+
+// Example tests (documentation examples)
+func ExampleCalculator_Add() {
+    calc := New()
+    result := calc.Add(5.5, 2.3)
+    fmt.Printf("%.1f", result)
+    // Output: 7.8
+}
+
+func ExampleCalculator_Divide() {
+    calc := New()
+    result, err := calc.Divide(10.0, 2.0)
+    if err != nil {
+        fmt.Printf("Error: %v", err)
+    } else {
+        fmt.Printf("%.1f", result)
+    }
+    // Output: 5.0
+}
+
+func ExampleNew() {
+    calc := New()
+    fmt.Printf("Precision: %d", calc.GetPrecision())
+    // Output: Precision: 2
+}
+
+// Table-driven tests
+func TestCalculatorOperations(t *testing.T) {
+    calc := New()
+    
+    tests := []struct {
+        name      string
+        operation func() (float64, error)
+        expected  float64
+        shouldErr bool
+    }{
+        {
+            name:      "Add positive",
+            operation: func() (float64, error) { return calc.Add(5, 3), nil },
+            expected:  8.0,
+            shouldErr: false,
+        },
+        {
+            name:      "Subtract",
+            operation: func() (float64, error) { return calc.Subtract(10, 4), nil },
+            expected:  6.0,
+            shouldErr: false,
+        },
+        {
+            name:      "Multiply",
+            operation: func() (float64, error) { return calc.Multiply(3, 4), nil },
+            expected:  12.0,
+            shouldErr: false,
+        },
+        {
+            name:      "Divide valid",
+            operation: func() (float64, error) { return calc.Divide(15, 3) },
+            expected:  5.0,
+            shouldErr: false,
+        },
+        {
+            name:      "Divide by zero",
+            operation: func() (float64, error) { return calc.Divide(5, 0) },
+            expected:  0.0,
+            shouldErr: true,
+        },
+        {
+            name:      "Square root positive",
+            operation: func() (float64, error) { return calc.Sqrt(16) },
+            expected:  4.0,
+            shouldErr: false,
+        },
+        {
+            name:      "Square root negative",
+            operation: func() (float64, error) { return calc.Sqrt(-4) },
+            expected:  0.0,
+            shouldErr: true,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            result, err := tt.operation()
+            
+            if tt.shouldErr && err == nil {
+                t.Error("Expected error but got none")
+            }
+            if !tt.shouldErr && err != nil {
+                t.Errorf("Unexpected error: %v", err)
+            }
+            if !tt.shouldErr && result != tt.expected {
+                t.Errorf("Expected %f, got %f", tt.expected, result)
+            }
+        })
+    }
+}
+
+// Property-based testing example
+func TestCalculatorProperties(t *testing.T) {
+    calc := New()
+    
+    // Test commutativity of addition
+    for i := 0; i < 100; i++ {
+        a := float64(i)
+        b := float64(i + 1)
+        
+        calc.ClearHistory()
+        result1 := calc.Add(a, b)
+        
+        calc.ClearHistory()
+        result2 := calc.Add(b, a)
+        
+        if result1 != result2 {
+            t.Errorf("Addition not commutative: %f + %f = %f, but %f + %f = %f",
+                a, b, result1, b, a, result2)
+        }
+    }
+    
+    // Test associativity of addition
+    for i := 0; i < 50; i++ {
+        a := float64(i)
+        b := float64(i + 1)
+        c := float64(i + 2)
+        
+        calc.ClearHistory()
+        temp1 := calc.Add(a, b)
+        result1 := calc.Add(temp1, c)
+        
+        calc.ClearHistory()
+        temp2 := calc.Add(b, c)
+        result2 := calc.Add(a, temp2)
+        
+        if math.Abs(result1-result2) > 1e-10 {
+            t.Errorf("Addition not associative: (%f + %f) + %f = %f, but %f + (%f + %f) = %f",
+                a, b, c, result1, a, b, c, result2)
+        }
+    }
+}
+
+// Fuzz testing example (Go 1.18+)
+/*
+func FuzzCalculatorAdd(f *testing.F) {
+    calc := New()
+    
+    // Add seed values
+    f.Add(1.0, 2.0)
+    f.Add(-1.0, 1.0)
+    f.Add(0.0, 0.0)
+    
+    f.Fuzz(func(t *testing.T, a, b float64) {
+        // Skip infinite and NaN values
+        if math.IsInf(a, 0) || math.IsInf(b, 0) || math.IsNaN(a) || math.IsNaN(b) {
+            return
+        }
+        
+        result := calc.Add(a, b)
+        
+        // Basic property: result should be finite
+        if math.IsInf(result, 0) || math.IsNaN(result) {
+            t.Errorf("Add(%f, %f) produced invalid result: %f", a, b, result)
+        }
+        
+        // Property: adding zero should return the other operand (with precision rounding)
+        if b == 0.0 {
+            expected := calc.roundResult(a)
+            if result != expected {
+                t.Errorf("Add(%f, 0) = %f, expected %f", a, result, expected)
+            }
+        }
+    })
+}
+*/
+```
+
+Package testing patterns encompass unit tests, table-driven tests, benchmarks,  
+example tests, and property-based testing. Comprehensive testing ensures  
+reliability, documents behavior through examples, and measures performance  
+through benchmarks. Test helpers and utilities improve test maintainability.  
+
+## Package benchmarking
+
+Benchmarking provides performance measurement and optimization guidance  
+for package functions and methods.  
+
+```go
+// sort/algorithms.go
+package sort
+
+import (
+    "math/rand"
+    "time"
+)
+
+// BubbleSort implements bubble sort algorithm
+func BubbleSort(arr []int) []int {
+    result := make([]int, len(arr))
+    copy(result, arr)
+    
+    n := len(result)
+    for i := 0; i < n; i++ {
+        for j := 0; j < n-i-1; j++ {
+            if result[j] > result[j+1] {
+                result[j], result[j+1] = result[j+1], result[j]
+            }
+        }
+    }
+    return result
+}
+
+// SelectionSort implements selection sort algorithm
+func SelectionSort(arr []int) []int {
+    result := make([]int, len(arr))
+    copy(result, arr)
+    
+    n := len(result)
+    for i := 0; i < n-1; i++ {
+        minIdx := i
+        for j := i + 1; j < n; j++ {
+            if result[j] < result[minIdx] {
+                minIdx = j
+            }
+        }
+        result[i], result[minIdx] = result[minIdx], result[i]
+    }
+    return result
+}
+
+// InsertionSort implements insertion sort algorithm
+func InsertionSort(arr []int) []int {
+    result := make([]int, len(arr))
+    copy(result, arr)
+    
+    for i := 1; i < len(result); i++ {
+        key := result[i]
+        j := i - 1
+        
+        for j >= 0 && result[j] > key {
+            result[j+1] = result[j]
+            j--
+        }
+        result[j+1] = key
+    }
+    return result
+}
+
+// QuickSort implements quicksort algorithm
+func QuickSort(arr []int) []int {
+    result := make([]int, len(arr))
+    copy(result, arr)
+    quickSortRecursive(result, 0, len(result)-1)
+    return result
+}
+
+func quickSortRecursive(arr []int, low, high int) {
+    if low < high {
+        pi := partition(arr, low, high)
+        quickSortRecursive(arr, low, pi-1)
+        quickSortRecursive(arr, pi+1, high)
+    }
+}
+
+func partition(arr []int, low, high int) int {
+    pivot := arr[high]
+    i := low - 1
+    
+    for j := low; j < high; j++ {
+        if arr[j] < pivot {
+            i++
+            arr[i], arr[j] = arr[j], arr[i]
+        }
+    }
+    arr[i+1], arr[high] = arr[high], arr[i+1]
+    return i + 1
+}
+
+// MergeSort implements merge sort algorithm
+func MergeSort(arr []int) []int {
+    if len(arr) <= 1 {
+        result := make([]int, len(arr))
+        copy(result, arr)
+        return result
+    }
+    
+    mid := len(arr) / 2
+    left := MergeSort(arr[:mid])
+    right := MergeSort(arr[mid:])
+    
+    return merge(left, right)
+}
+
+func merge(left, right []int) []int {
+    result := make([]int, 0, len(left)+len(right))
+    i, j := 0, 0
+    
+    for i < len(left) && j < len(right) {
+        if left[i] <= right[j] {
+            result = append(result, left[i])
+            i++
+        } else {
+            result = append(result, right[j])
+            j++
+        }
+    }
+    
+    result = append(result, left[i:]...)
+    result = append(result, right[j:]...)
+    
+    return result
+}
+
+// HeapSort implements heap sort algorithm
+func HeapSort(arr []int) []int {
+    result := make([]int, len(arr))
+    copy(result, arr)
+    
+    n := len(result)
+    
+    // Build max heap
+    for i := n/2 - 1; i >= 0; i-- {
+        heapify(result, n, i)
+    }
+    
+    // Extract elements from heap
+    for i := n - 1; i > 0; i-- {
+        result[0], result[i] = result[i], result[0]
+        heapify(result, i, 0)
+    }
+    
+    return result
+}
+
+func heapify(arr []int, n, i int) {
+    largest := i
+    left := 2*i + 1
+    right := 2*i + 2
+    
+    if left < n && arr[left] > arr[largest] {
+        largest = left
+    }
+    
+    if right < n && arr[right] > arr[largest] {
+        largest = right
+    }
+    
+    if largest != i {
+        arr[i], arr[largest] = arr[largest], arr[i]
+        heapify(arr, n, largest)
+    }
+}
+
+// Helper functions for benchmarking
+func GenerateRandomArray(size int) []int {
+    rand.Seed(time.Now().UnixNano())
+    arr := make([]int, size)
+    for i := range arr {
+        arr[i] = rand.Intn(1000)
+    }
+    return arr
+}
+
+func GenerateSortedArray(size int) []int {
+    arr := make([]int, size)
+    for i := range arr {
+        arr[i] = i
+    }
+    return arr
+}
+
+func GenerateReverseSortedArray(size int) []int {
+    arr := make([]int, size)
+    for i := range arr {
+        arr[i] = size - i
+    }
+    return arr
+}
+
+func IsSorted(arr []int) bool {
+    for i := 1; i < len(arr); i++ {
+        if arr[i] < arr[i-1] {
+            return false
+        }
+    }
+    return true
+}
+
+// sort/algorithms_bench_test.go
+package sort
+
+import (
+    "math/rand"
+    "testing"
+    "time"
+)
+
+// Basic benchmarks for each algorithm
+func BenchmarkBubbleSort(b *testing.B) {
+    sizes := []int{10, 50, 100, 500}
+    
+    for _, size := range sizes {
+        b.Run(fmt.Sprintf("Size_%d", size), func(b *testing.B) {
+            arr := GenerateRandomArray(size)
+            b.ResetTimer()
+            
+            for i := 0; i < b.N; i++ {
+                BubbleSort(arr)
+            }
+        })
+    }
+}
+
+func BenchmarkSelectionSort(b *testing.B) {
+    sizes := []int{10, 50, 100, 500}
+    
+    for _, size := range sizes {
+        b.Run(fmt.Sprintf("Size_%d", size), func(b *testing.B) {
+            arr := GenerateRandomArray(size)
+            b.ResetTimer()
+            
+            for i := 0; i < b.N; i++ {
+                SelectionSort(arr)
+            }
+        })
+    }
+}
+
+func BenchmarkInsertionSort(b *testing.B) {
+    sizes := []int{10, 50, 100, 500, 1000}
+    
+    for _, size := range sizes {
+        b.Run(fmt.Sprintf("Size_%d", size), func(b *testing.B) {
+            arr := GenerateRandomArray(size)
+            b.ResetTimer()
+            
+            for i := 0; i < b.N; i++ {
+                InsertionSort(arr)
+            }
+        })
+    }
+}
+
+func BenchmarkQuickSort(b *testing.B) {
+    sizes := []int{10, 50, 100, 500, 1000, 5000}
+    
+    for _, size := range sizes {
+        b.Run(fmt.Sprintf("Size_%d", size), func(b *testing.B) {
+            arr := GenerateRandomArray(size)
+            b.ResetTimer()
+            
+            for i := 0; i < b.N; i++ {
+                QuickSort(arr)
+            }
+        })
+    }
+}
+
+func BenchmarkMergeSort(b *testing.B) {
+    sizes := []int{10, 50, 100, 500, 1000, 5000}
+    
+    for _, size := range sizes {
+        b.Run(fmt.Sprintf("Size_%d", size), func(b *testing.B) {
+            arr := GenerateRandomArray(size)
+            b.ResetTimer()
+            
+            for i := 0; i < b.N; i++ {
+                MergeSort(arr)
+            }
+        })
+    }
+}
+
+func BenchmarkHeapSort(b *testing.B) {
+    sizes := []int{10, 50, 100, 500, 1000, 5000}
+    
+    for _, size := range sizes {
+        b.Run(fmt.Sprintf("Size_%d", size), func(b *testing.B) {
+            arr := GenerateRandomArray(size)
+            b.ResetTimer()
+            
+            for i := 0; i < b.N; i++ {
+                HeapSort(arr)
+            }
+        })
+    }
+}
+
+// Benchmarks with different data patterns
+func BenchmarkSortAlgorithms(b *testing.B) {
+    algorithms := map[string]func([]int) []int{
+        "BubbleSort":    BubbleSort,
+        "SelectionSort": SelectionSort,
+        "InsertionSort": InsertionSort,
+        "QuickSort":     QuickSort,
+        "MergeSort":     MergeSort,
+        "HeapSort":      HeapSort,
+    }
+    
+    dataTypes := map[string]func(int) []int{
+        "Random":       GenerateRandomArray,
+        "Sorted":       GenerateSortedArray,
+        "ReverseSorted": GenerateReverseSortedArray,
+    }
+    
+    sizes := []int{100, 1000}
+    
+    for algName, algFunc := range algorithms {
+        for dataName, dataFunc := range dataTypes {
+            for _, size := range sizes {
+                name := fmt.Sprintf("%s_%s_%d", algName, dataName, size)
+                b.Run(name, func(b *testing.B) {
+                    arr := dataFunc(size)
+                    b.ResetTimer()
+                    
+                    for i := 0; i < b.N; i++ {
+                        b.StopTimer()
+                        testArr := make([]int, len(arr))
+                        copy(testArr, arr)
+                        b.StartTimer()
+                        
+                        algFunc(testArr)
+                    }
+                })
+            }
+        }
+    }
+}
+
+// Memory allocation benchmarks
+func BenchmarkSortMemoryUsage(b *testing.B) {
+    size := 1000
+    arr := GenerateRandomArray(size)
+    
+    b.Run("QuickSort", func(b *testing.B) {
+        b.ReportAllocs()
+        for i := 0; i < b.N; i++ {
+            QuickSort(arr)
+        }
+    })
+    
+    b.Run("MergeSort", func(b *testing.B) {
+        b.ReportAllocs()
+        for i := 0; i < b.N; i++ {
+            MergeSort(arr)
+        }
+    })
+    
+    b.Run("HeapSort", func(b *testing.B) {
+        b.ReportAllocs()
+        for i := 0; i < b.N; i++ {
+            HeapSort(arr)
+        }
+    })
+}
+
+// Parallel benchmarks
+func BenchmarkParallelQuickSort(b *testing.B) {
+    size := 10000
+    arr := GenerateRandomArray(size)
+    
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            QuickSort(arr)
+        }
+    })
+}
+
+func BenchmarkParallelMergeSort(b *testing.B) {
+    size := 10000
+    arr := GenerateRandomArray(size)
+    
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            MergeSort(arr)
+        }
+    })
+}
+
+// Custom benchmark with setup and teardown
+func BenchmarkWithSetup(b *testing.B) {
+    // Setup phase (not measured)
+    rand.Seed(42) // Fixed seed for reproducible results
+    
+    for i := 0; i < b.N; i++ {
+        b.StopTimer()
+        // Setup for this iteration
+        arr := GenerateRandomArray(1000)
+        b.StartTimer()
+        
+        // The actual operation being measured
+        QuickSort(arr)
+    }
+}
+
+// Benchmark with custom metrics
+func BenchmarkSortWithCustomMetrics(b *testing.B) {
+    size := 1000
+    arr := GenerateRandomArray(size)
+    
+    b.Run("QuickSort", func(b *testing.B) {
+        var totalComparisons int64
+        var totalSwaps int64
+        
+        for i := 0; i < b.N; i++ {
+            testArr := make([]int, len(arr))
+            copy(testArr, arr)
+            
+            // In a real implementation, you'd modify the sort function
+            // to count comparisons and swaps
+            QuickSort(testArr)
+            
+            // Simulated metrics
+            totalComparisons += int64(size * 10)
+            totalSwaps += int64(size * 5)
+        }
+        
+        b.ReportMetric(float64(totalComparisons)/float64(b.N), "comparisons/op")
+        b.ReportMetric(float64(totalSwaps)/float64(b.N), "swaps/op")
+    })
+}
+
+// Benchmark helper functions
+func benchmarkSort(b *testing.B, sortFunc func([]int) []int, size int) {
+    arr := GenerateRandomArray(size)
+    b.ResetTimer()
+    
+    for i := 0; i < b.N; i++ {
+        sortFunc(arr)
+    }
+}
+
+func BenchmarkAllAlgorithms(b *testing.B) {
+    algorithms := []struct {
+        name string
+        fn   func([]int) []int
+    }{
+        {"BubbleSort", BubbleSort},
+        {"SelectionSort", SelectionSort},
+        {"InsertionSort", InsertionSort},
+        {"QuickSort", QuickSort},
+        {"MergeSort", MergeSort},
+        {"HeapSort", HeapSort},
+    }
+    
+    for _, alg := range algorithms {
+        b.Run(alg.name, func(b *testing.B) {
+            benchmarkSort(b, alg.fn, 1000)
+        })
+    }
+}
+
+// Comparative benchmark
+func BenchmarkSortComparison(b *testing.B) {
+    size := 1000
+    
+    b.Run("Go_builtin_sort", func(b *testing.B) {
+        arr := GenerateRandomArray(size)
+        b.ResetTimer()
+        
+        for i := 0; i < b.N; i++ {
+            testArr := make([]int, len(arr))
+            copy(testArr, arr)
+            sort.Ints(testArr)
+        }
+    })
+    
+    b.Run("Custom_QuickSort", func(b *testing.B) {
+        benchmarkSort(b, QuickSort, size)
+    })
+    
+    b.Run("Custom_MergeSort", func(b *testing.B) {
+        benchmarkSort(b, MergeSort, size)
+    })
+}
+
+/*
+Running benchmarks:
+
+Basic benchmark:
+go test -bench=.
+
+Specific benchmark:
+go test -bench=BenchmarkQuickSort
+
+With memory profiling:
+go test -bench=. -benchmem
+
+Save results for comparison:
+go test -bench=. > old.txt
+# Make changes
+go test -bench=. > new.txt
+benchcmp old.txt new.txt
+
+CPU profiling:
+go test -bench=BenchmarkQuickSort -cpuprofile=cpu.prof
+
+Memory profiling:
+go test -bench=BenchmarkQuickSort -memprofile=mem.prof
+
+View profiles:
+go tool pprof cpu.prof
+go tool pprof mem.prof
+
+Run benchmarks multiple times for statistical significance:
+go test -bench=BenchmarkQuickSort -count=5
+
+Set benchmark time:
+go test -bench=BenchmarkQuickSort -benchtime=10s
+*/
+```
+
+Package benchmarking provides performance measurement, comparison, and  
+optimization guidance. Benchmarks should cover different input sizes,  
+data patterns, and usage scenarios. Memory profiling and custom metrics  
+help identify bottlenecks and guide performance improvements.  
+
+## Package profiling integration
+
+Profiling integration enables runtime performance analysis and  
+optimization through pprof and other profiling tools.  
+
+```go
+// profiler/profiler.go
+package profiler
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    _ "net/http/pprof"
+    "os"
+    "runtime"
+    "runtime/pprof"
+    "sync"
+    "time"
+)
+
+// ProfileConfig holds profiling configuration
+type ProfileConfig struct {
+    CPUProfile    string        `json:"cpu_profile"`
+    MemProfile    string        `json:"mem_profile"`
+    BlockProfile  string        `json:"block_profile"`
+    MutexProfile  string        `json:"mutex_profile"`
+    TraceFile     string        `json:"trace_file"`
+    HTTPAddr      string        `json:"http_addr"`
+    Duration      time.Duration `json:"duration"`
+    EnableGC      bool          `json:"enable_gc"`
+}
+
+// Profiler manages application profiling
+type Profiler struct {
+    config       ProfileConfig
+    cpuFile      *os.File
+    memFile      *os.File
+    blockFile    *os.File
+    mutexFile    *os.File
+    traceFile    *os.File
+    httpServer   *http.Server
+    isRunning    bool
+    stopChan     chan struct{}
+    mu           sync.RWMutex
+}
+
+// NewProfiler creates a new profiler instance
+func NewProfiler(config ProfileConfig) *Profiler {
+    return &Profiler{
+        config:   config,
+        stopChan: make(chan struct{}),
+    }
+}
+
+// Start begins profiling with the configured options
+func (p *Profiler) Start() error {
+    p.mu.Lock()
+    defer p.mu.Unlock()
+    
+    if p.isRunning {
+        return fmt.Errorf("profiler is already running")
+    }
+    
+    // Start CPU profiling
+    if p.config.CPUProfile != "" {
+        if err := p.startCPUProfiling(); err != nil {
+            return fmt.Errorf("failed to start CPU profiling: %w", err)
+        }
+    }
+    
+    // Enable memory profiling
+    if p.config.MemProfile != "" {
+        runtime.MemProfileRate = 1
+    }
+    
+    // Enable block profiling
+    if p.config.BlockProfile != "" {
+        runtime.SetBlockProfileRate(1)
+    }
+    
+    // Enable mutex profiling
+    if p.config.MutexProfile != "" {
+        runtime.SetMutexProfileFraction(1)
+    }
+    
+    // Start HTTP profiling server
+    if p.config.HTTPAddr != "" {
+        if err := p.startHTTPProfiling(); err != nil {
+            return fmt.Errorf("failed to start HTTP profiling: %w", err)
+        }
+    }
+    
+    p.isRunning = true
+    
+    // Auto-stop after duration if specified
+    if p.config.Duration > 0 {
+        go func() {
+            select {
+            case <-time.After(p.config.Duration):
+                p.Stop()
+            case <-p.stopChan:
+                return
+            }
+        }()
+    }
+    
+    log.Println("Profiling started")
+    return nil
+}
+
+// Stop ends profiling and saves profiles
+func (p *Profiler) Stop() error {
+    p.mu.Lock()
+    defer p.mu.Unlock()
+    
+    if !p.isRunning {
+        return fmt.Errorf("profiler is not running")
+    }
+    
+    close(p.stopChan)
+    p.isRunning = false
+    
+    // Stop CPU profiling
+    if p.cpuFile != nil {
+        pprof.StopCPUProfile()
+        p.cpuFile.Close()
+        log.Printf("CPU profile saved to %s", p.config.CPUProfile)
+    }
+    
+    // Save memory profile
+    if p.config.MemProfile != "" {
+        if err := p.saveMemProfile(); err != nil {
+            log.Printf("Failed to save memory profile: %v", err)
+        }
+    }
+    
+    // Save block profile
+    if p.config.BlockProfile != "" {
+        if err := p.saveBlockProfile(); err != nil {
+            log.Printf("Failed to save block profile: %v", err)
+        }
+    }
+    
+    // Save mutex profile
+    if p.config.MutexProfile != "" {
+        if err := p.saveMutexProfile(); err != nil {
+            log.Printf("Failed to save mutex profile: %v", err)
+        }
+    }
+    
+    // Stop HTTP server
+    if p.httpServer != nil {
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        if err := p.httpServer.Shutdown(ctx); err != nil {
+            log.Printf("HTTP profiling server shutdown error: %v", err)
+        }
+    }
+    
+    log.Println("Profiling stopped")
+    return nil
+}
+
+// IsRunning returns true if profiling is active
+func (p *Profiler) IsRunning() bool {
+    p.mu.RLock()
+    defer p.mu.RUnlock()
+    return p.isRunning
+}
+
+// GetRuntimeStats returns current runtime statistics
+func (p *Profiler) GetRuntimeStats() RuntimeStats {
+    var stats RuntimeStats
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+    
+    stats.Goroutines = runtime.NumGoroutine()
+    stats.CGOCalls = runtime.NumCgoCall()
+    stats.Alloc = m.Alloc
+    stats.TotalAlloc = m.TotalAlloc
+    stats.Sys = m.Sys
+    stats.Lookups = m.Lookups
+    stats.Mallocs = m.Mallocs
+    stats.Frees = m.Frees
+    stats.HeapAlloc = m.HeapAlloc
+    stats.HeapSys = m.HeapSys
+    stats.HeapIdle = m.HeapIdle
+    stats.HeapInuse = m.HeapInuse
+    stats.StackInuse = m.StackInuse
+    stats.StackSys = m.StackSys
+    stats.MSpanInuse = m.MSpanInuse
+    stats.MSpanSys = m.MSpanSys
+    stats.MCacheInuse = m.MCacheInuse
+    stats.MCacheSys = m.MCacheSys
+    stats.GCSys = m.GCSys
+    stats.NextGC = m.NextGC
+    stats.LastGC = m.LastGC
+    stats.PauseTotalNs = m.PauseTotalNs
+    stats.NumGC = m.NumGC
+    stats.NumForcedGC = m.NumForcedGC
+    stats.GCCPUFraction = m.GCCPUFraction
+    
+    return stats
+}
+
+// PrintRuntimeStats prints current runtime statistics
+func (p *Profiler) PrintRuntimeStats() {
+    stats := p.GetRuntimeStats()
+    fmt.Printf("Runtime Statistics:\n")
+    fmt.Printf("  Goroutines: %d\n", stats.Goroutines)
+    fmt.Printf("  CGO Calls: %d\n", stats.CGOCalls)
+    fmt.Printf("  Memory Allocated: %s\n", formatBytes(stats.Alloc))
+    fmt.Printf("  Total Allocated: %s\n", formatBytes(stats.TotalAlloc))
+    fmt.Printf("  System Memory: %s\n", formatBytes(stats.Sys))
+    fmt.Printf("  Heap Allocated: %s\n", formatBytes(stats.HeapAlloc))
+    fmt.Printf("  Heap System: %s\n", formatBytes(stats.HeapSys))
+    fmt.Printf("  Heap In Use: %s\n", formatBytes(stats.HeapInuse))
+    fmt.Printf("  Stack In Use: %s\n", formatBytes(stats.StackInuse))
+    fmt.Printf("  GC Cycles: %d\n", stats.NumGC)
+    fmt.Printf("  GC CPU Fraction: %.4f\n", stats.GCCPUFraction)
+    fmt.Printf("  Last GC: %v\n", time.Unix(0, int64(stats.LastGC)))
+}
+
+// RuntimeStats holds runtime statistics
+type RuntimeStats struct {
+    Goroutines     int
+    CGOCalls       int64
+    Alloc          uint64
+    TotalAlloc     uint64
+    Sys            uint64
+    Lookups        uint64
+    Mallocs        uint64
+    Frees          uint64
+    HeapAlloc      uint64
+    HeapSys        uint64
+    HeapIdle       uint64
+    HeapInuse      uint64
+    StackInuse     uint64
+    StackSys       uint64
+    MSpanInuse     uint64
+    MSpanSys       uint64
+    MCacheInuse    uint64
+    MCacheSys      uint64
+    GCSys          uint64
+    NextGC         uint64
+    LastGC         uint64
+    PauseTotalNs   uint64
+    NumGC          uint32
+    NumForcedGC    uint32
+    GCCPUFraction  float64
+}
+
+func (p *Profiler) startCPUProfiling() error {
+    f, err := os.Create(p.config.CPUProfile)
+    if err != nil {
+        return err
+    }
+    p.cpuFile = f
+    
+    if err := pprof.StartCPUProfile(f); err != nil {
+        f.Close()
+        return err
+    }
+    
+    return nil
+}
+
+func (p *Profiler) saveMemProfile() error {
+    if p.config.EnableGC {
+        runtime.GC()
+    }
+    
+    f, err := os.Create(p.config.MemProfile)
+    if err != nil {
+        return err
+    }
+    defer f.Close()
+    
+    return pprof.WriteHeapProfile(f)
+}
+
+func (p *Profiler) saveBlockProfile() error {
+    f, err := os.Create(p.config.BlockProfile)
+    if err != nil {
+        return err
+    }
+    defer f.Close()
+    
+    profile := pprof.Lookup("block")
+    return profile.WriteTo(f, 0)
+}
+
+func (p *Profiler) saveMutexProfile() error {
+    f, err := os.Create(p.config.MutexProfile)
+    if err != nil {
+        return err
+    }
+    defer f.Close()
+    
+    profile := pprof.Lookup("mutex")
+    return profile.WriteTo(f, 0)
+}
+
+func (p *Profiler) startHTTPProfiling() error {
+    mux := http.NewServeMux()
+    
+    // Add custom profiling endpoints
+    mux.HandleFunc("/debug/pprof/", http.HandlerFunc(pprof.Index))
+    mux.HandleFunc("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+    mux.HandleFunc("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+    mux.HandleFunc("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+    mux.HandleFunc("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+    
+    // Add custom runtime stats endpoint
+    mux.HandleFunc("/debug/stats", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        stats := p.GetRuntimeStats()
+        fmt.Fprintf(w, `{
+            "goroutines": %d,
+            "cgo_calls": %d,
+            "memory_allocated": %d,
+            "total_allocated": %d,
+            "system_memory": %d,
+            "heap_allocated": %d,
+            "heap_in_use": %d,
+            "stack_in_use": %d,
+            "gc_cycles": %d,
+            "gc_cpu_fraction": %.6f
+        }`, stats.Goroutines, stats.CGOCalls, stats.Alloc, stats.TotalAlloc,
+            stats.Sys, stats.HeapAlloc, stats.HeapInuse, stats.StackInuse,
+            stats.NumGC, stats.GCCPUFraction)
+    })
+    
+    p.httpServer = &http.Server{
+        Addr:    p.config.HTTPAddr,
+        Handler: mux,
+    }
+    
+    go func() {
+        log.Printf("HTTP profiling server starting on %s", p.config.HTTPAddr)
+        if err := p.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            log.Printf("HTTP profiling server error: %v", err)
+        }
+    }()
+    
+    return nil
+}
+
+func formatBytes(b uint64) string {
+    const unit = 1024
+    if b < unit {
+        return fmt.Sprintf("%d B", b)
+    }
+    div, exp := int64(unit), 0
+    for n := b / unit; n >= unit; n /= unit {
+        div *= unit
+        exp++
+    }
+    return fmt.Sprintf("%.1f %ciB",
+        float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// Package-level convenience functions
+var defaultProfiler *Profiler
+
+// StartProfiling starts profiling with the given configuration
+func StartProfiling(config ProfileConfig) error {
+    defaultProfiler = NewProfiler(config)
+    return defaultProfiler.Start()
+}
+
+// StopProfiling stops the default profiler
+func StopProfiling() error {
+    if defaultProfiler == nil {
+        return fmt.Errorf("no active profiler")
+    }
+    return defaultProfiler.Stop()
+}
+
+// PrintStats prints runtime statistics
+func PrintStats() {
+    if defaultProfiler == nil {
+        defaultProfiler = NewProfiler(ProfileConfig{})
+    }
+    defaultProfiler.PrintRuntimeStats()
+}
+
+// Example usage in main application
+func main() {
+    // Configure profiling
+    config := ProfileConfig{
+        CPUProfile:   "cpu.prof",
+        MemProfile:   "mem.prof",
+        BlockProfile: "block.prof",
+        HTTPAddr:     ":6060",
+        Duration:     30 * time.Second,
+        EnableGC:     true,
+    }
+    
+    // Start profiling
+    profiler := NewProfiler(config)
+    if err := profiler.Start(); err != nil {
+        log.Fatal("Failed to start profiling:", err)
+    }
+    
+    // Your application code here
+    simulateWork()
+    
+    // Print stats
+    profiler.PrintRuntimeStats()
+    
+    // Stop profiling
+    if err := profiler.Stop(); err != nil {
+        log.Printf("Failed to stop profiling: %v", err)
+    }
+}
+
+func simulateWork() {
+    // Simulate CPU-intensive work
+    for i := 0; i < 1000000; i++ {
+        _ = fibonacci(30)
+    }
+    
+    // Simulate memory allocations
+    data := make([][]byte, 1000)
+    for i := range data {
+        data[i] = make([]byte, 1024)
+        for j := range data[i] {
+            data[i][j] = byte(i + j)
+        }
+    }
+    
+    // Simulate goroutine blocking
+    var wg sync.WaitGroup
+    for i := 0; i < 10; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            time.Sleep(100 * time.Millisecond)
+        }()
+    }
+    wg.Wait()
+}
+
+func fibonacci(n int) int {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n-1) + fibonacci(n-2)
+}
+
+/*
+Using the profiler:
+
+1. CPU Profile:
+   go tool pprof cpu.prof
+   (pprof) top10
+   (pprof) web
+   (pprof) list functionName
+
+2. Memory Profile:
+   go tool pprof mem.prof
+   (pprof) top10 -alloc_space
+   (pprof) top10 -inuse_space
+   (pprof) web
+
+3. Block Profile:
+   go tool pprof block.prof
+   (pprof) top10
+   (pprof) web
+
+4. HTTP Interface:
+   http://localhost:6060/debug/pprof/
+   go tool pprof http://localhost:6060/debug/pprof/profile
+   go tool pprof http://localhost:6060/debug/pprof/heap
+
+5. Trace Analysis:
+   go tool trace trace.out
+*/
+```
+
+Package profiling integration enables comprehensive performance analysis  
+through CPU profiling, memory profiling, blocking analysis, and HTTP  
+endpoints. Profiling helps identify bottlenecks, memory leaks, and  
+performance issues in production applications.  
+
+## Package plugin architecture
+
+Plugin architecture enables dynamic loading and extensibility through  
+interfaces and registration patterns.  
+
+```go
+// plugin/interface.go
+package plugin
+
+import (
+    "context"
+    "fmt"
+    "sync"
+)
+
+// Plugin defines the basic plugin interface
+type Plugin interface {
+    Name() string
+    Version() string
+    Description() string
+    Initialize(config map[string]interface{}) error
+    Shutdown() error
+}
+
+// ProcessorPlugin defines plugins that can process data
+type ProcessorPlugin interface {
+    Plugin
+    Process(ctx context.Context, input []byte) ([]byte, error)
+    CanProcess(contentType string) bool
+}
+
+// FilterPlugin defines plugins that can filter data
+type FilterPlugin interface {
+    Plugin
+    Filter(ctx context.Context, data interface{}) (bool, error)
+    GetCriteria() map[string]interface{}
+}
+
+// HandlerPlugin defines plugins that can handle requests
+type HandlerPlugin interface {
+    Plugin
+    Handle(ctx context.Context, request interface{}) (interface{}, error)
+    GetRoutes() []string
+}
+
+// ValidatorPlugin defines plugins that can validate data
+type ValidatorPlugin interface {
+    Plugin
+    Validate(ctx context.Context, data interface{}) []ValidationError
+    GetSchema() interface{}
+}
+
+// ValidationError represents a validation error
+type ValidationError struct {
+    Field   string `json:"field"`
+    Message string `json:"message"`
+    Code    string `json:"code"`
+}
+
+// PluginInfo holds metadata about a plugin
+type PluginInfo struct {
+    Name        string                 `json:"name"`
+    Version     string                 `json:"version"`
+    Description string                 `json:"description"`
+    Type        string                 `json:"type"`
+    Config      map[string]interface{} `json:"config"`
+    Enabled     bool                   `json:"enabled"`
+    LoadedAt    time.Time              `json:"loaded_at"`
+}
+
+// Registry manages plugin registration and lookup
+type Registry struct {
+    plugins     map[string]Plugin
+    pluginTypes map[string][]Plugin
+    info        map[string]PluginInfo
+    mu          sync.RWMutex
+}
+
+// NewRegistry creates a new plugin registry
+func NewRegistry() *Registry {
+    return &Registry{
+        plugins:     make(map[string]Plugin),
+        pluginTypes: make(map[string][]Plugin),
+        info:        make(map[string]PluginInfo),
+    }
+}
+
+// Register adds a plugin to the registry
+func (r *Registry) Register(plugin Plugin, config map[string]interface{}) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    
+    name := plugin.Name()
+    if _, exists := r.plugins[name]; exists {
+        return fmt.Errorf("plugin %s is already registered", name)
+    }
+    
+    // Initialize the plugin
+    if err := plugin.Initialize(config); err != nil {
+        return fmt.Errorf("failed to initialize plugin %s: %w", name, err)
+    }
+    
+    // Register the plugin
+    r.plugins[name] = plugin
+    
+    // Categorize by type
+    pluginType := r.getPluginType(plugin)
+    r.pluginTypes[pluginType] = append(r.pluginTypes[pluginType], plugin)
+    
+    // Store plugin info
+    r.info[name] = PluginInfo{
+        Name:        name,
+        Version:     plugin.Version(),
+        Description: plugin.Description(),
+        Type:        pluginType,
+        Config:      config,
+        Enabled:     true,
+        LoadedAt:    time.Now(),
+    }
+    
+    return nil
+}
+
+// Unregister removes a plugin from the registry
+func (r *Registry) Unregister(name string) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    
+    plugin, exists := r.plugins[name]
+    if !exists {
+        return fmt.Errorf("plugin %s is not registered", name)
+    }
+    
+    // Shutdown the plugin
+    if err := plugin.Shutdown(); err != nil {
+        return fmt.Errorf("failed to shutdown plugin %s: %w", name, err)
+    }
+    
+    // Remove from registry
+    delete(r.plugins, name)
+    
+    // Remove from type categorization
+    pluginType := r.getPluginType(plugin)
+    plugins := r.pluginTypes[pluginType]
+    for i, p := range plugins {
+        if p.Name() == name {
+            r.pluginTypes[pluginType] = append(plugins[:i], plugins[i+1:]...)
+            break
+        }
+    }
+    
+    delete(r.info, name)
+    
+    return nil
+}
+
+// Get retrieves a plugin by name
+func (r *Registry) Get(name string) (Plugin, error) {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+    
+    plugin, exists := r.plugins[name]
+    if !exists {
+        return nil, fmt.Errorf("plugin %s not found", name)
+    }
+    
+    return plugin, nil
+}
+
+// GetByType retrieves all plugins of a specific type
+func (r *Registry) GetByType(pluginType string) []Plugin {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+    
+    plugins := r.pluginTypes[pluginType]
+    result := make([]Plugin, len(plugins))
+    copy(result, plugins)
+    return result
+}
+
+// GetProcessors retrieves all processor plugins
+func (r *Registry) GetProcessors() []ProcessorPlugin {
+    plugins := r.GetByType("processor")
+    result := make([]ProcessorPlugin, len(plugins))
+    for i, p := range plugins {
+        result[i] = p.(ProcessorPlugin)
+    }
+    return result
+}
+
+// GetFilters retrieves all filter plugins
+func (r *Registry) GetFilters() []FilterPlugin {
+    plugins := r.GetByType("filter")
+    result := make([]FilterPlugin, len(plugins))
+    for i, p := range plugins {
+        result[i] = p.(FilterPlugin)
+    }
+    return result
+}
+
+// GetHandlers retrieves all handler plugins
+func (r *Registry) GetHandlers() []HandlerPlugin {
+    plugins := r.GetByType("handler")
+    result := make([]HandlerPlugin, len(plugins))
+    for i, p := range plugins {
+        result[i] = p.(HandlerPlugin)
+    }
+    return result
+}
+
+// GetValidators retrieves all validator plugins
+func (r *Registry) GetValidators() []ValidatorPlugin {
+    plugins := r.GetByType("validator")
+    result := make([]ValidatorPlugin, len(plugins))
+    for i, p := range plugins {
+        result[i] = p.(ValidatorPlugin)
+    }
+    return result
+}
+
+// ListPlugins returns information about all registered plugins
+func (r *Registry) ListPlugins() []PluginInfo {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+    
+    result := make([]PluginInfo, 0, len(r.info))
+    for _, info := range r.info {
+        result = append(result, info)
+    }
+    return result
+}
+
+// EnablePlugin enables a plugin
+func (r *Registry) EnablePlugin(name string) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    
+    info, exists := r.info[name]
+    if !exists {
+        return fmt.Errorf("plugin %s not found", name)
+    }
+    
+    info.Enabled = true
+    r.info[name] = info
+    return nil
+}
+
+// DisablePlugin disables a plugin
+func (r *Registry) DisablePlugin(name string) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    
+    info, exists := r.info[name]
+    if !exists {
+        return fmt.Errorf("plugin %s not found", name)
+    }
+    
+    info.Enabled = false
+    r.info[name] = info
+    return nil
+}
+
+// IsEnabled checks if a plugin is enabled
+func (r *Registry) IsEnabled(name string) bool {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+    
+    info, exists := r.info[name]
+    return exists && info.Enabled
+}
+
+func (r *Registry) getPluginType(plugin Plugin) string {
+    switch plugin.(type) {
+    case ProcessorPlugin:
+        return "processor"
+    case FilterPlugin:
+        return "filter"
+    case HandlerPlugin:
+        return "handler"
+    case ValidatorPlugin:
+        return "validator"
+    default:
+        return "generic"
+    }
+}
+
+// Example processor plugins
+type TextProcessorPlugin struct {
+    name    string
+    version string
+    config  map[string]interface{}
+}
+
+func NewTextProcessorPlugin() *TextProcessorPlugin {
+    return &TextProcessorPlugin{
+        name:    "text-processor",
+        version: "1.0.0",
+    }
+}
+
+func (p *TextProcessorPlugin) Name() string { return p.name }
+func (p *TextProcessorPlugin) Version() string { return p.version }
+func (p *TextProcessorPlugin) Description() string { 
+    return "Processes text content with various transformations"
+}
+
+func (p *TextProcessorPlugin) Initialize(config map[string]interface{}) error {
+    p.config = config
+    return nil
+}
+
+func (p *TextProcessorPlugin) Shutdown() error {
+    return nil
+}
+
+func (p *TextProcessorPlugin) Process(ctx context.Context, input []byte) ([]byte, error) {
+    text := string(input)
+    
+    // Apply transformations based on config
+    if transform, ok := p.config["transform"].(string); ok {
+        switch transform {
+        case "uppercase":
+            text = strings.ToUpper(text)
+        case "lowercase":
+            text = strings.ToLower(text)
+        case "reverse":
+            runes := []rune(text)
+            for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+                runes[i], runes[j] = runes[j], runes[i]
+            }
+            text = string(runes)
+        }
+    }
+    
+    return []byte(text), nil
+}
+
+func (p *TextProcessorPlugin) CanProcess(contentType string) bool {
+    return strings.HasPrefix(contentType, "text/")
+}
+
+// Example filter plugin
+type LengthFilterPlugin struct {
+    name      string
+    version   string
+    minLength int
+    maxLength int
+}
+
+func NewLengthFilterPlugin(minLen, maxLen int) *LengthFilterPlugin {
+    return &LengthFilterPlugin{
+        name:      "length-filter",
+        version:   "1.0.0",
+        minLength: minLen,
+        maxLength: maxLen,
+    }
+}
+
+func (p *LengthFilterPlugin) Name() string { return p.name }
+func (p *LengthFilterPlugin) Version() string { return p.version }
+func (p *LengthFilterPlugin) Description() string {
+    return fmt.Sprintf("Filters content by length (%d-%d characters)", p.minLength, p.maxLength)
+}
+
+func (p *LengthFilterPlugin) Initialize(config map[string]interface{}) error {
+    if minLen, ok := config["min_length"].(float64); ok {
+        p.minLength = int(minLen)
+    }
+    if maxLen, ok := config["max_length"].(float64); ok {
+        p.maxLength = int(maxLen)
+    }
+    return nil
+}
+
+func (p *LengthFilterPlugin) Shutdown() error {
+    return nil
+}
+
+func (p *LengthFilterPlugin) Filter(ctx context.Context, data interface{}) (bool, error) {
+    var length int
+    
+    switch v := data.(type) {
+    case string:
+        length = len(v)
+    case []byte:
+        length = len(v)
+    default:
+        return false, fmt.Errorf("unsupported data type for length filter")
+    }
+    
+    return length >= p.minLength && length <= p.maxLength, nil
+}
+
+func (p *LengthFilterPlugin) GetCriteria() map[string]interface{} {
+    return map[string]interface{}{
+        "min_length": p.minLength,
+        "max_length": p.maxLength,
+    }
+}
+
+// Global registry
+var globalRegistry = NewRegistry()
+
+// Package-level convenience functions
+func Register(plugin Plugin, config map[string]interface{}) error {
+    return globalRegistry.Register(plugin, config)
+}
+
+func Get(name string) (Plugin, error) {
+    return globalRegistry.Get(name)
+}
+
+func GetProcessors() []ProcessorPlugin {
+    return globalRegistry.GetProcessors()
+}
+
+func GetFilters() []FilterPlugin {
+    return globalRegistry.GetFilters()
+}
+
+func ListPlugins() []PluginInfo {
+    return globalRegistry.ListPlugins()
+}
+
+// Usage example
+func main() {
+    // Register plugins
+    textProcessor := NewTextProcessorPlugin()
+    err := Register(textProcessor, map[string]interface{}{
+        "transform": "uppercase",
+    })
+    if err != nil {
+        log.Fatal("Failed to register text processor:", err)
+    }
+    
+    lengthFilter := NewLengthFilterPlugin(5, 100)
+    err = Register(lengthFilter, map[string]interface{}{
+        "min_length": 10,
+        "max_length": 200,
+    })
+    if err != nil {
+        log.Fatal("Failed to register length filter:", err)
+    }
+    
+    // Use plugins
+    ctx := context.Background()
+    
+    // Process data with processor plugins
+    processors := GetProcessors()
+    for _, processor := range processors {
+        if processor.CanProcess("text/plain") {
+            input := []byte("hello there, world!")
+            output, err := processor.Process(ctx, input)
+            if err != nil {
+                log.Printf("Processing error: %v", err)
+                continue
+            }
+            fmt.Printf("Processed: %s -> %s\n", string(input), string(output))
+        }
+    }
+    
+    // Filter data with filter plugins
+    filters := GetFilters()
+    testData := "This is a test string for filtering"
+    
+    for _, filter := range filters {
+        passed, err := filter.Filter(ctx, testData)
+        if err != nil {
+            log.Printf("Filter error: %v", err)
+            continue
+        }
+        fmt.Printf("Filter %s: %s -> %t\n", filter.Name(), testData, passed)
+    }
+    
+    // List all plugins
+    fmt.Println("\nRegistered plugins:")
+    for _, info := range ListPlugins() {
+        fmt.Printf("- %s v%s (%s): %s\n", 
+            info.Name, info.Version, info.Type, info.Description)
+    }
+}
+```
+
+Package plugin architecture enables extensibility through interface-based  
+design and dynamic registration. Plugins provide modularity, allow third-party  
+extensions, and support runtime configuration. The registry pattern manages  
+plugin lifecycle and provides type-safe access to different plugin categories.  
+
+## Package versioning strategies
+
+Versioning strategies enable backward compatibility, semantic versioning,  
+and migration paths for package evolution.  
+
+```go
+// version/version.go
+package version
+
+import (
+    "fmt"
+    "regexp"
+    "strconv"
+    "strings"
+    "time"
+)
+
+// Version represents a semantic version
+type Version struct {
+    Major      int    `json:"major"`
+    Minor      int    `json:"minor"`
+    Patch      int    `json:"patch"`
+    PreRelease string `json:"pre_release,omitempty"`
+    BuildMeta  string `json:"build_meta,omitempty"`
+}
+
+// Parse parses a version string into a Version struct
+func Parse(v string) (*Version, error) {
+    // Semantic version regex
+    re := regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
+    
+    matches := re.FindStringSubmatch(v)
+    if matches == nil {
+        return nil, fmt.Errorf("invalid version format: %s", v)
+    }
+    
+    major, _ := strconv.Atoi(matches[1])
+    minor, _ := strconv.Atoi(matches[2])
+    patch, _ := strconv.Atoi(matches[3])
+    
+    return &Version{
+        Major:      major,
+        Minor:      minor,
+        Patch:      patch,
+        PreRelease: matches[4],
+        BuildMeta:  matches[5],
+    }, nil
+}
+
+// New creates a new version
+func New(major, minor, patch int) *Version {
+    return &Version{
+        Major: major,
+        Minor: minor,
+        Patch: patch,
+    }
+}
+
+// String returns the string representation of the version
+func (v *Version) String() string {
+    version := fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
+    
+    if v.PreRelease != "" {
+        version += "-" + v.PreRelease
+    }
+    
+    if v.BuildMeta != "" {
+        version += "+" + v.BuildMeta
+    }
+    
+    return version
+}
+
+// WithPreRelease adds a pre-release identifier
+func (v *Version) WithPreRelease(preRelease string) *Version {
+    newVersion := *v
+    newVersion.PreRelease = preRelease
+    return &newVersion
+}
+
+// WithBuildMeta adds build metadata
+func (v *Version) WithBuildMeta(buildMeta string) *Version {
+    newVersion := *v
+    newVersion.BuildMeta = buildMeta
+    return &newVersion
+}
+
+// Compare compares two versions (-1, 0, 1 for less, equal, greater)
+func (v *Version) Compare(other *Version) int {
+    // Compare major, minor, patch
+    if v.Major != other.Major {
+        if v.Major < other.Major {
+            return -1
+        }
+        return 1
+    }
+    
+    if v.Minor != other.Minor {
+        if v.Minor < other.Minor {
+            return -1
+        }
+        return 1
+    }
+    
+    if v.Patch != other.Patch {
+        if v.Patch < other.Patch {
+            return -1
+        }
+        return 1
+    }
+    
+    // Compare pre-release
+    if v.PreRelease == "" && other.PreRelease != "" {
+        return 1 // No pre-release is higher than with pre-release
+    }
+    if v.PreRelease != "" && other.PreRelease == "" {
+        return -1
+    }
+    if v.PreRelease != "" && other.PreRelease != "" {
+        return strings.Compare(v.PreRelease, other.PreRelease)
+    }
+    
+    return 0
+}
+
+// IsCompatible checks if this version is compatible with another version
+func (v *Version) IsCompatible(other *Version) bool {
+    // Same major version for backward compatibility
+    return v.Major == other.Major && v.Compare(other) >= 0
+}
+
+// IsBreakingChange checks if updating to another version would be breaking
+func (v *Version) IsBreakingChange(other *Version) bool {
+    return other.Major > v.Major
+}
+
+// NextMajor returns the next major version
+func (v *Version) NextMajor() *Version {
+    return &Version{Major: v.Major + 1, Minor: 0, Patch: 0}
+}
+
+// NextMinor returns the next minor version
+func (v *Version) NextMinor() *Version {
+    return &Version{Major: v.Major, Minor: v.Minor + 1, Patch: 0}
+}
+
+// NextPatch returns the next patch version
+func (v *Version) NextPatch() *Version {
+    return &Version{Major: v.Major, Minor: v.Minor, Patch: v.Patch + 1}
+}
+
+// APIVersion represents API versioning information
+type APIVersion struct {
+    Version     *Version           `json:"version"`
+    APILevel    int                `json:"api_level"`
+    Deprecated  bool               `json:"deprecated"`
+    EOL         *time.Time         `json:"eol,omitempty"`
+    Features    map[string]bool    `json:"features"`
+    Changes     []ChangeEntry      `json:"changes"`
+}
+
+// ChangeEntry represents a version change
+type ChangeEntry struct {
+    Version     string    `json:"version"`
+    Date        time.Time `json:"date"`
+    Type        string    `json:"type"` // "added", "changed", "deprecated", "removed", "fixed", "security"
+    Description string    `json:"description"`
+    Breaking    bool      `json:"breaking"`
+}
+
+// VersionManager manages API versions and compatibility
+type VersionManager struct {
+    current     *Version
+    supported   []*APIVersion
+    deprecated  []*APIVersion
+    migrations  map[string]MigrationFunc
+}
+
+// MigrationFunc represents a function that migrates data between versions
+type MigrationFunc func(from, to *Version, data interface{}) (interface{}, error)
+
+// NewVersionManager creates a new version manager
+func NewVersionManager(current *Version) *VersionManager {
+    return &VersionManager{
+        current:    current,
+        supported:  make([]*APIVersion, 0),
+        deprecated: make([]*APIVersion, 0),
+        migrations: make(map[string]MigrationFunc),
+    }
+}
+
+// AddSupportedVersion adds a supported API version
+func (vm *VersionManager) AddSupportedVersion(apiVersion *APIVersion) {
+    vm.supported = append(vm.supported, apiVersion)
+}
+
+// AddDeprecatedVersion adds a deprecated API version
+func (vm *VersionManager) AddDeprecatedVersion(apiVersion *APIVersion) {
+    vm.deprecated = append(vm.deprecated, apiVersion)
+}
+
+// AddMigration adds a migration function between versions
+func (vm *VersionManager) AddMigration(fromVersion, toVersion string, migrationFunc MigrationFunc) {
+    key := fmt.Sprintf("%s->%s", fromVersion, toVersion)
+    vm.migrations[key] = migrationFunc
+}
+
+// GetCurrent returns the current version
+func (vm *VersionManager) GetCurrent() *Version {
+    return vm.current
+}
+
+// IsSupported checks if a version is supported
+func (vm *VersionManager) IsSupported(version *Version) bool {
+    for _, supported := range vm.supported {
+        if supported.Version.Compare(version) == 0 {
+            return true
+        }
+    }
+    return false
+}
+
+// IsDeprecated checks if a version is deprecated
+func (vm *VersionManager) IsDeprecated(version *Version) bool {
+    for _, deprecated := range vm.deprecated {
+        if deprecated.Version.Compare(version) == 0 {
+            return true
+        }
+    }
+    return false
+}
+
+// GetCompatibleVersions returns versions compatible with the given version
+func (vm *VersionManager) GetCompatibleVersions(version *Version) []*Version {
+    var compatible []*Version
+    
+    for _, supported := range vm.supported {
+        if version.IsCompatible(supported.Version) {
+            compatible = append(compatible, supported.Version)
+        }
+    }
+    
+    return compatible
+}
+
+// Migrate migrates data from one version to another
+func (vm *VersionManager) Migrate(from, to *Version, data interface{}) (interface{}, error) {
+    if from.Compare(to) == 0 {
+        return data, nil // No migration needed
+    }
+    
+    key := fmt.Sprintf("%s->%s", from.String(), to.String())
+    if migration, exists := vm.migrations[key]; exists {
+        return migration(from, to, data)
+    }
+    
+    return nil, fmt.Errorf("no migration path from %s to %s", from.String(), to.String())
+}
+
+// GetChangelog returns the changelog for all versions
+func (vm *VersionManager) GetChangelog() []ChangeEntry {
+    var allChanges []ChangeEntry
+    
+    for _, apiVersion := range vm.supported {
+        allChanges = append(allChanges, apiVersion.Changes...)
+    }
+    
+    for _, apiVersion := range vm.deprecated {
+        allChanges = append(allChanges, apiVersion.Changes...)
+    }
+    
+    return allChanges
+}
+
+// Feature represents a feature flag with versioning
+type Feature struct {
+    Name            string     `json:"name"`
+    Description     string     `json:"description"`
+    IntroducedIn    *Version   `json:"introduced_in"`
+    DeprecatedIn    *Version   `json:"deprecated_in,omitempty"`
+    RemovedIn       *Version   `json:"removed_in,omitempty"`
+    Enabled         bool       `json:"enabled"`
+    DefaultEnabled  bool       `json:"default_enabled"`
+}
+
+// IsAvailable checks if a feature is available in a specific version
+func (f *Feature) IsAvailable(version *Version) bool {
+    if version.Compare(f.IntroducedIn) < 0 {
+        return false
+    }
+    
+    if f.RemovedIn != nil && version.Compare(f.RemovedIn) >= 0 {
+        return false
+    }
+    
+    return true
+}
+
+// IsDeprecated checks if a feature is deprecated in a specific version
+func (f *Feature) IsDeprecated(version *Version) bool {
+    if f.DeprecatedIn == nil {
+        return false
+    }
+    
+    return version.Compare(f.DeprecatedIn) >= 0 && 
+           (f.RemovedIn == nil || version.Compare(f.RemovedIn) < 0)
+}
+
+// Package-level version information
+var (
+    PackageVersion = New(2, 1, 0)
+    APILevel       = 3
+    BuildTime      = time.Now()
+    GitCommit      = "abc123def456"
+)
+
+// GetPackageInfo returns comprehensive package version information
+func GetPackageInfo() map[string]interface{} {
+    return map[string]interface{}{
+        "version":    PackageVersion.String(),
+        "api_level":  APILevel,
+        "build_time": BuildTime.Format(time.RFC3339),
+        "git_commit": GitCommit,
+        "go_version": runtime.Version(),
+    }
+}
+
+// Example usage
+func main() {
+    // Version parsing and comparison
+    v1, _ := Parse("1.2.3")
+    v2, _ := Parse("1.2.4-beta.1+build.123")
+    v3, _ := Parse("2.0.0")
+    
+    fmt.Printf("v1: %s\n", v1)
+    fmt.Printf("v2: %s\n", v2)
+    fmt.Printf("v3: %s\n", v3)
+    
+    fmt.Printf("v1 vs v2: %d\n", v1.Compare(v2))
+    fmt.Printf("v1 compatible with v2: %t\n", v1.IsCompatible(v2))
+    fmt.Printf("v1 to v3 breaking: %t\n", v1.IsBreakingChange(v3))
+    
+    // Version manager
+    vm := NewVersionManager(New(2, 1, 0))
+    
+    // Add supported versions
+    vm.AddSupportedVersion(&APIVersion{
+        Version:  New(2, 1, 0),
+        APILevel: 3,
+        Features: map[string]bool{
+            "feature_a": true,
+            "feature_b": true,
+        },
+        Changes: []ChangeEntry{
+            {
+                Version:     "2.1.0",
+                Date:        time.Now(),
+                Type:        "added",
+                Description: "Added new authentication method",
+                Breaking:    false,
+            },
+        },
+    })
+    
+    vm.AddDeprecatedVersion(&APIVersion{
+        Version:    New(1, 5, 0),
+        APILevel:   2,
+        Deprecated: true,
+        EOL:        &time.Time{},
+    })
+    
+    // Add migration
+    vm.AddMigration("1.5.0", "2.1.0", func(from, to *Version, data interface{}) (interface{}, error) {
+        // Migration logic here
+        fmt.Printf("Migrating from %s to %s\n", from, to)
+        return data, nil
+    })
+    
+    // Feature management
+    feature := &Feature{
+        Name:         "advanced_search",
+        Description:  "Advanced search capabilities",
+        IntroducedIn: New(2, 0, 0),
+        DeprecatedIn: New(3, 0, 0),
+        Enabled:      true,
+    }
+    
+    currentVersion := New(2, 1, 0)
+    fmt.Printf("Feature available in %s: %t\n", currentVersion, feature.IsAvailable(currentVersion))
+    fmt.Printf("Feature deprecated in %s: %t\n", currentVersion, feature.IsDeprecated(currentVersion))
+    
+    // Package info
+    info := GetPackageInfo()
+    fmt.Printf("Package info: %+v\n", info)
+}
+```
+
+Package versioning strategies provide structured approaches to managing API  
+evolution, backward compatibility, and feature lifecycle. Semantic versioning,  
+migration paths, and feature flags enable controlled package evolution while  
+maintaining stability for existing users. Version managers help coordinate  
+complex upgrade scenarios and deprecation timelines.  
