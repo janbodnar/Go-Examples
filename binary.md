@@ -4044,7 +4044,10 @@ func main() {
 
 ## Encoding and Decoding
 
-### Example 31: Base64 Encoding and Decoding
+### Base64 Encoding and Decoding
+
+Base64 encoding converts binary data to ASCII text, making it safe for  
+transmission over text-based protocols and storage in text files.  
 
 ```go
 package main
@@ -4233,7 +4236,18 @@ func manualBase64Decode(encoded string) []byte {
 }
 ```
 
-### Example 32: Hexadecimal Encoding and Decoding
+This example demonstrates Base64 encoding, which is essential for encoding  
+binary data as ASCII text. Standard Base64 uses characters A-Z, a-z, 0-9,  
+plus (+), and slash (/), while URL-safe Base64 replaces + and / with - and _  
+to avoid conflicts in URLs and filenames.  
+
+The encoding process converts every 3 bytes (24 bits) into 4 Base64 characters  
+(24 bits using 6 bits per character). The manual implementation shows how the  
+algorithm groups bytes, applies bit shifting, and handles padding with '='  
+characters. Base64 increases data size by approximately 33% but ensures  
+compatibility with text-based systems.  
+
+### Hexadecimal Encoding and Decoding
 
 ```go
 package main
