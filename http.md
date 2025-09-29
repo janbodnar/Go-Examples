@@ -8888,3 +8888,5672 @@ sanitization, security threat detection, and detailed error reporting.
 The implementation shows how to build secure HTTP APIs that properly  
 validate and sanitize user input while providing clear feedback about  
 validation failures.
+
+## HTTPS and TLS configuration
+
+HTTPS provides encrypted communication and is essential for production  
+web applications. This example demonstrates TLS configuration, certificate  
+management, and secure server setup.
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "crypto/rsa"
+    "crypto/tls"
+    "crypto/x509"
+    "crypto/x509/pkix"
+    "encoding/pem"
+    "fmt"
+    "log"
+    "math/big"
+    "net/http"
+    "os"
+    "time"
+)
+
+func generateSelfSignedCert() error {
+    // Generate private key
+    privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+    if err != nil {
+        return fmt.Errorf("failed to generate private key: %v", err)
+    }
+
+    // Create certificate template
+    template := x509.Certificate{
+        SerialNumber: big.NewInt(1),
+        Subject: pkix.Name{
+            Organization:  []string{"Demo Company"},
+            Country:       []string{"US"},
+            Province:      []string{""},
+            Locality:      []string{"San Francisco"},
+            StreetAddress: []string{""},
+            PostalCode:    []string{""},
+            CommonName:    "localhost",
+        },
+        NotBefore:             time.Now(),
+        NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+        KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+        ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+        IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+        DNSNames:              []string{"localhost"},
+        BasicConstraintsValid: true,
+    }
+
+    // Create certificate
+    certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, 
+                                          &privateKey.PublicKey, privateKey)
+    if err != nil {
+        return fmt.Errorf("failed to create certificate: %v", err)
+    }
+
+    // Save certificate
+    certOut, err := os.Create("server.crt")
+    if err != nil {
+        return fmt.Errorf("failed to open cert.pem for writing: %v", err)
+    }
+    defer certOut.Close()
+
+    if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+        return fmt.Errorf("failed to write certificate: %v", err)
+    }
+
+    // Save private key
+    keyOut, err := os.Create("server.key")
+    if err != nil {
+        return fmt.Errorf("failed to open key.pem for writing: %v", err)
+    }
+    defer keyOut.Close()
+
+    privateKeyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+    if err != nil {
+        return fmt.Errorf("failed to marshal private key: %v", err)
+    }
+
+    if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privateKeyDER}); err != nil {
+        return fmt.Errorf("failed to write private key: %v", err)
+    }
+
+    fmt.Println("Generated self-signed certificate and private key")
+    return nil
+}
+
+func createTLSConfig() *tls.Config {
+    return &tls.Config{
+        MinVersion: tls.VersionTLS12,
+        MaxVersion: tls.VersionTLS13,
+        CipherSuites: []uint16{
+            tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        },
+        CurvePreferences: []tls.CurveID{
+            tls.X25519,
+            tls.CurveP256,
+            tls.CurveP384,
+        },
+        PreferServerCipherSuites: true,
+        InsecureSkipVerify:       false,
+        NextProtos:               []string{"h2", "http/1.1"},
+    }
+}
+
+func httpsHandler(w http.ResponseWriter, r *http.Request) {
+    // Security headers
+    w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    w.Header().Set("X-Content-Type-Options", "nosniff")
+    w.Header().Set("X-Frame-Options", "DENY")
+    w.Header().Set("X-XSS-Protection", "1; mode=block")
+    w.Header().Set("Content-Security-Policy", "default-src 'self'")
+
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprintf(w, `
+    <!DOCTYPE html>
+    <html>
+    <head><title>HTTPS Demo</title></head>
+    <body>
+        <h1>Hello there!</h1>
+        <p>This is a secure HTTPS connection.</p>
+        
+        <h2>Connection Information:</h2>
+        <ul>
+            <li><strong>Protocol:</strong> %s</li>
+            <li><strong>TLS Version:</strong> %s</li>
+            <li><strong>Cipher Suite:</strong> %s</li>
+            <li><strong>Server Name:</strong> %s</li>
+            <li><strong>Certificates:</strong> %d</li>
+        </ul>
+        
+        <h2>Security Headers:</h2>
+        <ul>
+            <li>Strict-Transport-Security</li>
+            <li>X-Content-Type-Options</li>
+            <li>X-Frame-Options</li>
+            <li>X-XSS-Protection</li>
+            <li>Content-Security-Policy</li>
+        </ul>
+        
+        <h2>Client Certificate Information:</h2>
+        <p>Client certificate verification: %s</p>
+        
+        <script>
+        // Display additional security information
+        document.addEventListener('DOMContentLoaded', function() {
+            const isSecure = location.protocol === 'https:';
+            const securityInfo = document.createElement('p');
+            securityInfo.innerHTML = '<strong>Secure Connection:</strong> ' + 
+                                   (isSecure ? 'Yes ✓' : 'No ✗');
+            securityInfo.style.color = isSecure ? 'green' : 'red';
+            document.body.appendChild(securityInfo);
+        });
+        </script>
+    </body>
+    </html>`, 
+    r.Proto,
+    getTLSVersionString(r.TLS),
+    getCipherSuiteString(r.TLS),
+    getServerName(r.TLS),
+    getCertCount(r.TLS),
+    getClientCertStatus(r.TLS))
+}
+
+func getTLSVersionString(tls *tls.ConnectionState) string {
+    if tls == nil {
+        return "No TLS"
+    }
+    
+    switch tls.Version {
+    case tls.VersionTLS10:
+        return "TLS 1.0"
+    case tls.VersionTLS11:
+        return "TLS 1.1"
+    case tls.VersionTLS12:
+        return "TLS 1.2"
+    case tls.VersionTLS13:
+        return "TLS 1.3"
+    default:
+        return fmt.Sprintf("Unknown (%d)", tls.Version)
+    }
+}
+
+func getCipherSuiteString(tls *tls.ConnectionState) string {
+    if tls == nil {
+        return "No TLS"
+    }
+    
+    suites := map[uint16]string{
+        tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:        "ECDHE-RSA-AES256-GCM-SHA384",
+        tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:  "ECDHE-RSA-CHACHA20-POLY1305",
+        tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:        "ECDHE-RSA-AES128-GCM-SHA256",
+        tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:      "ECDHE-ECDSA-AES256-GCM-SHA384",
+        tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: "ECDHE-ECDSA-CHACHA20-POLY1305",
+        tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:      "ECDHE-ECDSA-AES128-GCM-SHA256",
+    }
+    
+    if name, exists := suites[tls.CipherSuite]; exists {
+        return name
+    }
+    
+    return fmt.Sprintf("Unknown (%d)", tls.CipherSuite)
+}
+
+func getServerName(tls *tls.ConnectionState) string {
+    if tls == nil {
+        return "No TLS"
+    }
+    if tls.ServerName == "" {
+        return "Not specified"
+    }
+    return tls.ServerName
+}
+
+func getCertCount(tls *tls.ConnectionState) int {
+    if tls == nil {
+        return 0
+    }
+    return len(tls.PeerCertificates)
+}
+
+func getClientCertStatus(tls *tls.ConnectionState) string {
+    if tls == nil {
+        return "No TLS"
+    }
+    
+    if len(tls.PeerCertificates) > 0 {
+        return "Client certificate provided"
+    }
+    
+    return "No client certificate"
+}
+
+func redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
+    httpsURL := "https://" + r.Host + r.RequestURI
+    http.Redirect(w, r, httpsURL, http.StatusMovedPermanently)
+}
+
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Security headers
+        w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
+        w.Header().Set("X-Content-Type-Options", "nosniff")
+        w.Header().Set("X-Frame-Options", "DENY")
+        w.Header().Set("X-XSS-Protection", "1; mode=block")
+        w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+        w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'")
+        
+        next.ServeHTTP(w, r)
+    })
+}
+
+func tlsInfoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    
+    if r.TLS == nil {
+        http.Error(w, "Not a TLS connection", http.StatusBadRequest)
+        return
+    }
+    
+    info := map[string]interface{}{
+        "tls_version":           getTLSVersionString(r.TLS),
+        "cipher_suite":          getCipherSuiteString(r.TLS),
+        "server_name":           r.TLS.ServerName,
+        "handshake_complete":    r.TLS.HandshakeComplete,
+        "did_resume":           r.TLS.DidResume,
+        "negotiated_protocol":   r.TLS.NegotiatedProtocol,
+        "peer_certificates":     len(r.TLS.PeerCertificates),
+        "verified_chains":       len(r.TLS.VerifiedChains),
+        "signature_scheme":      r.TLS.SignatureScheme,
+        "supported_protos":      r.TLS.NegotiatedProtocolIsMutual,
+        "timestamp":             time.Now().Format(time.RFC3339),
+    }
+    
+    // Add certificate information if available
+    if len(r.TLS.PeerCertificates) > 0 {
+        cert := r.TLS.PeerCertificates[0]
+        info["client_cert"] = map[string]interface{}{
+            "subject":     cert.Subject.String(),
+            "issuer":      cert.Issuer.String(),
+            "not_before":  cert.NotBefore.Format(time.RFC3339),
+            "not_after":   cert.NotAfter.Format(time.RFC3339),
+            "dns_names":   cert.DNSNames,
+            "ip_addresses": cert.IPAddresses,
+        }
+    }
+    
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "message": "Hello there! TLS connection information",
+        "tls":     info,
+    })
+}
+
+func certificateInfoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    
+    // Load server certificate for information
+    cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+    if err != nil {
+        http.Error(w, "Failed to load certificate", http.StatusInternalServerError)
+        return
+    }
+    
+    // Parse certificate
+    x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+    if err != nil {
+        http.Error(w, "Failed to parse certificate", http.StatusInternalServerError)
+        return
+    }
+    
+    certInfo := map[string]interface{}{
+        "subject":          x509Cert.Subject.String(),
+        "issuer":           x509Cert.Issuer.String(),
+        "serial_number":    x509Cert.SerialNumber.String(),
+        "not_before":       x509Cert.NotBefore.Format(time.RFC3339),
+        "not_after":        x509Cert.NotAfter.Format(time.RFC3339),
+        "dns_names":        x509Cert.DNSNames,
+        "ip_addresses":     x509Cert.IPAddresses,
+        "signature_algorithm": x509Cert.SignatureAlgorithm.String(),
+        "public_key_algorithm": x509Cert.PublicKeyAlgorithm.String(),
+        "key_usage":        getKeyUsageStrings(x509Cert.KeyUsage),
+        "ext_key_usage":    getExtKeyUsageStrings(x509Cert.ExtKeyUsage),
+        "is_ca":           x509Cert.IsCA,
+        "version":         x509Cert.Version,
+    }
+    
+    response := map[string]interface{}{
+        "message":     "Server certificate information",
+        "certificate": certInfo,
+        "timestamp":   time.Now().Format(time.RFC3339),
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func getKeyUsageStrings(usage x509.KeyUsage) []string {
+    var usages []string
+    
+    if usage&x509.KeyUsageDigitalSignature != 0 {
+        usages = append(usages, "Digital Signature")
+    }
+    if usage&x509.KeyUsageContentCommitment != 0 {
+        usages = append(usages, "Content Commitment")
+    }
+    if usage&x509.KeyUsageKeyEncipherment != 0 {
+        usages = append(usages, "Key Encipherment")
+    }
+    if usage&x509.KeyUsageDataEncipherment != 0 {
+        usages = append(usages, "Data Encipherment")
+    }
+    if usage&x509.KeyUsageKeyAgreement != 0 {
+        usages = append(usages, "Key Agreement")
+    }
+    if usage&x509.KeyUsageCertSign != 0 {
+        usages = append(usages, "Certificate Sign")
+    }
+    if usage&x509.KeyUsageCRLSign != 0 {
+        usages = append(usages, "CRL Sign")
+    }
+    if usage&x509.KeyUsageEncipherOnly != 0 {
+        usages = append(usages, "Encipher Only")
+    }
+    if usage&x509.KeyUsageDecipherOnly != 0 {
+        usages = append(usages, "Decipher Only")
+    }
+    
+    return usages
+}
+
+func getExtKeyUsageStrings(usage []x509.ExtKeyUsage) []string {
+    var usages []string
+    
+    for _, u := range usage {
+        switch u {
+        case x509.ExtKeyUsageServerAuth:
+            usages = append(usages, "Server Authentication")
+        case x509.ExtKeyUsageClientAuth:
+            usages = append(usages, "Client Authentication")
+        case x509.ExtKeyUsageCodeSigning:
+            usages = append(usages, "Code Signing")
+        case x509.ExtKeyUsageEmailProtection:
+            usages = append(usages, "Email Protection")
+        case x509.ExtKeyUsageTimeStamping:
+            usages = append(usages, "Time Stamping")
+        case x509.ExtKeyUsageOCSPSigning:
+            usages = append(usages, "OCSP Signing")
+        }
+    }
+    
+    return usages
+}
+
+func main() {
+    // Generate self-signed certificate if it doesn't exist
+    if _, err := os.Stat("server.crt"); os.IsNotExist(err) {
+        if err := generateSelfSignedCert(); err != nil {
+            log.Fatal("Failed to generate certificate:", err)
+        }
+    }
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", httpsHandler)
+    mux.HandleFunc("/tls-info", tlsInfoHandler)
+    mux.HandleFunc("/cert-info", certificateInfoHandler)
+    
+    // Apply security headers middleware
+    secureHandler := securityHeadersMiddleware(mux)
+    
+    // HTTPS server with custom TLS configuration
+    httpsServer := &http.Server{
+        Addr:      ":8443",
+        Handler:   secureHandler,
+        TLSConfig: createTLSConfig(),
+        
+        // Security timeouts
+        ReadTimeout:       15 * time.Second,
+        WriteTimeout:      15 * time.Second,
+        IdleTimeout:       60 * time.Second,
+        ReadHeaderTimeout: 5 * time.Second,
+    }
+    
+    // HTTP server for redirects
+    httpServer := &http.Server{
+        Addr:    ":8080",
+        Handler: http.HandlerFunc(redirectToHTTPS),
+    }
+    
+    // Start HTTP redirect server
+    go func() {
+        fmt.Println("HTTP redirect server starting on :8080")
+        if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            log.Printf("HTTP server error: %v", err)
+        }
+    }()
+    
+    fmt.Println("=== HTTPS and TLS Configuration Demo ===")
+    fmt.Println("HTTPS server starting on :8443")
+    fmt.Println("HTTP redirect server starting on :8080")
+    fmt.Println()
+    fmt.Println("Test URLs:")
+    fmt.Println("  https://localhost:8443/")
+    fmt.Println("  https://localhost:8443/tls-info")
+    fmt.Println("  https://localhost:8443/cert-info")
+    fmt.Println("  http://localhost:8080/ (redirects to HTTPS)")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Self-signed certificate generation")
+    fmt.Println("• Custom TLS configuration")
+    fmt.Println("• Security headers")
+    fmt.Println("• HTTP to HTTPS redirects")
+    fmt.Println("• TLS connection information")
+    fmt.Println("• Certificate details")
+    fmt.Println()
+    fmt.Println("Note: Accept the self-signed certificate warning in your browser")
+    
+    log.Fatal(httpsServer.ListenAndServeTLS("server.crt", "server.key"))
+}
+```
+
+This HTTPS example demonstrates comprehensive TLS configuration, certificate  
+generation, security headers, and connection information extraction. The  
+implementation shows how to set up secure HTTPS servers with proper TLS  
+settings and security best practices for production environments.
+
+## HTTP content compression
+
+Content compression reduces bandwidth usage and improves performance.  
+This example demonstrates gzip compression, content negotiation, and  
+conditional compression based on content type and size.
+
+```go
+package main
+
+import (
+    "compress/gzip"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type CompressResponseWriter struct {
+    http.ResponseWriter
+    Writer io.Writer
+}
+
+func (crw *CompressResponseWriter) Write(data []byte) (int, error) {
+    return crw.Writer.Write(data)
+}
+
+func shouldCompress(contentType string, size int64) bool {
+    // Don't compress small responses
+    if size > 0 && size < 1024 {
+        return false
+    }
+    
+    // Compress text-based content types
+    compressibleTypes := []string{
+        "text/",
+        "application/json",
+        "application/javascript",
+        "application/xml",
+        "application/xml+rss",
+        "application/atom+xml",
+        "image/svg+xml",
+    }
+    
+    for _, ctype := range compressibleTypes {
+        if strings.HasPrefix(contentType, ctype) {
+            return true
+        }
+    }
+    
+    return false
+}
+
+func acceptsGzip(r *http.Request) bool {
+    acceptEncoding := r.Header.Get("Accept-Encoding")
+    return strings.Contains(acceptEncoding, "gzip")
+}
+
+func compressionMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if !acceptsGzip(r) {
+            next.ServeHTTP(w, r)
+            return
+        }
+        
+        // Wrap response writer to capture headers and content
+        recorder := &ResponseRecorder{
+            ResponseWriter: w,
+            statusCode:     200,
+            header:         make(http.Header),
+        }
+        
+        next.ServeHTTP(recorder, r)
+        
+        // Check if we should compress
+        contentType := recorder.header.Get("Content-Type")
+        contentLength := recorder.header.Get("Content-Length")
+        
+        var size int64
+        if contentLength != "" {
+            size, _ = strconv.ParseInt(contentLength, 10, 64)
+        } else {
+            size = int64(len(recorder.body))
+        }
+        
+        if shouldCompress(contentType, size) {
+            // Set compression headers
+            w.Header().Set("Content-Encoding", "gzip")
+            w.Header().Set("Vary", "Accept-Encoding")
+            
+            // Copy other headers
+            for key, values := range recorder.header {
+                if key != "Content-Length" { // Will be set by gzip writer
+                    for _, value := range values {
+                        w.Header().Add(key, value)
+                    }
+                }
+            }
+            
+            w.WriteHeader(recorder.statusCode)
+            
+            // Compress and write response
+            gzipWriter := gzip.NewWriter(w)
+            defer gzipWriter.Close()
+            
+            gzipWriter.Write(recorder.body)
+        } else {
+            // Don't compress, write as-is
+            for key, values := range recorder.header {
+                for _, value := range values {
+                    w.Header().Add(key, value)
+                }
+            }
+            
+            w.WriteHeader(recorder.statusCode)
+            w.Write(recorder.body)
+        }
+    })
+}
+
+type ResponseRecorder struct {
+    http.ResponseWriter
+    statusCode int
+    header     http.Header
+    body       []byte
+}
+
+func (rr *ResponseRecorder) WriteHeader(statusCode int) {
+    rr.statusCode = statusCode
+}
+
+func (rr *ResponseRecorder) Write(data []byte) (int, error) {
+    rr.body = append(rr.body, data...)
+    return len(data), nil
+}
+
+func (rr *ResponseRecorder) Header() http.Header {
+    return rr.header
+}
+
+func largeTextHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/plain")
+    
+    // Generate large text content
+    content := "Hello there! This is a large text response.\n"
+    repeatedContent := strings.Repeat(content, 1000) // ~43KB
+    
+    fmt.Fprint(w, repeatedContent)
+}
+
+func jsonDataHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    
+    // Generate JSON data
+    data := map[string]interface{}{
+        "message": "Hello there! This is JSON data that can be compressed.",
+        "timestamp": time.Now().Format(time.RFC3339),
+        "data": make([]map[string]interface{}, 100),
+    }
+    
+    // Add some bulk to the JSON
+    for i := 0; i < 100; i++ {
+        data["data"].([]map[string]interface{})[i] = map[string]interface{}{
+            "id":          i,
+            "name":        fmt.Sprintf("Item %d", i),
+            "description": fmt.Sprintf("This is a description for item number %d. It contains some repeated text to make compression more effective.", i),
+            "timestamp":   time.Now().Add(time.Duration(i) * time.Minute).Format(time.RFC3339),
+            "metadata": map[string]string{
+                "category": "example",
+                "type":     "demo",
+                "source":   "compression-test",
+            },
+        }
+    }
+    
+    json.NewEncoder(w).Encode(data)
+}
+
+func htmlPageHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    
+    html := `<!DOCTYPE html>
+<html>
+<head>
+    <title>Compression Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .demo-section { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px; }
+        pre { background: #333; color: #fff; padding: 15px; border-radius: 3px; overflow-x: auto; }
+        .compression-info { background: #e8f4fd; padding: 15px; border-left: 4px solid #2196F3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Hello there! HTTP Compression Demo</h1>
+        
+        <div class="compression-info">
+            <h3>Compression Information</h3>
+            <p>This page demonstrates HTTP compression using gzip encoding.</p>
+            <p><strong>Content-Encoding:</strong> <span id="encoding">Not available</span></p>
+            <p><strong>Original Size:</strong> <span id="original-size">Calculating...</span></p>
+            <p><strong>Compressed Size:</strong> <span id="compressed-size">Calculating...</span></p>
+            <p><strong>Compression Ratio:</strong> <span id="compression-ratio">Calculating...</span></p>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Test Endpoints</h2>
+            <ul>
+                <li><a href="/large-text">Large Text Content (~43KB)</a></li>
+                <li><a href="/json-data">JSON Data (~15KB)</a></li>
+                <li><a href="/compression-stats">Compression Statistics</a></li>
+            </ul>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Compression Benefits</h2>
+            <ul>
+                <li>Reduced bandwidth usage</li>
+                <li>Faster page load times</li>
+                <li>Lower hosting costs</li>
+                <li>Better user experience</li>
+                <li>Improved SEO rankings</li>
+            </ul>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Test Commands</h2>
+            <pre>
+# Test with compression
+curl -H "Accept-Encoding: gzip" -v http://localhost:8080/large-text | gunzip
+
+# Test without compression
+curl -v http://localhost:8080/large-text
+
+# Compare sizes
+curl -H "Accept-Encoding: gzip" -s http://localhost:8080/json-data | wc -c
+curl -s http://localhost:8080/json-data | wc -c
+            </pre>
+        </div>
+        
+        <!-- Add some repeated content to make compression more effective -->
+        ` + strings.Repeat(`
+        <div class="demo-section">
+            <p>This is repeated content to demonstrate compression effectiveness. `, 50) +
+            strings.Repeat(`Compression works best with repetitive text content. `, 100) +
+            strings.Repeat(`</p></div>`, 50) + `
+    </div>
+    
+    <script>
+        // Display compression information
+        document.addEventListener('DOMContentLoaded', function() {
+            // Check response headers for compression info
+            fetch(window.location.href)
+                .then(response => {
+                    const encoding = response.headers.get('content-encoding');
+                    document.getElementById('encoding').textContent = encoding || 'None';
+                    
+                    // Estimate sizes (simplified)
+                    const bodySize = document.documentElement.outerHTML.length;
+                    document.getElementById('original-size').textContent = bodySize + ' bytes';
+                    
+                    if (encoding === 'gzip') {
+                        const compressedSize = Math.round(bodySize * 0.3); // Estimate
+                        document.getElementById('compressed-size').textContent = compressedSize + ' bytes (estimated)';
+                        const ratio = Math.round((1 - compressedSize/bodySize) * 100);
+                        document.getElementById('compression-ratio').textContent = ratio + '% size reduction';
+                    } else {
+                        document.getElementById('compressed-size').textContent = 'Not compressed';
+                        document.getElementById('compression-ratio').textContent = 'No compression';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking compression:', error);
+                });
+        });
+    </script>
+</body>
+</html>`
+    
+    fmt.Fprint(w, html)
+}
+
+func compressionStatsHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    
+    acceptsCompression := acceptsGzip(r)
+    
+    stats := map[string]interface{}{
+        "message": "Hello there! Compression statistics",
+        "client_accepts_gzip": acceptsCompression,
+        "accept_encoding": r.Header.Get("Accept-Encoding"),
+        "user_agent": r.Header.Get("User-Agent"),
+        "compression_types": []string{
+            "text/html", "text/plain", "text/css", "text/javascript",
+            "application/json", "application/javascript", "application/xml",
+            "image/svg+xml",
+        },
+        "min_size_for_compression": 1024,
+        "timestamp": time.Now().Format(time.RFC3339),
+        "server_info": map[string]interface{}{
+            "compression_enabled": true,
+            "compression_algorithm": "gzip",
+            "compression_level": "default",
+        },
+    }
+    
+    json.NewEncoder(w).Encode(stats)
+}
+
+func imageHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "image/png")
+    
+    // Simulate a small PNG image (won't be compressed)
+    pngData := []byte{
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1 image
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT chunk
+        0x08, 0x57, 0x63, 0xF8, 0x00, 0x00, 0x00, 0x01,
+        0x00, 0x01, 0x5C, 0xDD, 0x39, 0x82,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND chunk
+        0xAE, 0x42, 0x60, 0x82,
+    }
+    
+    w.Write(pngData)
+}
+
+func compressionTestHandler(w http.ResponseWriter, r *http.Request) {
+    sizeParam := r.URL.Query().Get("size")
+    size := 10000 // Default 10KB
+    
+    if sizeParam != "" {
+        if parsedSize, err := strconv.Atoi(sizeParam); err == nil && parsedSize > 0 {
+            size = parsedSize
+        }
+    }
+    
+    w.Header().Set("Content-Type", "text/plain")
+    
+    // Generate content of specified size
+    line := "This is a test line for compression demonstration. "
+    lineSize := len(line)
+    lines := size / lineSize
+    
+    content := fmt.Sprintf("Compression test content (%d bytes)\n", size)
+    content += strings.Repeat(line, lines)
+    
+    // Add random content to see compression effectiveness
+    if remaining := size - len(content); remaining > 0 {
+        content += strings.Repeat("X", remaining)
+    }
+    
+    fmt.Fprint(w, content)
+}
+
+func main() {
+    mux := http.NewServeMux()
+    
+    mux.HandleFunc("/", htmlPageHandler)
+    mux.HandleFunc("/large-text", largeTextHandler)
+    mux.HandleFunc("/json-data", jsonDataHandler)
+    mux.HandleFunc("/compression-stats", compressionStatsHandler)
+    mux.HandleFunc("/image.png", imageHandler)
+    mux.HandleFunc("/test", compressionTestHandler)
+    
+    // Apply compression middleware
+    handler := compressionMiddleware(mux)
+    
+    server := &http.Server{
+        Addr:    ":8080",
+        Handler: handler,
+    }
+    
+    fmt.Println("=== HTTP Content Compression Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Test URLs:")
+    fmt.Println("  http://localhost:8080/ - HTML page with compression")
+    fmt.Println("  http://localhost:8080/large-text - Large text content")
+    fmt.Println("  http://localhost:8080/json-data - JSON data")
+    fmt.Println("  http://localhost:8080/test?size=50000 - Custom size test")
+    fmt.Println()
+    fmt.Println("Test compression:")
+    fmt.Println("  curl -H 'Accept-Encoding: gzip' -v http://localhost:8080/large-text")
+    fmt.Println("  curl -v http://localhost:8080/large-text")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Gzip compression middleware")
+    fmt.Println("• Content-type based compression")
+    fmt.Println("• Size-based compression decisions")
+    fmt.Println("• Accept-Encoding negotiation")
+    fmt.Println("• Compression statistics")
+
+    log.Fatal(server.ListenAndServe())
+}
+```
+
+This compression example demonstrates gzip compression middleware, content  
+negotiation, and conditional compression strategies. The implementation  
+shows how to efficiently compress HTTP responses while avoiding compression  
+of unsuitable content types and small responses that wouldn't benefit.
+
+## HTTP request logging and monitoring
+
+Request logging and monitoring are essential for debugging, analytics, and  
+performance tracking. This example demonstrates comprehensive logging,  
+metrics collection, and request monitoring.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "sync"
+    "time"
+)
+
+type RequestLog struct {
+    Timestamp    time.Time `json:"timestamp"`
+    Method       string    `json:"method"`
+    URL          string    `json:"url"`
+    RemoteAddr   string    `json:"remote_addr"`
+    UserAgent    string    `json:"user_agent"`
+    StatusCode   int       `json:"status_code"`
+    ContentLength int64    `json:"content_length"`
+    Duration     time.Duration `json:"duration"`
+    RequestID    string    `json:"request_id"`
+    Error        string    `json:"error,omitempty"`
+}
+
+type Metrics struct {
+    TotalRequests   int64            `json:"total_requests"`
+    RequestsByMethod map[string]int64 `json:"requests_by_method"`
+    RequestsByStatus map[int]int64    `json:"requests_by_status"`
+    AverageLatency  time.Duration    `json:"average_latency"`
+    TotalLatency    time.Duration    `json:"total_latency"`
+    ErrorRate       float64          `json:"error_rate"`
+    RequestsPerSecond float64        `json:"requests_per_second"`
+    StartTime       time.Time        `json:"start_time"`
+    mutex           sync.RWMutex
+}
+
+type LoggingResponseWriter struct {
+    http.ResponseWriter
+    statusCode    int
+    contentLength int64
+}
+
+func (lrw *LoggingResponseWriter) WriteHeader(statusCode int) {
+    lrw.statusCode = statusCode
+    lrw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (lrw *LoggingResponseWriter) Write(data []byte) (int, error) {
+    n, err := lrw.ResponseWriter.Write(data)
+    lrw.contentLength += int64(n)
+    return n, err
+}
+
+var (
+    metrics = &Metrics{
+        RequestsByMethod: make(map[string]int64),
+        RequestsByStatus: make(map[int]int64),
+        StartTime:       time.Now(),
+    }
+    
+    logFile *os.File
+    logger  *log.Logger
+)
+
+func init() {
+    var err error
+    logFile, err = os.OpenFile("access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    if err != nil {
+        log.Fatal("Failed to open log file:", err)
+    }
+    
+    logger = log.New(logFile, "", 0)
+}
+
+func generateRequestID() string {
+    return fmt.Sprintf("req_%d_%d", time.Now().UnixNano(), os.Getpid())
+}
+
+func loggingMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        requestID := generateRequestID()
+        
+        // Add request ID to context and response header
+        w.Header().Set("X-Request-ID", requestID)
+        
+        // Wrap response writer
+        lrw := &LoggingResponseWriter{
+            ResponseWriter: w,
+            statusCode:    200, // Default status code
+        }
+        
+        // Process request
+        next.ServeHTTP(lrw, r)
+        
+        // Calculate duration
+        duration := time.Since(start)
+        
+        // Create log entry
+        logEntry := RequestLog{
+            Timestamp:     start,
+            Method:        r.Method,
+            URL:           r.URL.String(),
+            RemoteAddr:    getClientIP(r),
+            UserAgent:     r.UserAgent(),
+            StatusCode:    lrw.statusCode,
+            ContentLength: lrw.contentLength,
+            Duration:      duration,
+            RequestID:     requestID,
+        }
+        
+        // Add error information for non-success status codes
+        if lrw.statusCode >= 400 {
+            logEntry.Error = http.StatusText(lrw.statusCode)
+        }
+        
+        // Log to file
+        logJSON, _ := json.Marshal(logEntry)
+        logger.Println(string(logJSON))
+        
+        // Update metrics
+        updateMetrics(logEntry)
+        
+        // Console logging for development
+        logToConsole(logEntry)
+    })
+}
+
+func getClientIP(r *http.Request) string {
+    forwarded := r.Header.Get("X-Forwarded-For")
+    if forwarded != "" {
+        return forwarded
+    }
+    
+    realIP := r.Header.Get("X-Real-IP")
+    if realIP != "" {
+        return realIP
+    }
+    
+    return r.RemoteAddr
+}
+
+func updateMetrics(logEntry RequestLog) {
+    metrics.mutex.Lock()
+    defer metrics.mutex.Unlock()
+    
+    metrics.TotalRequests++
+    metrics.RequestsByMethod[logEntry.Method]++
+    metrics.RequestsByStatus[logEntry.StatusCode]++
+    metrics.TotalLatency += logEntry.Duration
+    
+    // Calculate average latency
+    metrics.AverageLatency = metrics.TotalLatency / time.Duration(metrics.TotalRequests)
+    
+    // Calculate error rate
+    errorCount := int64(0)
+    for status, count := range metrics.RequestsByStatus {
+        if status >= 400 {
+            errorCount += count
+        }
+    }
+    metrics.ErrorRate = float64(errorCount) / float64(metrics.TotalRequests) * 100
+    
+    // Calculate requests per second
+    elapsed := time.Since(metrics.StartTime).Seconds()
+    if elapsed > 0 {
+        metrics.RequestsPerSecond = float64(metrics.TotalRequests) / elapsed
+    }
+}
+
+func logToConsole(logEntry RequestLog) {
+    status := logEntry.StatusCode
+    var statusColor string
+    
+    switch {
+    case status >= 200 && status < 300:
+        statusColor = "\033[32m" // Green
+    case status >= 300 && status < 400:
+        statusColor = "\033[33m" // Yellow
+    case status >= 400 && status < 500:
+        statusColor = "\033[31m" // Red
+    default:
+        statusColor = "\033[35m" // Magenta
+    }
+    
+    resetColor := "\033[0m"
+    
+    fmt.Printf("[%s] %s%s %d%s %s %s %v\n",
+        logEntry.Timestamp.Format("2006-01-02 15:04:05"),
+        statusColor,
+        logEntry.Method,
+        logEntry.StatusCode,
+        resetColor,
+        logEntry.URL,
+        logEntry.RemoteAddr,
+        logEntry.Duration,
+    )
+}
+
+func apiHandler(w http.ResponseWriter, r *http.Request) {
+    // Simulate different response scenarios
+    path := r.URL.Path
+    
+    switch path {
+    case "/api/success":
+        response := map[string]interface{}{
+            "message":   "Hello there! Request successful",
+            "timestamp": time.Now().Format(time.RFC3339),
+            "method":    r.Method,
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+        
+    case "/api/slow":
+        time.Sleep(2 * time.Second)
+        response := map[string]interface{}{
+            "message": "Hello there! Slow response completed",
+            "delay":   "2 seconds",
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+        
+    case "/api/error":
+        http.Error(w, "Simulated server error", http.StatusInternalServerError)
+        
+    case "/api/not-found":
+        http.Error(w, "Resource not found", http.StatusNotFound)
+        
+    case "/api/unauthorized":
+        http.Error(w, "Unauthorized access", http.StatusUnauthorized)
+        
+    default:
+        response := map[string]interface{}{
+            "message": "Hello there! Generic API response",
+            "path":    path,
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+    }
+}
+
+func metricsHandler(w http.ResponseWriter, r *http.Request) {
+    metrics.mutex.RLock()
+    defer metrics.mutex.RUnlock()
+    
+    uptime := time.Since(metrics.StartTime)
+    
+    response := map[string]interface{}{
+        "message": "Server metrics and statistics",
+        "metrics": map[string]interface{}{
+            "total_requests":     metrics.TotalRequests,
+            "requests_by_method": metrics.RequestsByMethod,
+            "requests_by_status": metrics.RequestsByStatus,
+            "average_latency_ms": metrics.AverageLatency.Milliseconds(),
+            "error_rate_percent": metrics.ErrorRate,
+            "requests_per_second": metrics.RequestsPerSecond,
+            "uptime_seconds":     uptime.Seconds(),
+        },
+        "server_info": map[string]interface{}{
+            "start_time": metrics.StartTime.Format(time.RFC3339),
+            "uptime":     uptime.String(),
+            "pid":        os.Getpid(),
+        },
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    metrics.mutex.RLock()
+    errorRate := metrics.ErrorRate
+    avgLatency := metrics.AverageLatency
+    metrics.mutex.RUnlock()
+    
+    status := "healthy"
+    httpStatus := http.StatusOK
+    
+    // Simple health checks
+    if errorRate > 50 {
+        status = "unhealthy"
+        httpStatus = http.StatusServiceUnavailable
+    } else if errorRate > 20 || avgLatency > 5*time.Second {
+        status = "degraded"
+    }
+    
+    response := map[string]interface{}{
+        "status":            status,
+        "timestamp":         time.Now().Format(time.RFC3339),
+        "error_rate":        errorRate,
+        "average_latency_ms": avgLatency.Milliseconds(),
+        "checks": map[string]interface{}{
+            "error_rate_ok":  errorRate <= 50,
+            "latency_ok":     avgLatency <= 5*time.Second,
+            "log_file_ok":    logFile != nil,
+        },
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(httpStatus)
+    json.NewEncoder(w).Encode(response)
+}
+
+func logsHandler(w http.ResponseWriter, r *http.Request) {
+    // Read recent log entries
+    file, err := os.Open("access.log")
+    if err != nil {
+        http.Error(w, "Unable to read logs", http.StatusInternalServerError)
+        return
+    }
+    defer file.Close()
+    
+    // For demo purposes, read last 10 lines
+    // In production, use proper log rotation and pagination
+    
+    w.Header().Set("Content-Type", "text/plain")
+    w.Header().Set("Cache-Control", "no-cache")
+    
+    // Simple approach: read entire file and show last entries
+    content := make([]byte, 10*1024) // Read last 10KB
+    file.Seek(-int64(len(content)), 2) // Seek from end
+    n, _ := file.Read(content)
+    
+    fmt.Fprintf(w, "Recent log entries:\n\n%s", content[:n])
+}
+
+func demoPageHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Logging and Monitoring Demo</title>
+        <meta http-equiv="refresh" content="30">
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            .metrics { background: #f5f5f5; padding: 20px; margin: 20px 0; }
+            .status-ok { color: green; }
+            .status-warning { color: orange; }
+            .status-error { color: red; }
+            pre { background: #333; color: #fff; padding: 15px; overflow-x: auto; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Logging and Monitoring Demo</h1>
+        <p>Hello there! This page demonstrates HTTP request logging and monitoring.</p>
+        
+        <div class="metrics">
+            <h2>Quick Actions</h2>
+            <button onclick="makeRequest('/api/success')">Success Request</button>
+            <button onclick="makeRequest('/api/slow')">Slow Request</button>
+            <button onclick="makeRequest('/api/error')">Error Request</button>
+            <button onclick="makeRequest('/api/not-found')">Not Found</button>
+        </div>
+        
+        <div class="metrics">
+            <h2>Monitoring Endpoints</h2>
+            <ul>
+                <li><a href="/metrics">Metrics</a> - Server statistics</li>
+                <li><a href="/health">Health Check</a> - Service health status</li>
+                <li><a href="/logs">Recent Logs</a> - Log file entries</li>
+            </ul>
+        </div>
+        
+        <div class="metrics">
+            <h2>Test Commands</h2>
+            <pre>
+# Generate some traffic
+for i in {1..10}; do curl http://localhost:8080/api/success; done
+
+# Test different endpoints
+curl http://localhost:8080/api/slow
+curl http://localhost:8080/api/error
+curl http://localhost:8080/api/not-found
+
+# Check metrics
+curl http://localhost:8080/metrics | jq '.'
+
+# Check health
+curl http://localhost:8080/health | jq '.'
+            </pre>
+        </div>
+        
+        <div class="metrics">
+            <h2>Logging Features</h2>
+            <ul>
+                <li>Structured JSON logging</li>
+                <li>Request/response metrics</li>
+                <li>Performance monitoring</li>
+                <li>Error rate tracking</li>
+                <li>Client IP detection</li>
+                <li>Request ID correlation</li>
+                <li>Console and file logging</li>
+            </ul>
+        </div>
+        
+        <script>
+        function makeRequest(endpoint) {
+            fetch(endpoint)
+                .then(response => {
+                    console.log(endpoint + ' responded with status: ' + response.status);
+                    return response.json().catch(() => ({ error: 'Non-JSON response' }));
+                })
+                .then(data => console.log(endpoint + ' data:', data))
+                .catch(error => console.error(endpoint + ' error:', error));
+        }
+        
+        // Auto-refresh metrics every 30 seconds
+        setInterval(() => {
+            if (window.location.pathname === '/metrics' || 
+                window.location.pathname === '/health') {
+                window.location.reload();
+            }
+        }, 30000);
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    defer logFile.Close()
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", demoPageHandler)
+    mux.HandleFunc("/api/", apiHandler)
+    mux.HandleFunc("/metrics", metricsHandler)
+    mux.HandleFunc("/health", healthHandler)
+    mux.HandleFunc("/logs", logsHandler)
+    
+    // Apply logging middleware
+    handler := loggingMiddleware(mux)
+    
+    fmt.Println("=== HTTP Logging and Monitoring Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println("Logs are written to: access.log")
+    fmt.Println()
+    fmt.Println("Monitoring endpoints:")
+    fmt.Println("  http://localhost:8080/metrics - Server metrics")
+    fmt.Println("  http://localhost:8080/health - Health check")
+    fmt.Println("  http://localhost:8080/logs - Recent log entries")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Structured request logging")
+    fmt.Println("• Real-time metrics collection")
+    fmt.Println("• Performance monitoring")
+    fmt.Println("• Health check endpoints")
+    fmt.Println("• Error rate tracking")
+    fmt.Println("• Request correlation")
+
+    log.Fatal(http.ListenAndServe(":8080", handler))
+}
+```
+
+This logging and monitoring example demonstrates comprehensive request  
+tracking, metrics collection, health checks, and performance monitoring.  
+The implementation shows how to build production-ready observability  
+features that are essential for maintaining and debugging HTTP services.
+
+## HTTP request routing with patterns
+
+Advanced routing enables clean URL structures and parameter extraction.  
+This example demonstrates pattern-based routing, middleware per route,  
+and RESTful API design patterns.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type Route struct {
+    Pattern    string
+    Method     string
+    Handler    http.HandlerFunc
+    Middleware []func(http.HandlerFunc) http.HandlerFunc
+}
+
+type Router struct {
+    routes []Route
+}
+
+type RouteParams map[string]string
+
+func NewRouter() *Router {
+    return &Router{
+        routes: make([]Route, 0),
+    }
+}
+
+func (r *Router) Add(method, pattern string, handler http.HandlerFunc, 
+                    middleware ...func(http.HandlerFunc) http.HandlerFunc) {
+    r.routes = append(r.routes, Route{
+        Pattern:    pattern,
+        Method:     method,
+        Handler:    handler,
+        Middleware: middleware,
+    })
+}
+
+func (r *Router) GET(pattern string, handler http.HandlerFunc, 
+                    middleware ...func(http.HandlerFunc) http.HandlerFunc) {
+    r.Add("GET", pattern, handler, middleware...)
+}
+
+func (r *Router) POST(pattern string, handler http.HandlerFunc, 
+                     middleware ...func(http.HandlerFunc) http.HandlerFunc) {
+    r.Add("POST", pattern, handler, middleware...)
+}
+
+func (r *Router) PUT(pattern string, handler http.HandlerFunc, 
+                    middleware ...func(http.HandlerFunc) http.HandlerFunc) {
+    r.Add("PUT", pattern, handler, middleware...)
+}
+
+func (r *Router) DELETE(pattern string, handler http.HandlerFunc, 
+                       middleware ...func(http.HandlerFunc) http.HandlerFunc) {
+    r.Add("DELETE", pattern, handler, middleware...)
+}
+
+func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+    for _, route := range r.routes {
+        if route.Method != req.Method {
+            continue
+        }
+        
+        params, match := matchPattern(route.Pattern, req.URL.Path)
+        if !match {
+            continue
+        }
+        
+        // Add params to request context
+        req = req.WithContext(withRouteParams(req.Context(), params))
+        
+        // Apply middleware chain
+        handler := route.Handler
+        for i := len(route.Middleware) - 1; i >= 0; i-- {
+            handler = route.Middleware[i](handler)
+        }
+        
+        handler(w, req)
+        return
+    }
+    
+    // No route matched
+    http.NotFound(w, req)
+}
+
+func matchPattern(pattern, path string) (RouteParams, bool) {
+    patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
+    pathParts := strings.Split(strings.Trim(path, "/"), "/")
+    
+    if len(patternParts) != len(pathParts) {
+        return nil, false
+    }
+    
+    params := make(RouteParams)
+    
+    for i, patternPart := range patternParts {
+        pathPart := pathParts[i]
+        
+        if strings.HasPrefix(patternPart, ":") {
+            // Named parameter
+            paramName := patternPart[1:]
+            params[paramName] = pathPart
+        } else if strings.HasPrefix(patternPart, "*") {
+            // Wildcard parameter
+            paramName := patternPart[1:]
+            if paramName == "" {
+                paramName = "wildcard"
+            }
+            // For simplicity, just capture this segment
+            params[paramName] = pathPart
+        } else if patternPart != pathPart {
+            // Exact match failed
+            return nil, false
+        }
+    }
+    
+    return params, true
+}
+
+type contextKey string
+
+const routeParamsKey contextKey = "routeParams"
+
+func withRouteParams(ctx context.Context, params RouteParams) context.Context {
+    return context.WithValue(ctx, routeParamsKey, params)
+}
+
+func GetRouteParams(r *http.Request) RouteParams {
+    if params, ok := r.Context().Value(routeParamsKey).(RouteParams); ok {
+        return params
+    }
+    return make(RouteParams)
+}
+
+func GetRouteParam(r *http.Request, key string) string {
+    params := GetRouteParams(r)
+    return params[key]
+}
+
+// Middleware functions
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        token := r.Header.Get("Authorization")
+        if token == "" {
+            http.Error(w, "Authorization required", http.StatusUnauthorized)
+            return
+        }
+        
+        // Simple token validation
+        if !strings.HasPrefix(token, "Bearer ") {
+            http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
+            return
+        }
+        
+        next(w, r)
+    }
+}
+
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        
+        if r.Method == "OPTIONS" {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+        
+        next(w, r)
+    }
+}
+
+func jsonMiddleware(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        next(w, r)
+    }
+}
+
+// Handlers
+func homeHandler(w http.ResponseWriter, r *http.Request) {
+    response := map[string]interface{}{
+        "message":   "Hello there! Welcome to the routing demo",
+        "timestamp": time.Now().Format(time.RFC3339),
+        "routes": []string{
+            "GET /",
+            "GET /users",
+            "GET /users/:id",
+            "POST /users",
+            "PUT /users/:id",
+            "DELETE /users/:id",
+            "GET /posts/:id/comments",
+            "GET /files/*path",
+            "GET /admin/stats (requires auth)",
+        },
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func getUsersHandler(w http.ResponseWriter, r *http.Request) {
+    // Simulate user data
+    users := []map[string]interface{}{
+        {"id": 1, "name": "Alice", "email": "alice@example.com"},
+        {"id": 2, "name": "Bob", "email": "bob@example.com"},
+        {"id": 3, "name": "Charlie", "email": "charlie@example.com"},
+    }
+    
+    response := map[string]interface{}{
+        "message": "User list retrieved successfully",
+        "users":   users,
+        "count":   len(users),
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func getUserHandler(w http.ResponseWriter, r *http.Request) {
+    userID := GetRouteParam(r, "id")
+    
+    id, err := strconv.Atoi(userID)
+    if err != nil {
+        http.Error(w, "Invalid user ID", http.StatusBadRequest)
+        return
+    }
+    
+    // Simulate user lookup
+    user := map[string]interface{}{
+        "id":    id,
+        "name":  fmt.Sprintf("User %d", id),
+        "email": fmt.Sprintf("user%d@example.com", id),
+    }
+    
+    response := map[string]interface{}{
+        "message": "User retrieved successfully",
+        "user":    user,
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func createUserHandler(w http.ResponseWriter, r *http.Request) {
+    var userData map[string]interface{}
+    if err := json.NewDecoder(r.Body).Decode(&userData); err != nil {
+        http.Error(w, "Invalid JSON data", http.StatusBadRequest)
+        return
+    }
+    
+    // Simulate user creation
+    newUser := map[string]interface{}{
+        "id":         123,
+        "name":       userData["name"],
+        "email":      userData["email"],
+        "created_at": time.Now().Format(time.RFC3339),
+    }
+    
+    response := map[string]interface{}{
+        "message": "User created successfully",
+        "user":    newUser,
+    }
+    
+    w.WriteHeader(http.StatusCreated)
+    json.NewEncoder(w).Encode(response)
+}
+
+func updateUserHandler(w http.ResponseWriter, r *http.Request) {
+    userID := GetRouteParam(r, "id")
+    
+    var userData map[string]interface{}
+    if err := json.NewDecoder(r.Body).Decode(&userData); err != nil {
+        http.Error(w, "Invalid JSON data", http.StatusBadRequest)
+        return
+    }
+    
+    id, _ := strconv.Atoi(userID)
+    updatedUser := map[string]interface{}{
+        "id":         id,
+        "name":       userData["name"],
+        "email":      userData["email"],
+        "updated_at": time.Now().Format(time.RFC3339),
+    }
+    
+    response := map[string]interface{}{
+        "message": "User updated successfully",
+        "user":    updatedUser,
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
+    userID := GetRouteParam(r, "id")
+    
+    response := map[string]interface{}{
+        "message": "User deleted successfully",
+        "user_id": userID,
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func getCommentsHandler(w http.ResponseWriter, r *http.Request) {
+    postID := GetRouteParam(r, "id")
+    
+    // Simulate comments for a post
+    comments := []map[string]interface{}{
+        {"id": 1, "text": "Great post!", "author": "Alice"},
+        {"id": 2, "text": "Thanks for sharing", "author": "Bob"},
+    }
+    
+    response := map[string]interface{}{
+        "message":  "Comments retrieved successfully",
+        "post_id":  postID,
+        "comments": comments,
+        "count":    len(comments),
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func getFileHandler(w http.ResponseWriter, r *http.Request) {
+    filePath := GetRouteParam(r, "path")
+    
+    response := map[string]interface{}{
+        "message":   "File access request",
+        "file_path": filePath,
+        "full_path": r.URL.Path,
+        "note":      "In a real application, this would serve the actual file",
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func adminStatsHandler(w http.ResponseWriter, r *http.Request) {
+    // This handler requires authentication
+    stats := map[string]interface{}{
+        "total_users":    150,
+        "active_users":   75,
+        "total_posts":    340,
+        "server_uptime":  "5 days",
+        "memory_usage":   "256 MB",
+        "disk_usage":     "12.5 GB",
+    }
+    
+    response := map[string]interface{}{
+        "message": "Hello there! Admin statistics",
+        "stats":   stats,
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func routeInfoHandler(w http.ResponseWriter, r *http.Request) {
+    params := GetRouteParams(r)
+    
+    response := map[string]interface{}{
+        "message":     "Route information",
+        "method":      r.Method,
+        "path":        r.URL.Path,
+        "params":      params,
+        "query":       r.URL.Query(),
+        "headers":     r.Header,
+        "timestamp":   time.Now().Format(time.RFC3339),
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func main() {
+    router := NewRouter()
+    
+    // Public routes
+    router.GET("/", homeHandler, jsonMiddleware, corsMiddleware)
+    router.GET("/users", getUsersHandler, jsonMiddleware, corsMiddleware)
+    router.GET("/users/:id", getUserHandler, jsonMiddleware, corsMiddleware)
+    router.POST("/users", createUserHandler, jsonMiddleware, corsMiddleware)
+    router.PUT("/users/:id", updateUserHandler, jsonMiddleware, corsMiddleware)
+    router.DELETE("/users/:id", deleteUserHandler, jsonMiddleware, corsMiddleware)
+    
+    // Nested resource routes
+    router.GET("/posts/:id/comments", getCommentsHandler, jsonMiddleware, corsMiddleware)
+    
+    // Wildcard routes
+    router.GET("/files/*path", getFileHandler, jsonMiddleware, corsMiddleware)
+    
+    // Protected routes
+    router.GET("/admin/stats", adminStatsHandler, jsonMiddleware, corsMiddleware, authMiddleware)
+    
+    // Route debugging
+    router.GET("/route-info", routeInfoHandler, jsonMiddleware, corsMiddleware)
+    
+    server := &http.Server{
+        Addr:    ":8080",
+        Handler: router,
+    }
+    
+    fmt.Println("=== HTTP Request Routing Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Available routes:")
+    fmt.Println("  GET    /")
+    fmt.Println("  GET    /users")
+    fmt.Println("  GET    /users/:id")
+    fmt.Println("  POST   /users")
+    fmt.Println("  PUT    /users/:id")
+    fmt.Println("  DELETE /users/:id")
+    fmt.Println("  GET    /posts/:id/comments")
+    fmt.Println("  GET    /files/*path")
+    fmt.Println("  GET    /admin/stats (requires auth)")
+    fmt.Println("  GET    /route-info")
+    fmt.Println()
+    fmt.Println("Test commands:")
+    fmt.Println("  curl http://localhost:8080/")
+    fmt.Println("  curl http://localhost:8080/users/123")
+    fmt.Println("  curl http://localhost:8080/posts/456/comments")
+    fmt.Println("  curl http://localhost:8080/files/docs/readme.txt")
+    fmt.Println("  curl -H 'Authorization: Bearer token' http://localhost:8080/admin/stats")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Pattern-based routing")
+    fmt.Println("• Named parameters (:id)")
+    fmt.Println("• Wildcard parameters (*path)")
+    fmt.Println("• Per-route middleware")
+    fmt.Println("• RESTful API patterns")
+    fmt.Println("• Route parameter extraction")
+    
+    log.Fatal(server.ListenAndServe())
+}
+```
+
+This routing example demonstrates advanced URL pattern matching, parameter  
+extraction, middleware composition, and RESTful API design. The implementation  
+shows how to build a flexible routing system that supports named parameters,  
+wildcards, and per-route middleware for building complex web applications.
+
+## HTTP streaming responses
+
+Streaming responses enable real-time data transmission and improve perceived  
+performance. This example demonstrates server-sent events, chunked responses,  
+and real-time data streaming techniques.
+
+```go
+package main
+
+import (
+    "bufio"
+    "encoding/json"
+    "fmt"
+    "log"
+    "math/rand"
+    "net/http"
+    "strconv"
+    "time"
+)
+
+type StreamMessage struct {
+    ID        string    `json:"id"`
+    Type      string    `json:"type"`
+    Data      interface{} `json:"data"`
+    Timestamp time.Time `json:"timestamp"`
+}
+
+func sseHandler(w http.ResponseWriter, r *http.Request) {
+    // Set headers for server-sent events
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    w.Header().Set("Access-Control-Allow-Origin", "*")
+    
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    // Send initial connection message
+    fmt.Fprintf(w, "event: connected\n")
+    fmt.Fprintf(w, "data: {\"message\": \"Hello there! Connected to stream\", \"timestamp\": \"%s\"}\n\n", 
+               time.Now().Format(time.RFC3339))
+    flusher.Flush()
+    
+    ticker := time.NewTicker(2 * time.Second)
+    defer ticker.Stop()
+    
+    messageID := 1
+    
+    for {
+        select {
+        case <-ticker.C:
+            // Send periodic updates
+            message := StreamMessage{
+                ID:   fmt.Sprintf("msg_%d", messageID),
+                Type: "update",
+                Data: map[string]interface{}{
+                    "counter":     messageID,
+                    "random":      rand.Intn(100),
+                    "temperature": 20 + rand.Float64()*10,
+                    "status":      []string{"active", "idle", "busy"}[rand.Intn(3)],
+                },
+                Timestamp: time.Now(),
+            }
+            
+            jsonData, _ := json.Marshal(message)
+            
+            fmt.Fprintf(w, "id: %s\n", message.ID)
+            fmt.Fprintf(w, "event: update\n")
+            fmt.Fprintf(w, "data: %s\n\n", jsonData)
+            flusher.Flush()
+            
+            messageID++
+            
+        case <-r.Context().Done():
+            // Client disconnected
+            fmt.Fprintf(w, "event: disconnected\n")
+            fmt.Fprintf(w, "data: {\"message\": \"Stream disconnected\"}\n\n")
+            flusher.Flush()
+            return
+        }
+    }
+}
+
+func progressStreamHandler(w http.ResponseWriter, r *http.Request) {
+    totalSteps := 50
+    if stepsParam := r.URL.Query().Get("steps"); stepsParam != "" {
+        if steps, err := strconv.Atoi(stepsParam); err == nil && steps > 0 {
+            totalSteps = steps
+        }
+    }
+    
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    // Send start event
+    fmt.Fprintf(w, "event: start\n")
+    fmt.Fprintf(w, "data: {\"message\": \"Starting progress stream\", \"total\": %d}\n\n", totalSteps)
+    flusher.Flush()
+    
+    for i := 0; i <= totalSteps; i++ {
+        select {
+        case <-time.After(100 * time.Millisecond):
+            progress := float64(i) / float64(totalSteps) * 100
+            
+            progressData := map[string]interface{}{
+                "step":     i,
+                "total":    totalSteps,
+                "progress": progress,
+                "eta":      fmt.Sprintf("%.1fs", float64(totalSteps-i)*0.1),
+            }
+            
+            jsonData, _ := json.Marshal(progressData)
+            
+            fmt.Fprintf(w, "event: progress\n")
+            fmt.Fprintf(w, "data: %s\n\n", jsonData)
+            flusher.Flush()
+            
+            if i == totalSteps {
+                fmt.Fprintf(w, "event: complete\n")
+                fmt.Fprintf(w, "data: {\"message\": \"Progress completed successfully\"}\n\n")
+                flusher.Flush()
+                return
+            }
+            
+        case <-r.Context().Done():
+            fmt.Fprintf(w, "event: cancelled\n")
+            fmt.Fprintf(w, "data: {\"message\": \"Progress cancelled\"}\n\n")
+            flusher.Flush()
+            return
+        }
+    }
+}
+
+func chunkedResponseHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set("Transfer-Encoding", "chunked")
+    
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Chunked encoding not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    // Start JSON array
+    fmt.Fprint(w, "[\n")
+    flusher.Flush()
+    
+    for i := 0; i < 10; i++ {
+        if i > 0 {
+            fmt.Fprint(w, ",\n")
+        }
+        
+        item := map[string]interface{}{
+            "id":        i + 1,
+            "message":   fmt.Sprintf("Hello there! This is item %d", i+1),
+            "timestamp": time.Now().Format(time.RFC3339),
+            "delay":     i * 500,
+        }
+        
+        jsonData, _ := json.MarshalIndent(item, "  ", "  ")
+        fmt.Fprintf(w, "  %s", jsonData)
+        flusher.Flush()
+        
+        // Simulate processing delay
+        time.Sleep(500 * time.Millisecond)
+    }
+    
+    // End JSON array
+    fmt.Fprint(w, "\n]\n")
+    flusher.Flush()
+}
+
+func dataStreamHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/plain")
+    w.Header().Set("Transfer-Encoding", "chunked")
+    
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    duration := 30 * time.Second
+    if durationParam := r.URL.Query().Get("duration"); durationParam != "" {
+        if d, err := time.ParseDuration(durationParam); err == nil {
+            duration = d
+        }
+    }
+    
+    start := time.Now()
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+    
+    lineNumber := 1
+    
+    fmt.Fprintf(w, "Starting data stream for %v...\n", duration)
+    flusher.Flush()
+    
+    for {
+        select {
+        case <-ticker.C:
+            elapsed := time.Since(start)
+            if elapsed > duration {
+                fmt.Fprintf(w, "Stream completed after %v\n", elapsed)
+                flusher.Flush()
+                return
+            }
+            
+            data := fmt.Sprintf("[%03d] %s - Elapsed: %v, Random: %d\n",
+                               lineNumber,
+                               time.Now().Format("15:04:05"),
+                               elapsed.Round(time.Second),
+                               rand.Intn(1000))
+            
+            fmt.Fprint(w, data)
+            flusher.Flush()
+            
+            lineNumber++
+            
+        case <-r.Context().Done():
+            fmt.Fprintf(w, "\nStream interrupted by client disconnect\n")
+            flusher.Flush()
+            return
+        }
+    }
+}
+
+func logStreamHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    // Simulate log entries
+    logLevels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
+    components := []string{"auth", "api", "database", "cache", "worker"}
+    
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
+    
+    entryID := 1
+    
+    for {
+        select {
+        case <-ticker.C:
+            level := logLevels[rand.Intn(len(logLevels))]
+            component := components[rand.Intn(len(components))]
+            
+            logEntry := map[string]interface{}{
+                "id":        entryID,
+                "timestamp": time.Now().Format(time.RFC3339),
+                "level":     level,
+                "component": component,
+                "message":   fmt.Sprintf("Sample log message from %s component", component),
+                "metadata": map[string]interface{}{
+                    "pid":      rand.Intn(10000),
+                    "thread":   rand.Intn(100),
+                    "duration": rand.Intn(1000),
+                },
+            }
+            
+            jsonData, _ := json.Marshal(logEntry)
+            
+            fmt.Fprintf(w, "id: %d\n", entryID)
+            fmt.Fprintf(w, "event: log\n")
+            fmt.Fprintf(w, "data: %s\n\n", jsonData)
+            flusher.Flush()
+            
+            entryID++
+            
+        case <-r.Context().Done():
+            return
+        }
+    }
+}
+
+func chatStreamHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+        http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    users := []string{"Alice", "Bob", "Charlie", "Diana", "Eve"}
+    messageTypes := []string{"message", "join", "leave", "typing"}
+    
+    ticker := time.NewTicker(3 * time.Second)
+    defer ticker.Stop()
+    
+    messageID := 1
+    
+    for {
+        select {
+        case <-ticker.C:
+            msgType := messageTypes[rand.Intn(len(messageTypes))]
+            user := users[rand.Intn(len(users))]
+            
+            var message map[string]interface{}
+            
+            switch msgType {
+            case "message":
+                messages := []string{
+                    "Hello there everyone!",
+                    "How's everyone doing?",
+                    "Great to see you all here",
+                    "Anyone working on Go projects?",
+                    "This streaming demo is pretty cool",
+                }
+                message = map[string]interface{}{
+                    "id":      messageID,
+                    "type":    "message",
+                    "user":    user,
+                    "content": messages[rand.Intn(len(messages))],
+                    "timestamp": time.Now().Format(time.RFC3339),
+                }
+            case "join":
+                message = map[string]interface{}{
+                    "id":      messageID,
+                    "type":    "join",
+                    "user":    user,
+                    "content": fmt.Sprintf("%s joined the chat", user),
+                    "timestamp": time.Now().Format(time.RFC3339),
+                }
+            case "leave":
+                message = map[string]interface{}{
+                    "id":      messageID,
+                    "type":    "leave",
+                    "user":    user,
+                    "content": fmt.Sprintf("%s left the chat", user),
+                    "timestamp": time.Now().Format(time.RFC3339),
+                }
+            case "typing":
+                message = map[string]interface{}{
+                    "id":      messageID,
+                    "type":    "typing",
+                    "user":    user,
+                    "content": fmt.Sprintf("%s is typing...", user),
+                    "timestamp": time.Now().Format(time.RFC3339),
+                }
+            }
+            
+            jsonData, _ := json.Marshal(message)
+            
+            fmt.Fprintf(w, "id: %d\n", messageID)
+            fmt.Fprintf(w, "event: %s\n", msgType)
+            fmt.Fprintf(w, "data: %s\n\n", jsonData)
+            flusher.Flush()
+            
+            messageID++
+            
+        case <-r.Context().Done():
+            return
+        }
+    }
+}
+
+func demoPageHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Streaming Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            .stream-container { border: 1px solid #ccc; padding: 20px; margin: 20px 0; height: 300px; overflow-y: scroll; background: #f9f9f9; }
+            .message { margin: 5px 0; padding: 5px; background: white; border-radius: 3px; }
+            .log-entry { font-family: monospace; font-size: 12px; }
+            .progress-bar { width: 100%; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden; }
+            .progress-fill { height: 100%; background: #4CAF50; transition: width 0.3s; }
+            button { margin: 5px; padding: 10px 15px; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Streaming Demo</h1>
+        <p>Hello there! This demonstrates various HTTP streaming techniques.</p>
+        
+        <h2>Server-Sent Events (SSE)</h2>
+        <button onclick="startSSE()">Start SSE Stream</button>
+        <button onclick="stopSSE()">Stop SSE Stream</button>
+        <div id="sse-container" class="stream-container"></div>
+        
+        <h2>Progress Stream</h2>
+        <button onclick="startProgress()">Start Progress</button>
+        <div class="progress-bar">
+            <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+        </div>
+        <div id="progress-info"></div>
+        
+        <h2>Log Stream</h2>
+        <button onclick="startLogs()">Start Log Stream</button>
+        <button onclick="stopLogs()">Stop Log Stream</button>
+        <div id="log-container" class="stream-container"></div>
+        
+        <h2>Chat Stream</h2>
+        <button onclick="startChat()">Start Chat Stream</button>
+        <button onclick="stopChat()">Stop Chat Stream</button>
+        <div id="chat-container" class="stream-container"></div>
+        
+        <h2>Test Endpoints</h2>
+        <ul>
+            <li><a href="/stream/sse" target="_blank">SSE Stream</a></li>
+            <li><a href="/stream/progress" target="_blank">Progress Stream</a></li>
+            <li><a href="/stream/chunked" target="_blank">Chunked Response</a></li>
+            <li><a href="/stream/data" target="_blank">Data Stream</a></li>
+        </ul>
+        
+        <script>
+            let sseSource = null;
+            let progressSource = null;
+            let logSource = null;
+            let chatSource = null;
+            
+            function startSSE() {
+                stopSSE();
+                const container = document.getElementById('sse-container');
+                container.innerHTML = '';
+                
+                sseSource = new EventSource('/stream/sse');
+                
+                sseSource.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    addMessage(container, 'SSE: ' + JSON.stringify(data, null, 2));
+                };
+                
+                sseSource.onerror = function(event) {
+                    addMessage(container, 'SSE Error: Connection lost');
+                };
+            }
+            
+            function stopSSE() {
+                if (sseSource) {
+                    sseSource.close();
+                    sseSource = null;
+                }
+            }
+            
+            function startProgress() {
+                if (progressSource) progressSource.close();
+                
+                const progressFill = document.getElementById('progress-fill');
+                const progressInfo = document.getElementById('progress-info');
+                
+                progressSource = new EventSource('/stream/progress?steps=100');
+                
+                progressSource.addEventListener('progress', function(event) {
+                    const data = JSON.parse(event.data);
+                    progressFill.style.width = data.progress + '%';
+                    progressInfo.textContent = ` + `Step ${data.step}/${data.total} (${data.progress.toFixed(1)}%) - ETA: ${data.eta}` + `;
+                });
+                
+                progressSource.addEventListener('complete', function(event) {
+                    progressInfo.textContent = 'Progress completed!';
+                    progressSource.close();
+                });
+            }
+            
+            function startLogs() {
+                stopLogs();
+                const container = document.getElementById('log-container');
+                container.innerHTML = '';
+                
+                logSource = new EventSource('/stream/logs');
+                
+                logSource.addEventListener('log', function(event) {
+                    const data = JSON.parse(event.data);
+                    const logText = ` + `[${data.timestamp}] ${data.level} ${data.component}: ${data.message}` + `;
+                    addMessage(container, logText, 'log-entry');
+                });
+            }
+            
+            function stopLogs() {
+                if (logSource) {
+                    logSource.close();
+                    logSource = null;
+                }
+            }
+            
+            function startChat() {
+                stopChat();
+                const container = document.getElementById('chat-container');
+                container.innerHTML = '';
+                
+                chatSource = new EventSource('/stream/chat');
+                
+                chatSource.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    let messageText = ` + `[${data.timestamp.substr(11, 8)}] ` + `;
+                    
+                    switch(data.type) {
+                        case 'message':
+                            messageText += ` + `<${data.user}> ${data.content}` + `;
+                            break;
+                        case 'join':
+                        case 'leave':
+                        case 'typing':
+                            messageText += ` + `* ${data.content}` + `;
+                            break;
+                    }
+                    
+                    addMessage(container, messageText);
+                };
+            }
+            
+            function stopChat() {
+                if (chatSource) {
+                    chatSource.close();
+                    chatSource = null;
+                }
+            }
+            
+            function addMessage(container, text, className = '') {
+                const div = document.createElement('div');
+                div.className = 'message ' + className;
+                div.textContent = text;
+                container.appendChild(div);
+                container.scrollTop = container.scrollHeight;
+                
+                // Keep only last 50 messages
+                while (container.children.length > 50) {
+                    container.removeChild(container.firstChild);
+                }
+            }
+            
+            // Cleanup on page unload
+            window.addEventListener('beforeunload', function() {
+                stopSSE();
+                if (progressSource) progressSource.close();
+                stopLogs();
+                stopChat();
+            });
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    http.HandleFunc("/", demoPageHandler)
+    http.HandleFunc("/stream/sse", sseHandler)
+    http.HandleFunc("/stream/progress", progressStreamHandler)
+    http.HandleFunc("/stream/chunked", chunkedResponseHandler)
+    http.HandleFunc("/stream/data", dataStreamHandler)
+    http.HandleFunc("/stream/logs", logStreamHandler)
+    http.HandleFunc("/stream/chat", chatStreamHandler)
+    
+    fmt.Println("=== HTTP Streaming Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Streaming endpoints:")
+    fmt.Println("  /stream/sse - Server-sent events")
+    fmt.Println("  /stream/progress - Progress updates")
+    fmt.Println("  /stream/chunked - Chunked JSON response")
+    fmt.Println("  /stream/data - Real-time data stream")
+    fmt.Println("  /stream/logs - Log streaming")
+    fmt.Println("  /stream/chat - Chat simulation")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Server-sent events (SSE)")
+    fmt.Println("• Chunked transfer encoding")
+    fmt.Println("• Real-time data streaming")
+    fmt.Println("• Progress updates")
+    fmt.Println("• Client disconnection handling")
+    fmt.Println("• Event-based communication")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This streaming example demonstrates comprehensive real-time communication  
+techniques including server-sent events, chunked responses, and progress  
+streaming. The implementation shows how to build responsive applications  
+that provide immediate feedback and real-time updates to users.
+
+## HTTP multipart form handling
+
+Multipart forms enable file uploads and complex form data submission.  
+This example demonstrates multipart parsing, file handling, and form  
+field processing with validation and error handling.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "mime/multipart"
+    "net/http"
+    "os"
+    "path/filepath"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type FormData struct {
+    Name        string                `json:"name"`
+    Email       string                `json:"email"`
+    Description string                `json:"description"`
+    Category    string                `json:"category"`
+    Tags        []string              `json:"tags"`
+    Files       []FileInfo            `json:"files"`
+}
+
+type FileInfo struct {
+    FieldName    string `json:"field_name"`
+    Filename     string `json:"filename"`
+    Size         int64  `json:"size"`
+    ContentType  string `json:"content_type"`
+    SavedPath    string `json:"saved_path"`
+}
+
+const maxMemory = 32 << 20 // 32MB
+
+func multipartFormHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method == http.MethodGet {
+        showUploadForm(w, r)
+        return
+    }
+    
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Parse multipart form
+    err := r.ParseMultipartForm(maxMemory)
+    if err != nil {
+        http.Error(w, "Error parsing multipart form: "+err.Error(), 
+                  http.StatusBadRequest)
+        return
+    }
+    
+    formData := FormData{
+        Files: make([]FileInfo, 0),
+    }
+    
+    // Process form fields
+    if values := r.MultipartForm.Value["name"]; len(values) > 0 {
+        formData.Name = values[0]
+    }
+    if values := r.MultipartForm.Value["email"]; len(values) > 0 {
+        formData.Email = values[0]
+    }
+    if values := r.MultipartForm.Value["description"]; len(values) > 0 {
+        formData.Description = values[0]
+    }
+    if values := r.MultipartForm.Value["category"]; len(values) > 0 {
+        formData.Category = values[0]
+    }
+    if values := r.MultipartForm.Value["tags"]; len(values) > 0 {
+        formData.Tags = strings.Split(values[0], ",")
+        // Trim whitespace from tags
+        for i, tag := range formData.Tags {
+            formData.Tags[i] = strings.TrimSpace(tag)
+        }
+    }
+    
+    // Process uploaded files
+    for fieldName, fileHeaders := range r.MultipartForm.File {
+        for _, fileHeader := range fileHeaders {
+            fileInfo, err := saveUploadedFile(fieldName, fileHeader)
+            if err != nil {
+                log.Printf("Error saving file %s: %v", fileHeader.Filename, err)
+                continue
+            }
+            formData.Files = append(formData.Files, *fileInfo)
+        }
+    }
+    
+    // Validate form data
+    if err := validateFormData(formData); err != nil {
+        http.Error(w, "Validation error: "+err.Error(), http.StatusBadRequest)
+        return
+    }
+    
+    // Send response
+    response := map[string]interface{}{
+        "message":     "Hello there! Form submitted successfully",
+        "form_data":   formData,
+        "timestamp":   time.Now().Format(time.RFC3339),
+        "files_count": len(formData.Files),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func saveUploadedFile(fieldName string, fileHeader *multipart.FileHeader) (*FileInfo, error) {
+    // Open uploaded file
+    file, err := fileHeader.Open()
+    if err != nil {
+        return nil, fmt.Errorf("failed to open uploaded file: %w", err)
+    }
+    defer file.Close()
+    
+    // Create uploads directory if it doesn't exist
+    uploadDir := "uploads"
+    if err := os.MkdirAll(uploadDir, 0755); err != nil {
+        return nil, fmt.Errorf("failed to create upload directory: %w", err)
+    }
+    
+    // Generate unique filename
+    ext := filepath.Ext(fileHeader.Filename)
+    baseName := strings.TrimSuffix(fileHeader.Filename, ext)
+    uniqueName := fmt.Sprintf("%s_%d%s", baseName, time.Now().UnixNano(), ext)
+    savePath := filepath.Join(uploadDir, uniqueName)
+    
+    // Create destination file
+    dst, err := os.Create(savePath)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create destination file: %w", err)
+    }
+    defer dst.Close()
+    
+    // Copy file content
+    size, err := io.Copy(dst, file)
+    if err != nil {
+        return nil, fmt.Errorf("failed to save file: %w", err)
+    }
+    
+    return &FileInfo{
+        FieldName:   fieldName,
+        Filename:    fileHeader.Filename,
+        Size:        size,
+        ContentType: fileHeader.Header.Get("Content-Type"),
+        SavedPath:   savePath,
+    }, nil
+}
+
+func validateFormData(data FormData) error {
+    if data.Name == "" {
+        return fmt.Errorf("name is required")
+    }
+    if data.Email == "" {
+        return fmt.Errorf("email is required")
+    }
+    if !strings.Contains(data.Email, "@") {
+        return fmt.Errorf("invalid email format")
+    }
+    if len(data.Files) == 0 {
+        return fmt.Errorf("at least one file is required")
+    }
+    
+    // Validate file types and sizes
+    for _, file := range data.Files {
+        if file.Size > 10<<20 { // 10MB limit
+            return fmt.Errorf("file %s is too large (max 10MB)", file.Filename)
+        }
+        
+        allowedTypes := []string{
+            "image/jpeg", "image/png", "image/gif",
+            "text/plain", "application/pdf",
+        }
+        
+        validType := false
+        for _, allowedType := range allowedTypes {
+            if file.ContentType == allowedType {
+                validType = true
+                break
+            }
+        }
+        
+        if !validType {
+            return fmt.Errorf("file type %s not allowed for %s", 
+                             file.ContentType, file.Filename)
+        }
+    }
+    
+    return nil
+}
+
+func showUploadForm(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Multipart Form Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; max-width: 800px; }
+            .form-group { margin: 15px 0; }
+            label { display: block; margin-bottom: 5px; font-weight: bold; }
+            input, textarea, select { width: 100%; padding: 8px; box-sizing: border-box; }
+            textarea { height: 100px; resize: vertical; }
+            input[type="file"] { padding: 3px; }
+            button { background: #007cba; color: white; padding: 10px 20px; border: none; cursor: pointer; }
+            button:hover { background: #005a87; }
+            .info { background: #f0f8ff; padding: 15px; border-left: 4px solid #007cba; margin: 20px 0; }
+        </style>
+    </head>
+    <body>
+        <h1>Multipart Form Upload Demo</h1>
+        <p>Hello there! This form demonstrates multipart form handling with file uploads.</p>
+        
+        <div class="info">
+            <h3>Upload Requirements:</h3>
+            <ul>
+                <li>Maximum file size: 10MB per file</li>
+                <li>Allowed types: JPEG, PNG, GIF, PDF, Text files</li>
+                <li>All fields are required</li>
+                <li>At least one file must be uploaded</li>
+            </ul>
+        </div>
+        
+        <form action="/multipart" method="post" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="name">Name:</label>
+                <input type="text" id="name" name="name" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="email">Email:</label>
+                <input type="email" id="email" name="email" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="description">Description:</label>
+                <textarea id="description" name="description" placeholder="Describe your upload..."></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label for="category">Category:</label>
+                <select id="category" name="category" required>
+                    <option value="">Select a category</option>
+                    <option value="documents">Documents</option>
+                    <option value="images">Images</option>
+                    <option value="media">Media</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="tags">Tags (comma-separated):</label>
+                <input type="text" id="tags" name="tags" placeholder="tag1, tag2, tag3">
+            </div>
+            
+            <div class="form-group">
+                <label for="files">Primary File:</label>
+                <input type="file" id="files" name="files" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="attachments">Additional Files:</label>
+                <input type="file" id="attachments" name="attachments" multiple>
+            </div>
+            
+            <div class="form-group">
+                <label for="thumbnail">Thumbnail (optional):</label>
+                <input type="file" id="thumbnail" name="thumbnail" accept="image/*">
+            </div>
+            
+            <button type="submit">Upload Files</button>
+        </form>
+        
+        <div class="info">
+            <h3>Test with curl:</h3>
+            <pre>
+curl -X POST http://localhost:8080/multipart \
+  -F "name=John Doe" \
+  -F "email=john@example.com" \
+  -F "description=Test upload" \
+  -F "category=documents" \
+  -F "tags=test,demo" \
+  -F "files=@test.txt" \
+  -F "attachments=@image.jpg"
+            </pre>
+        </div>
+    </body>
+    </html>`)
+}
+
+func downloadFileHandler(w http.ResponseWriter, r *http.Request) {
+    filename := r.URL.Query().Get("file")
+    if filename == "" {
+        http.Error(w, "File parameter required", http.StatusBadRequest)
+        return
+    }
+    
+    // Security: prevent path traversal
+    filename = filepath.Base(filename)
+    filePath := filepath.Join("uploads", filename)
+    
+    // Check if file exists
+    if _, err := os.Stat(filePath); os.IsNotExist(err) {
+        http.Error(w, "File not found", http.StatusNotFound)
+        return
+    }
+    
+    // Set appropriate headers
+    w.Header().Set("Content-Disposition", 
+                   fmt.Sprintf("attachment; filename=\"%s\"", filename))
+    w.Header().Set("Content-Type", "application/octet-stream")
+    
+    http.ServeFile(w, r, filePath)
+}
+
+func listFilesHandler(w http.ResponseWriter, r *http.Request) {
+    uploadDir := "uploads"
+    
+    files, err := os.ReadDir(uploadDir)
+    if err != nil {
+        if os.IsNotExist(err) {
+            // No uploads directory exists yet
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(map[string]interface{}{
+                "message": "No files uploaded yet",
+                "files":   []interface{}{},
+                "count":   0,
+            })
+            return
+        }
+        http.Error(w, "Error reading uploads directory", 
+                  http.StatusInternalServerError)
+        return
+    }
+    
+    var fileList []map[string]interface{}
+    
+    for _, file := range files {
+        if !file.IsDir() {
+            info, _ := file.Info()
+            fileList = append(fileList, map[string]interface{}{
+                "name":         file.Name(),
+                "size":         info.Size(),
+                "modified":     info.ModTime().Format(time.RFC3339),
+                "download_url": fmt.Sprintf("/download?file=%s", file.Name()),
+            })
+        }
+    }
+    
+    response := map[string]interface{}{
+        "message": "File list retrieved successfully",
+        "files":   fileList,
+        "count":   len(fileList),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func ajaxUploadHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Parse multipart form with size limit
+    r.ParseMultipartForm(maxMemory)
+    
+    file, header, err := r.FormFile("file")
+    if err != nil {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "success": false,
+            "error":   "No file uploaded",
+        })
+        return
+    }
+    defer file.Close()
+    
+    // Save file
+    fileInfo, err := saveUploadedFile("ajax", header)
+    if err != nil {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusInternalServerError)
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "success": false,
+            "error":   err.Error(),
+        })
+        return
+    }
+    
+    // Return success response
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "success":  true,
+        "message":  "File uploaded successfully",
+        "file":     fileInfo,
+        "timestamp": time.Now().Format(time.RFC3339),
+    })
+}
+
+func main() {
+    http.HandleFunc("/", showUploadForm)
+    http.HandleFunc("/multipart", multipartFormHandler)
+    http.HandleFunc("/download", downloadFileHandler)
+    http.HandleFunc("/files", listFilesHandler)
+    http.HandleFunc("/ajax-upload", ajaxUploadHandler)
+    
+    fmt.Println("=== HTTP Multipart Form Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - Upload form")
+    fmt.Println("  POST /multipart - Process multipart form")
+    fmt.Println("  GET  /download?file=filename - Download file")
+    fmt.Println("  GET  /files - List uploaded files")
+    fmt.Println("  POST /ajax-upload - AJAX file upload")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Multipart form parsing")
+    fmt.Println("• File upload handling")
+    fmt.Println("• Form field processing")
+    fmt.Println("• File validation")
+    fmt.Println("• Multiple file uploads")
+    fmt.Println("• AJAX upload support")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This multipart form example demonstrates comprehensive form handling  
+including file uploads, validation, and multiple field types. The  
+implementation shows proper multipart parsing, file saving, and  
+security considerations for user-uploaded content.
+
+## HTTP content negotiation
+
+Content negotiation allows servers to provide different representations  
+of resources based on client preferences. This example demonstrates  
+Accept header processing and format selection.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "encoding/xml"
+    "fmt"
+    "log"
+    "net/http"
+    "sort"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type User struct {
+    ID       int       `json:"id" xml:"id"`
+    Name     string    `json:"name" xml:"name"`
+    Email    string    `json:"email" xml:"email"`
+    Age      int       `json:"age" xml:"age"`
+    Created  time.Time `json:"created" xml:"created"`
+}
+
+type UserList struct {
+    XMLName xml.Name `xml:"users"`
+    Users   []User   `xml:"user"`
+    Count   int      `xml:"count,attr"`
+}
+
+type MediaType struct {
+    Type       string
+    Subtype    string
+    Quality    float64
+    Parameters map[string]string
+}
+
+var sampleUsers = []User{
+    {1, "Alice Johnson", "alice@example.com", 28, time.Now().Add(-30 * 24 * time.Hour)},
+    {2, "Bob Smith", "bob@example.com", 35, time.Now().Add(-45 * 24 * time.Hour)},
+    {3, "Charlie Brown", "charlie@example.com", 22, time.Now().Add(-15 * 24 * time.Hour)},
+}
+
+func parseAcceptHeader(accept string) []MediaType {
+    var mediaTypes []MediaType
+    
+    if accept == "" {
+        return []MediaType{{Type: "*", Subtype: "*", Quality: 1.0}}
+    }
+    
+    parts := strings.Split(accept, ",")
+    
+    for _, part := range parts {
+        part = strings.TrimSpace(part)
+        
+        // Split media type and parameters
+        segments := strings.Split(part, ";")
+        mediaRange := strings.TrimSpace(segments[0])
+        
+        // Parse media type
+        typeParts := strings.Split(mediaRange, "/")
+        if len(typeParts) != 2 {
+            continue
+        }
+        
+        mediaType := MediaType{
+            Type:       strings.TrimSpace(typeParts[0]),
+            Subtype:    strings.TrimSpace(typeParts[1]),
+            Quality:    1.0,
+            Parameters: make(map[string]string),
+        }
+        
+        // Parse parameters
+        for i := 1; i < len(segments); i++ {
+            param := strings.TrimSpace(segments[i])
+            if kv := strings.SplitN(param, "=", 2); len(kv) == 2 {
+                key := strings.TrimSpace(kv[0])
+                value := strings.TrimSpace(kv[1])
+                
+                if key == "q" {
+                    if quality, err := strconv.ParseFloat(value, 64); err == nil {
+                        mediaType.Quality = quality
+                    }
+                } else {
+                    mediaType.Parameters[key] = value
+                }
+            }
+        }
+        
+        mediaTypes = append(mediaTypes, mediaType)
+    }
+    
+    // Sort by quality (descending)
+    sort.Slice(mediaTypes, func(i, j int) bool {
+        return mediaTypes[i].Quality > mediaTypes[j].Quality
+    })
+    
+    return mediaTypes
+}
+
+func selectContentType(acceptHeader string, available []string) string {
+    mediaTypes := parseAcceptHeader(acceptHeader)
+    
+    for _, mediaType := range mediaTypes {
+        for _, availableType := range available {
+            parts := strings.Split(availableType, "/")
+            if len(parts) != 2 {
+                continue
+            }
+            
+            if (mediaType.Type == "*" || mediaType.Type == parts[0]) &&
+               (mediaType.Subtype == "*" || mediaType.Subtype == parts[1]) {
+                return availableType
+            }
+        }
+    }
+    
+    // Default to first available type
+    if len(available) > 0 {
+        return available[0]
+    }
+    
+    return "text/plain"
+}
+
+func usersHandler(w http.ResponseWriter, r *http.Request) {
+    accept := r.Header.Get("Accept")
+    
+    availableTypes := []string{
+        "application/json",
+        "application/xml",
+        "text/html",
+        "text/plain",
+        "text/csv",
+    }
+    
+    contentType := selectContentType(accept, availableTypes)
+    
+    switch contentType {
+    case "application/json":
+        serveJSON(w, sampleUsers)
+    case "application/xml":
+        serveXML(w, sampleUsers)
+    case "text/html":
+        serveHTML(w, sampleUsers)
+    case "text/csv":
+        serveCSV(w, sampleUsers)
+    default:
+        servePlainText(w, sampleUsers)
+    }
+}
+
+func serveJSON(w http.ResponseWriter, users []User) {
+    w.Header().Set("Content-Type", "application/json; charset=utf-8")
+    
+    response := map[string]interface{}{
+        "message": "Hello there! User data in JSON format",
+        "users":   users,
+        "count":   len(users),
+        "format":  "json",
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func serveXML(w http.ResponseWriter, users []User) {
+    w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+    
+    userList := UserList{
+        Users: users,
+        Count: len(users),
+    }
+    
+    w.Write([]byte(xml.Header))
+    xml.NewEncoder(w).Encode(userList)
+}
+
+func serveHTML(w http.ResponseWriter, users []User) {
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    
+    html := `<!DOCTYPE html>
+<html>
+<head>
+    <title>User List</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+    </style>
+</head>
+<body>
+    <h1>Hello there! User List (HTML Format)</h1>
+    <p>Total users: ` + fmt.Sprintf("%d", len(users)) + `</p>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Age</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>`
+    
+    for _, user := range users {
+        html += fmt.Sprintf(`
+            <tr>
+                <td>%d</td>
+                <td>%s</td>
+                <td>%s</td>
+                <td>%d</td>
+                <td>%s</td>
+            </tr>`, user.ID, user.Name, user.Email, user.Age, 
+                   user.Created.Format("2006-01-02 15:04:05"))
+    }
+    
+    html += `
+        </tbody>
+    </table>
+    
+    <h2>Test Different Formats</h2>
+    <ul>
+        <li><a href="?format=json">JSON Format</a></li>
+        <li><a href="?format=xml">XML Format</a></li>
+        <li><a href="?format=csv">CSV Format</a></li>
+        <li><a href="?format=text">Plain Text</a></li>
+    </ul>
+    
+    <h2>Content Negotiation Examples</h2>
+    <pre>
+curl -H "Accept: application/json" http://localhost:8080/users
+curl -H "Accept: application/xml" http://localhost:8080/users
+curl -H "Accept: text/html" http://localhost:8080/users
+curl -H "Accept: text/csv" http://localhost:8080/users
+curl -H "Accept: application/json;q=0.8,text/html;q=0.9" http://localhost:8080/users
+    </pre>
+</body>
+</html>`
+    
+    fmt.Fprint(w, html)
+}
+
+func serveCSV(w http.ResponseWriter, users []User) {
+    w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+    w.Header().Set("Content-Disposition", "attachment; filename=\"users.csv\"")
+    
+    // CSV header
+    fmt.Fprint(w, "ID,Name,Email,Age,Created\n")
+    
+    // CSV data
+    for _, user := range users {
+        fmt.Fprintf(w, "%d,\"%s\",\"%s\",%d,\"%s\"\n",
+                   user.ID, user.Name, user.Email, user.Age,
+                   user.Created.Format("2006-01-02 15:04:05"))
+    }
+}
+
+func servePlainText(w http.ResponseWriter, users []User) {
+    w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+    
+    fmt.Fprintf(w, "Hello there! User List (Plain Text Format)\n")
+    fmt.Fprintf(w, "==========================================\n\n")
+    fmt.Fprintf(w, "Total users: %d\n\n", len(users))
+    
+    for _, user := range users {
+        fmt.Fprintf(w, "ID: %d\n", user.ID)
+        fmt.Fprintf(w, "Name: %s\n", user.Name)
+        fmt.Fprintf(w, "Email: %s\n", user.Email)
+        fmt.Fprintf(w, "Age: %d\n", user.Age)
+        fmt.Fprintf(w, "Created: %s\n", user.Created.Format("2006-01-02 15:04:05"))
+        fmt.Fprintf(w, "---\n")
+    }
+}
+
+func negotiationInfoHandler(w http.ResponseWriter, r *http.Request) {
+    accept := r.Header.Get("Accept")
+    mediaTypes := parseAcceptHeader(accept)
+    
+    availableTypes := []string{
+        "application/json",
+        "application/xml", 
+        "text/html",
+        "text/plain",
+        "text/csv",
+    }
+    
+    selectedType := selectContentType(accept, availableTypes)
+    
+    info := map[string]interface{}{
+        "message":         "Content negotiation information",
+        "accept_header":   accept,
+        "parsed_types":    mediaTypes,
+        "available_types": availableTypes,
+        "selected_type":   selectedType,
+        "timestamp":       time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(info)
+}
+
+func languageNegotiationHandler(w http.ResponseWriter, r *http.Request) {
+    acceptLang := r.Header.Get("Accept-Language")
+    
+    // Simple language selection
+    var language string
+    var message string
+    
+    if strings.Contains(acceptLang, "es") {
+        language = "es"
+        message = "¡Hola! Bienvenido a nuestro servicio"
+    } else if strings.Contains(acceptLang, "fr") {
+        language = "fr"
+        message = "Bonjour! Bienvenue à notre service"
+    } else if strings.Contains(acceptLang, "de") {
+        language = "de"
+        message = "Hallo! Willkommen zu unserem Service"
+    } else {
+        language = "en"
+        message = "Hello there! Welcome to our service"
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set("Content-Language", language)
+    
+    response := map[string]interface{}{
+        "message":           message,
+        "language":          language,
+        "accept_language":   acceptLang,
+        "timestamp":         time.Now().Format(time.RFC3339),
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func compressionNegotiationHandler(w http.ResponseWriter, r *http.Request) {
+    acceptEncoding := r.Header.Get("Accept-Encoding")
+    
+    // Check if gzip is supported
+    supportsGzip := strings.Contains(acceptEncoding, "gzip")
+    
+    // Large content that benefits from compression
+    content := strings.Repeat("Hello there! This content is repeated many times to demonstrate compression benefits. ", 100)
+    
+    response := map[string]interface{}{
+        "message":              "Compression negotiation demo",
+        "content":              content,
+        "content_length":       len(content),
+        "accept_encoding":      acceptEncoding,
+        "compression_applied":  supportsGzip,
+        "timestamp":            time.Now().Format(time.RFC3339),
+    }
+    
+    if supportsGzip {
+        w.Header().Set("Content-Encoding", "gzip")
+        // Note: In a real implementation, you would apply gzip compression here
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func demoPageHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Content Negotiation Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            .demo-section { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            pre { background: #333; color: #fff; padding: 15px; border-radius: 3px; overflow-x: auto; }
+            .format-buttons button { margin: 5px; padding: 10px 15px; }
+        </style>
+    </head>
+    <body>
+        <h1>Content Negotiation Demo</h1>
+        <p>Hello there! This demonstrates HTTP content negotiation.</p>
+        
+        <div class="demo-section">
+            <h2>Format Selection</h2>
+            <p>Choose your preferred format:</p>
+            <div class="format-buttons">
+                <button onclick="requestFormat('application/json')">JSON</button>
+                <button onclick="requestFormat('application/xml')">XML</button>
+                <button onclick="requestFormat('text/html')">HTML</button>
+                <button onclick="requestFormat('text/csv')">CSV</button>
+                <button onclick="requestFormat('text/plain')">Plain Text</button>
+            </div>
+            <div id="format-result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Quality Values</h2>
+            <p>Test preference with quality values:</p>
+            <button onclick="requestWithQuality()">JSON preferred, HTML fallback</button>
+            <div id="quality-result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Language Negotiation</h2>
+            <button onclick="requestLanguage('en')">English</button>
+            <button onclick="requestLanguage('es')">Spanish</button>
+            <button onclick="requestLanguage('fr')">French</button>
+            <button onclick="requestLanguage('de')">German</button>
+            <div id="language-result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Test Commands</h2>
+            <pre>
+# Request JSON format
+curl -H "Accept: application/json" http://localhost:8080/users
+
+# Request XML format  
+curl -H "Accept: application/xml" http://localhost:8080/users
+
+# Request with quality values
+curl -H "Accept: application/json;q=0.8,text/html;q=0.9" http://localhost:8080/users
+
+# Language negotiation
+curl -H "Accept-Language: es-ES,es;q=0.9" http://localhost:8080/language
+
+# Content negotiation info
+curl http://localhost:8080/negotiation-info
+            </pre>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Available Endpoints</h2>
+            <ul>
+                <li><a href="/users">Users (content negotiation)</a></li>
+                <li><a href="/negotiation-info">Negotiation info</a></li>
+                <li><a href="/language">Language negotiation</a></li>
+                <li><a href="/compression">Compression negotiation</a></li>
+            </ul>
+        </div>
+        
+        <script>
+        function requestFormat(mimeType) {
+            fetch('/users', {
+                headers: {
+                    'Accept': mimeType
+                }
+            })
+            .then(response => {
+                const contentType = response.headers.get('content-type');
+                document.getElementById('format-result').innerHTML = 
+                    '<h4>Response Content-Type: ' + contentType + '</h4>';
+                return response.text();
+            })
+            .then(data => {
+                document.getElementById('format-result').innerHTML += 
+                    '<pre>' + data.substring(0, 500) + '...</pre>';
+            })
+            .catch(error => {
+                document.getElementById('format-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function requestWithQuality() {
+            fetch('/users', {
+                headers: {
+                    'Accept': 'application/json;q=0.8,text/html;q=0.9'
+                }
+            })
+            .then(response => {
+                const contentType = response.headers.get('content-type');
+                document.getElementById('quality-result').innerHTML = 
+                    '<h4>Selected: ' + contentType + '</h4>' +
+                    '<p>Server chose HTML due to higher quality value (0.9 vs 0.8)</p>';
+            });
+        }
+        
+        function requestLanguage(lang) {
+            fetch('/language', {
+                headers: {
+                    'Accept-Language': lang
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('language-result').innerHTML = 
+                    '<h4>Language: ' + data.language + '</h4>' +
+                    '<p>Message: ' + data.message + '</p>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    http.HandleFunc("/", demoPageHandler)
+    http.HandleFunc("/users", usersHandler)
+    http.HandleFunc("/negotiation-info", negotiationInfoHandler)
+    http.HandleFunc("/language", languageNegotiationHandler)
+    http.HandleFunc("/compression", compressionNegotiationHandler)
+    
+    fmt.Println("=== HTTP Content Negotiation Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Accept header parsing")
+    fmt.Println("• Media type selection")
+    fmt.Println("• Quality value handling")
+    fmt.Println("• Multiple format support")
+    fmt.Println("• Language negotiation")
+    fmt.Println("• Compression negotiation")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This content negotiation example demonstrates sophisticated client-server  
+communication where the server can provide different resource representations  
+based on client preferences. The implementation shows proper Accept header  
+parsing, quality value handling, and multiple format support for building  
+flexible APIs.
+
+## HTTP CORS (Cross-Origin Resource Sharing)
+
+CORS enables controlled access to resources from different origins. This  
+example demonstrates comprehensive CORS handling with preflight requests,  
+credential support, and security considerations.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strings"
+    "time"
+)
+
+type CORSConfig struct {
+    AllowedOrigins   []string
+    AllowedMethods   []string
+    AllowedHeaders   []string
+    ExposedHeaders   []string
+    AllowCredentials bool
+    MaxAge           int
+}
+
+func NewCORSConfig() *CORSConfig {
+    return &CORSConfig{
+        AllowedOrigins: []string{"*"},
+        AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+        AllowedHeaders: []string{"Content-Type", "Authorization", "X-Requested-With"},
+        ExposedHeaders: []string{"X-Total-Count", "X-Page-Count"},
+        AllowCredentials: false,
+        MaxAge: 86400, // 24 hours
+    }
+}
+
+func (c *CORSConfig) isOriginAllowed(origin string) bool {
+    if len(c.AllowedOrigins) == 0 {
+        return false
+    }
+    
+    for _, allowed := range c.AllowedOrigins {
+        if allowed == "*" {
+            return true
+        }
+        if allowed == origin {
+            return true
+        }
+        // Support wildcard subdomains like *.example.com
+        if strings.HasPrefix(allowed, "*.") {
+            domain := strings.TrimPrefix(allowed, "*.")
+            if strings.HasSuffix(origin, domain) {
+                return true
+            }
+        }
+    }
+    
+    return false
+}
+
+func (c *CORSConfig) isMethodAllowed(method string) bool {
+    for _, allowed := range c.AllowedMethods {
+        if allowed == method {
+            return true
+        }
+    }
+    return false
+}
+
+func (c *CORSConfig) areHeadersAllowed(headers []string) bool {
+    for _, header := range headers {
+        found := false
+        for _, allowed := range c.AllowedHeaders {
+            if strings.EqualFold(header, allowed) {
+                found = true
+                break
+            }
+        }
+        if !found {
+            return false
+        }
+    }
+    return true
+}
+
+func CORSMiddleware(config *CORSConfig) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            origin := r.Header.Get("Origin")
+            
+            // Check if origin is allowed
+            if origin != "" && config.isOriginAllowed(origin) {
+                w.Header().Set("Access-Control-Allow-Origin", origin)
+            }
+            
+            // Handle preflight request
+            if r.Method == http.MethodOptions {
+                handlePreflightRequest(w, r, config)
+                return
+            }
+            
+            // Set CORS headers for actual request
+            if config.AllowCredentials {
+                w.Header().Set("Access-Control-Allow-Credentials", "true")
+            }
+            
+            if len(config.ExposedHeaders) > 0 {
+                w.Header().Set("Access-Control-Expose-Headers", 
+                              strings.Join(config.ExposedHeaders, ", "))
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func handlePreflightRequest(w http.ResponseWriter, r *http.Request, config *CORSConfig) {
+    origin := r.Header.Get("Origin")
+    requestMethod := r.Header.Get("Access-Control-Request-Method")
+    requestHeaders := r.Header.Get("Access-Control-Request-Headers")
+    
+    // Check origin
+    if origin == "" || !config.isOriginAllowed(origin) {
+        w.WriteHeader(http.StatusForbidden)
+        return
+    }
+    
+    // Check method
+    if requestMethod == "" || !config.isMethodAllowed(requestMethod) {
+        w.WriteHeader(http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Check headers
+    var headers []string
+    if requestHeaders != "" {
+        headers = strings.Split(requestHeaders, ",")
+        for i, header := range headers {
+            headers[i] = strings.TrimSpace(header)
+        }
+        
+        if !config.areHeadersAllowed(headers) {
+            w.WriteHeader(http.StatusForbidden)
+            return
+        }
+    }
+    
+    // Set preflight response headers
+    w.Header().Set("Access-Control-Allow-Origin", origin)
+    w.Header().Set("Access-Control-Allow-Methods", 
+                   strings.Join(config.AllowedMethods, ", "))
+    w.Header().Set("Access-Control-Allow-Headers", 
+                   strings.Join(config.AllowedHeaders, ", "))
+    w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", config.MaxAge))
+    
+    if config.AllowCredentials {
+        w.Header().Set("Access-Control-Allow-Credentials", "true")
+    }
+    
+    w.WriteHeader(http.StatusOK)
+}
+
+func dataHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("X-Total-Count", "42")
+    w.Header().Set("X-Page-Count", "3")
+    
+    response := map[string]interface{}{
+        "message": "Hello there! This is CORS-enabled data",
+        "data": []map[string]interface{}{
+            {"id": 1, "name": "Alice", "role": "admin"},
+            {"id": 2, "name": "Bob", "role": "user"},
+            {"id": 3, "name": "Charlie", "role": "user"},
+        },
+        "timestamp": time.Now().Format(time.RFC3339),
+        "origin":    r.Header.Get("Origin"),
+        "method":    r.Method,
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func secureDataHandler(w http.ResponseWriter, r *http.Request) {
+    // This endpoint requires credentials
+    authHeader := r.Header.Get("Authorization")
+    if authHeader == "" {
+        http.Error(w, "Authorization required", http.StatusUnauthorized)
+        return
+    }
+    
+    response := map[string]interface{}{
+        "message":   "Hello there! This is secure CORS data",
+        "user_info": map[string]string{
+            "username": "alice",
+            "role":     "admin",
+        },
+        "timestamp": time.Now().Format(time.RFC3339),
+        "secure":    true,
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func corsInfoHandler(w http.ResponseWriter, r *http.Request) {
+    info := map[string]interface{}{
+        "message": "CORS configuration and request information",
+        "request_info": map[string]string{
+            "origin":               r.Header.Get("Origin"),
+            "method":               r.Method,
+            "access_control_request_method": r.Header.Get("Access-Control-Request-Method"),
+            "access_control_request_headers": r.Header.Get("Access-Control-Request-Headers"),
+            "user_agent":           r.Header.Get("User-Agent"),
+            "referer":              r.Header.Get("Referer"),
+        },
+        "response_headers": map[string]string{
+            "access_control_allow_origin":      w.Header().Get("Access-Control-Allow-Origin"),
+            "access_control_allow_methods":     w.Header().Get("Access-Control-Allow-Methods"),
+            "access_control_allow_headers":     w.Header().Get("Access-Control-Allow-Headers"),
+            "access_control_allow_credentials": w.Header().Get("Access-Control-Allow-Credentials"),
+            "access_control_expose_headers":    w.Header().Get("Access-Control-Expose-Headers"),
+            "access_control_max_age":           w.Header().Get("Access-Control-Max-Age"),
+        },
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(info)
+}
+
+func corsTestPageHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CORS Test Page</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            .test-section { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            pre { background: #333; color: #fff; padding: 15px; border-radius: 3px; overflow-x: auto; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 3px; }
+        </style>
+    </head>
+    <body>
+        <h1>CORS Test Page</h1>
+        <p>Hello there! This page tests CORS functionality.</p>
+        
+        <div class="test-section">
+            <h2>Simple CORS Request</h2>
+            <button onclick="testSimpleRequest()">Test GET Request</button>
+            <button onclick="testPostRequest()">Test POST Request</button>
+            <div id="simple-result" class="result"></div>
+        </div>
+        
+        <div class="test-section">
+            <h2>Preflight CORS Request</h2>
+            <button onclick="testPreflightRequest()">Test PUT with Custom Header</button>
+            <div id="preflight-result" class="result"></div>
+        </div>
+        
+        <div class="test-section">
+            <h2>Credentials Request</h2>
+            <button onclick="testCredentialsRequest()">Test Request with Credentials</button>
+            <div id="credentials-result" class="result"></div>
+        </div>
+        
+        <div class="test-section">
+            <h2>CORS Information</h2>
+            <button onclick="getCorsInfo()">Get CORS Info</button>
+            <div id="info-result" class="result"></div>
+        </div>
+        
+        <div class="test-section">
+            <h2>Test Commands</h2>
+            <pre>
+# Simple CORS request
+curl -H "Origin: https://example.com" http://localhost:8080/data
+
+# Preflight request
+curl -X OPTIONS -H "Origin: https://example.com" \
+     -H "Access-Control-Request-Method: PUT" \
+     -H "Access-Control-Request-Headers: Content-Type,Authorization" \
+     http://localhost:8080/data
+
+# Request with credentials
+curl -H "Origin: https://example.com" \
+     -H "Authorization: Bearer token123" \
+     http://localhost:8080/secure-data
+
+# Different origins to test
+curl -H "Origin: https://allowed.com" http://localhost:8080/data
+curl -H "Origin: https://blocked.com" http://localhost:8080/data
+            </pre>
+        </div>
+        
+        <script>
+        function testSimpleRequest() {
+            fetch('/data', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('simple-result').innerHTML = 
+                    '<h4>Success!</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('simple-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testPostRequest() {
+            fetch('/data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({message: 'Hello from browser'})
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('simple-result').innerHTML = 
+                    '<h4>POST Success!</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('simple-result').innerHTML = 
+                    '<h4 style="color: red;">POST Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testPreflightRequest() {
+            fetch('/data', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Custom-Header': 'custom-value'
+                },
+                body: JSON.stringify({data: 'preflight test'})
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('preflight-result').innerHTML = 
+                    '<h4>Preflight Success!</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('preflight-result').innerHTML = 
+                    '<h4 style="color: red;">Preflight Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testCredentialsRequest() {
+            fetch('/secure-data', {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                    'Authorization': 'Bearer demo-token'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('credentials-result').innerHTML = 
+                    '<h4>Credentials Success!</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('credentials-result').innerHTML = 
+                    '<h4 style="color: red;">Credentials Error: ' + error + '</h4>';
+            });
+        }
+        
+        function getCorsInfo() {
+            fetch('/cors-info')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('info-result').innerHTML = 
+                    '<h4>CORS Information</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('info-result').innerHTML = 
+                    '<h4 style="color: red;">Info Error: ' + error + '</h4>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // Configure CORS for public endpoints
+    publicCORS := NewCORSConfig()
+    publicCORS.AllowedOrigins = []string{
+        "http://localhost:3000",
+        "https://example.com",
+        "https://*.example.com",
+    }
+    
+    // Configure CORS for secure endpoints (with credentials)
+    secureCORS := NewCORSConfig()
+    secureCORS.AllowedOrigins = []string{"https://app.example.com"}
+    secureCORS.AllowCredentials = true
+    secureCORS.AllowedHeaders = append(secureCORS.AllowedHeaders, "Authorization")
+    
+    mux := http.NewServeMux()
+    
+    // Public endpoints
+    publicHandler := CORSMiddleware(publicCORS)(http.HandlerFunc(dataHandler))
+    mux.Handle("/data", publicHandler)
+    
+    // Secure endpoints
+    secureHandler := CORSMiddleware(secureCORS)(http.HandlerFunc(secureDataHandler))
+    mux.Handle("/secure-data", secureHandler)
+    
+    // Info endpoint
+    infoHandler := CORSMiddleware(publicCORS)(http.HandlerFunc(corsInfoHandler))
+    mux.Handle("/cors-info", infoHandler)
+    
+    // Test page
+    mux.HandleFunc("/", corsTestPageHandler)
+    
+    fmt.Println("=== HTTP CORS Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("CORS Configuration:")
+    fmt.Println("• Public endpoints: localhost:3000, *.example.com")
+    fmt.Println("• Secure endpoints: app.example.com (with credentials)")
+    fmt.Println("• Preflight support for complex requests")
+    fmt.Println("• Custom headers and exposed headers")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - CORS test page")
+    fmt.Println("  GET  /data - Public CORS-enabled data")
+    fmt.Println("  GET  /secure-data - Secure CORS data (credentials required)")
+    fmt.Println("  GET  /cors-info - CORS configuration info")
+    
+    log.Fatal(http.ListenAndServe(":8080", mux))
+}
+```
+
+This CORS example demonstrates comprehensive cross-origin resource sharing  
+implementation including preflight request handling, origin validation,  
+credential support, and security considerations. CORS is essential for  
+modern web applications that need to access APIs from different domains.
+
+## HTTP compression and encoding
+
+Compression reduces bandwidth usage and improves performance. This example  
+demonstrates various compression techniques including gzip, content encoding,  
+and custom compression strategies.
+
+```go
+package main
+
+import (
+    "compress/gzip"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type CompressionMiddleware struct {
+    MinSize   int
+    MimeTypes []string
+}
+
+func NewCompressionMiddleware() *CompressionMiddleware {
+    return &CompressionMiddleware{
+        MinSize: 1024, // Only compress responses larger than 1KB
+        MimeTypes: []string{
+            "text/html",
+            "text/css",
+            "text/javascript",
+            "application/javascript",
+            "application/json",
+            "application/xml",
+            "text/xml",
+            "text/plain",
+        },
+    }
+}
+
+func (cm *CompressionMiddleware) shouldCompress(r *http.Request, contentType string, size int) bool {
+    // Check if client accepts gzip
+    acceptEncoding := r.Header.Get("Accept-Encoding")
+    if !strings.Contains(acceptEncoding, "gzip") {
+        return false
+    }
+    
+    // Check minimum size
+    if size < cm.MinSize {
+        return false
+    }
+    
+    // Check content type
+    for _, mimeType := range cm.MimeTypes {
+        if strings.Contains(contentType, mimeType) {
+            return true
+        }
+    }
+    
+    return false
+}
+
+type gzipResponseWriter struct {
+    http.ResponseWriter
+    gzipWriter   *gzip.Writer
+    written      bool
+    contentType  string
+    buffer       []byte
+}
+
+func newGzipResponseWriter(w http.ResponseWriter) *gzipResponseWriter {
+    return &gzipResponseWriter{
+        ResponseWriter: w,
+        buffer:        make([]byte, 0),
+    }
+}
+
+func (grw *gzipResponseWriter) Header() http.Header {
+    return grw.ResponseWriter.Header()
+}
+
+func (grw *gzipResponseWriter) WriteHeader(statusCode int) {
+    grw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (grw *gzipResponseWriter) Write(data []byte) (int, error) {
+    if !grw.written {
+        grw.contentType = grw.Header().Get("Content-Type")
+        grw.buffer = append(grw.buffer, data...)
+        
+        // Check if we have enough data to decide on compression
+        if len(grw.buffer) >= 1024 {
+            grw.flushBuffer()
+        }
+        return len(data), nil
+    }
+    
+    if grw.gzipWriter != nil {
+        return grw.gzipWriter.Write(data)
+    }
+    
+    return grw.ResponseWriter.Write(data)
+}
+
+func (grw *gzipResponseWriter) flushBuffer() {
+    grw.written = true
+    
+    // Decision point: compress or not
+    if grw.gzipWriter != nil || len(grw.buffer) >= 1024 {
+        grw.Header().Set("Content-Encoding", "gzip")
+        grw.Header().Set("Vary", "Accept-Encoding")
+        grw.gzipWriter = gzip.NewWriter(grw.ResponseWriter)
+        grw.gzipWriter.Write(grw.buffer)
+    } else {
+        grw.ResponseWriter.Write(grw.buffer)
+    }
+    
+    grw.buffer = nil
+}
+
+func (grw *gzipResponseWriter) Close() error {
+    if !grw.written && len(grw.buffer) > 0 {
+        grw.flushBuffer()
+    }
+    
+    if grw.gzipWriter != nil {
+        return grw.gzipWriter.Close()
+    }
+    
+    return nil
+}
+
+func CompressionHandler(cm *CompressionMiddleware) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            acceptEncoding := r.Header.Get("Accept-Encoding")
+            
+            if strings.Contains(acceptEncoding, "gzip") {
+                grw := newGzipResponseWriter(w)
+                defer grw.Close()
+                
+                // Create decision point for compression
+                grw.gzipWriter = gzip.NewWriter(w)
+                
+                next.ServeHTTP(grw, r)
+            } else {
+                next.ServeHTTP(w, r)
+            }
+        })
+    }
+}
+
+func generateLargeResponse(size int) map[string]interface{} {
+    // Generate large text content
+    content := strings.Repeat("Hello there! This is sample content for compression testing. ", size/64)
+    
+    data := map[string]interface{}{
+        "message":     "Hello there! Large response for compression demo",
+        "content":     content,
+        "size":        len(content),
+        "timestamp":   time.Now().Format(time.RFC3339),
+        "compression": "This content should be compressed if client supports it",
+        "metadata": map[string]interface{}{
+            "user_agent":      "go-http-client",
+            "compression_test": true,
+            "sample_numbers":   make([]int, 100),
+        },
+    }
+    
+    // Fill sample numbers
+    numbers := data["metadata"].(map[string]interface{})["sample_numbers"].([]int)
+    for i := range numbers {
+        numbers[i] = i * i
+    }
+    
+    return data
+}
+
+func largeResponseHandler(w http.ResponseWriter, r *http.Request) {
+    sizeParam := r.URL.Query().Get("size")
+    size := 50000 // Default 50KB
+    
+    if sizeParam != "" {
+        if parsedSize, err := strconv.Atoi(sizeParam); err == nil {
+            size = parsedSize
+        }
+    }
+    
+    response := generateLargeResponse(size)
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set("X-Original-Size", fmt.Sprintf("%d", size))
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func compressionInfoHandler(w http.ResponseWriter, r *http.Request) {
+    acceptEncoding := r.Header.Get("Accept-Encoding")
+    
+    info := map[string]interface{}{
+        "message":         "Compression information and capabilities",
+        "accept_encoding": acceptEncoding,
+        "supported_encodings": []string{"gzip", "identity"},
+        "compression_enabled": strings.Contains(acceptEncoding, "gzip"),
+        "response_headers": map[string]string{
+            "content_encoding": w.Header().Get("Content-Encoding"),
+            "vary":            w.Header().Get("Vary"),
+        },
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(info)
+}
+
+func comparisonHandler(w http.ResponseWriter, r *http.Request) {
+    // Generate test content
+    content := strings.Repeat("Hello there! Compression test data. ", 1000)
+    
+    compressed := r.URL.Query().Get("compressed") == "true"
+    
+    if compressed {
+        w.Header().Set("Content-Type", "application/json")
+        w.Header().Set("Content-Encoding", "gzip")
+        w.Header().Set("Vary", "Accept-Encoding")
+        
+        gw := gzip.NewWriter(w)
+        defer gw.Close()
+        
+        response := map[string]interface{}{
+            "message":         "Compressed response",
+            "content":         content,
+            "original_size":   len(content),
+            "compression":     "gzip",
+            "timestamp":       time.Now().Format(time.RFC3339),
+        }
+        
+        json.NewEncoder(gw).Encode(response)
+    } else {
+        w.Header().Set("Content-Type", "application/json")
+        
+        response := map[string]interface{}{
+            "message":       "Uncompressed response",
+            "content":       content,
+            "original_size": len(content),
+            "compression":   "none",
+            "timestamp":     time.Now().Format(time.RFC3339),
+        }
+        
+        json.NewEncoder(w).Encode(response)
+    }
+}
+
+func streamedCompressionHandler(w http.ResponseWriter, r *http.Request) {
+    acceptEncoding := r.Header.Get("Accept-Encoding")
+    
+    if strings.Contains(acceptEncoding, "gzip") {
+        w.Header().Set("Content-Type", "application/json")
+        w.Header().Set("Content-Encoding", "gzip")
+        w.Header().Set("Transfer-Encoding", "chunked")
+        
+        gw := gzip.NewWriter(w)
+        defer gw.Close()
+        
+        encoder := json.NewEncoder(gw)
+        
+        // Stream JSON objects
+        fmt.Fprint(gw, "[")
+        
+        for i := 0; i < 100; i++ {
+            if i > 0 {
+                fmt.Fprint(gw, ",")
+            }
+            
+            item := map[string]interface{}{
+                "id":      i + 1,
+                "message": fmt.Sprintf("Hello there! Streamed item %d", i+1),
+                "data":    strings.Repeat("x", 100),
+                "timestamp": time.Now().Format(time.RFC3339),
+            }
+            
+            encoder.Encode(item)
+            
+            if flusher, ok := gw.(http.Flusher); ok {
+                flusher.Flush()
+            }
+            
+            time.Sleep(50 * time.Millisecond)
+        }
+        
+        fmt.Fprint(gw, "]")
+    } else {
+        http.Error(w, "Compression required for this endpoint", 
+                  http.StatusNotAcceptable)
+    }
+}
+
+func downloadHandler(w http.ResponseWriter, r *http.Request) {
+    filename := r.URL.Query().Get("file")
+    if filename == "" {
+        filename = "sample.txt"
+    }
+    
+    // Generate large text file content
+    content := strings.Repeat("Hello there! This is line content for download testing.\n", 10000)
+    
+    acceptEncoding := r.Header.Get("Accept-Encoding")
+    
+    if strings.Contains(acceptEncoding, "gzip") {
+        w.Header().Set("Content-Type", "application/octet-stream")
+        w.Header().Set("Content-Disposition", 
+                       fmt.Sprintf("attachment; filename=\"%s.gz\"", filename))
+        w.Header().Set("Content-Encoding", "gzip")
+        
+        gw := gzip.NewWriter(w)
+        defer gw.Close()
+        
+        gw.Write([]byte(content))
+    } else {
+        w.Header().Set("Content-Type", "text/plain")
+        w.Header().Set("Content-Disposition", 
+                       fmt.Sprintf("attachment; filename=\"%s\"", filename))
+        
+        fmt.Fprint(w, content)
+    }
+}
+
+func compressionTestPageHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    
+    // This HTML content will be compressed
+    html := `<!DOCTYPE html>
+<html>
+<head>
+    <title>HTTP Compression Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .test-section { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px; }
+        button { margin: 5px; padding: 10px 15px; }
+        pre { background: #333; color: #fff; padding: 15px; border-radius: 3px; overflow-x: auto; }
+        .result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 3px; }
+        .size-info { background: #e8f4f8; padding: 10px; border-radius: 3px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>HTTP Compression Demo</h1>
+    <p>Hello there! This page demonstrates HTTP compression capabilities.</p>
+    
+    <div class="test-section">
+        <h2>Compression Test</h2>
+        <button onclick="testCompression()">Test Large Response</button>
+        <button onclick="testComparison()">Compare Compressed vs Uncompressed</button>
+        <button onclick="testStreamedCompression()">Test Streamed Compression</button>
+        <div id="compression-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>File Download</h2>
+        <button onclick="downloadFile()">Download Compressed File</button>
+        <button onclick="downloadUncompressed()">Download Uncompressed File</button>
+        <div id="download-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Compression Info</h2>
+        <button onclick="getCompressionInfo()">Get Compression Information</button>
+        <div id="info-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Browser Support</h2>
+        <div id="browser-support" class="size-info">
+            <h4>Current Browser Capabilities:</h4>
+            <p>Accept-Encoding: <span id="accept-encoding"></span></p>
+            <p>Compression Support: <span id="compression-support"></span></p>
+        </div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Test Commands</h2>
+        <pre>
+# Test with compression
+curl -H "Accept-Encoding: gzip" -v http://localhost:8080/large
+
+# Test without compression  
+curl -H "Accept-Encoding: identity" -v http://localhost:8080/large
+
+# Compare response sizes
+curl -H "Accept-Encoding: gzip" -s http://localhost:8080/comparison?compressed=true | wc -c
+curl -H "Accept-Encoding: identity" -s http://localhost:8080/comparison?compressed=false | wc -c
+
+# Download compressed file
+curl -H "Accept-Encoding: gzip" -o sample.txt.gz http://localhost:8080/download
+
+# Stream with compression
+curl -H "Accept-Encoding: gzip" --compressed -N http://localhost:8080/stream-compressed
+        </pre>
+    </div>
+    
+    <script>
+    // Display browser capabilities
+    document.addEventListener('DOMContentLoaded', function() {
+        const acceptEncoding = 'gzip, deflate, br';
+        document.getElementById('accept-encoding').textContent = acceptEncoding;
+        
+        const supportsCompression = acceptEncoding.includes('gzip');
+        document.getElementById('compression-support').textContent = 
+            supportsCompression ? 'Yes (gzip)' : 'No';
+    });
+    
+    function testCompression() {
+        const startTime = Date.now();
+        
+        fetch('/large?size=100000')
+        .then(response => {
+            const contentEncoding = response.headers.get('content-encoding');
+            const contentLength = response.headers.get('content-length');
+            const originalSize = response.headers.get('x-original-size');
+            
+            return response.json().then(data => ({
+                data: data,
+                contentEncoding: contentEncoding,
+                contentLength: contentLength,
+                originalSize: originalSize,
+                responseTime: Date.now() - startTime
+            }));
+        })
+        .then(result => {
+            document.getElementById('compression-result').innerHTML = 
+                '<h4>Compression Test Results</h4>' +
+                '<div class="size-info">' +
+                '<p>Content-Encoding: ' + (result.contentEncoding || 'none') + '</p>' +
+                '<p>Original Size: ' + result.originalSize + ' bytes</p>' +
+                '<p>Transferred Size: ' + (result.contentLength || 'chunked') + ' bytes</p>' +
+                '<p>Response Time: ' + result.responseTime + 'ms</p>' +
+                '</div>' +
+                '<pre>' + JSON.stringify(result.data, null, 2).substring(0, 500) + '...</pre>';
+        })
+        .catch(error => {
+            document.getElementById('compression-result').innerHTML = 
+                '<h4 style="color: red;">Error: ' + error + '</h4>';
+        });
+    }
+    
+    function testComparison() {
+        Promise.all([
+            fetch('/comparison?compressed=true').then(r => r.json()),
+            fetch('/comparison?compressed=false').then(r => r.json())
+        ])
+        .then(([compressed, uncompressed]) => {
+            document.getElementById('compression-result').innerHTML = 
+                '<h4>Compression Comparison</h4>' +
+                '<div class="size-info">' +
+                '<p>Compressed: ' + JSON.stringify(compressed).length + ' bytes</p>' +
+                '<p>Uncompressed: ' + JSON.stringify(uncompressed).length + ' bytes</p>' +
+                '<p>Compression Ratio: ' + 
+                ((1 - JSON.stringify(compressed).length / JSON.stringify(uncompressed).length) * 100).toFixed(1) + '%</p>' +
+                '</div>';
+        });
+    }
+    
+    function testStreamedCompression() {
+        const startTime = Date.now();
+        document.getElementById('compression-result').innerHTML = '<h4>Streaming compressed data...</h4>';
+        
+        fetch('/stream-compressed')
+        .then(response => {
+            const contentEncoding = response.headers.get('content-encoding');
+            return response.json().then(data => ({
+                data: data,
+                contentEncoding: contentEncoding,
+                responseTime: Date.now() - startTime
+            }));
+        })
+        .then(result => {
+            document.getElementById('compression-result').innerHTML = 
+                '<h4>Streamed Compression Results</h4>' +
+                '<div class="size-info">' +
+                '<p>Content-Encoding: ' + (result.contentEncoding || 'none') + '</p>' +
+                '<p>Items Received: ' + result.data.length + '</p>' +
+                '<p>Total Response Time: ' + result.responseTime + 'ms</p>' +
+                '</div>';
+        })
+        .catch(error => {
+            document.getElementById('compression-result').innerHTML = 
+                '<h4 style="color: red;">Stream Error: ' + error + '</h4>';
+        });
+    }
+    
+    function downloadFile() {
+        const link = document.createElement('a');
+        link.href = '/download?file=demo.txt';
+        link.download = 'demo.txt';
+        link.click();
+        
+        document.getElementById('download-result').innerHTML = 
+            '<p>Compressed file download initiated...</p>';
+    }
+    
+    function downloadUncompressed() {
+        fetch('/download?file=demo.txt', {
+            headers: { 'Accept-Encoding': 'identity' }
+        })
+        .then(response => response.blob())
+        .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'demo-uncompressed.txt';
+            link.click();
+            window.URL.revokeObjectURL(url);
+            
+            document.getElementById('download-result').innerHTML = 
+                '<p>Uncompressed file download completed. Size: ' + blob.size + ' bytes</p>';
+        });
+    }
+    
+    function getCompressionInfo() {
+        fetch('/compression-info')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('info-result').innerHTML = 
+                '<h4>Compression Information</h4>' +
+                '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+        });
+    }
+    </script>
+</body>
+</html>`
+    
+    fmt.Fprint(w, html)
+}
+
+func main() {
+    compression := NewCompressionMiddleware()
+    
+    mux := http.NewServeMux()
+    
+    // Apply compression middleware to selected endpoints
+    compressedHandler := CompressionHandler(compression)
+    
+    mux.Handle("/", compressedHandler(http.HandlerFunc(compressionTestPageHandler)))
+    mux.Handle("/large", compressedHandler(http.HandlerFunc(largeResponseHandler)))
+    mux.Handle("/comparison", http.HandlerFunc(comparisonHandler))
+    mux.Handle("/stream-compressed", http.HandlerFunc(streamedCompressionHandler))
+    mux.Handle("/download", http.HandlerFunc(downloadHandler))
+    mux.Handle("/compression-info", compressedHandler(http.HandlerFunc(compressionInfoHandler)))
+    
+    fmt.Println("=== HTTP Compression Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Gzip compression middleware")
+    fmt.Println("• Content-type based compression")
+    fmt.Println("• Size-threshold compression")
+    fmt.Println("• Streamed compression")
+    fmt.Println("• File download compression")
+    fmt.Println("• Compression comparison tools")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET / - Compression test page")
+    fmt.Println("  GET /large?size=N - Large response (compressed)")
+    fmt.Println("  GET /comparison - Compare compressed vs uncompressed")
+    fmt.Println("  GET /stream-compressed - Streamed compression")
+    fmt.Println("  GET /download - Compressed file download")
+    fmt.Println("  GET /compression-info - Compression information")
+    
+    log.Fatal(http.ListenAndServe(":8080", mux))
+}
+```
+
+This compression example demonstrates comprehensive HTTP compression  
+techniques including gzip encoding, content-type filtering, size thresholds,  
+and streaming compression. Proper compression implementation significantly  
+improves application performance and reduces bandwidth usage.
+
+## HTTP request and response transformation
+
+Request and response transformation allows modification of HTTP data as it  
+flows through the application. This example demonstrates interceptors,  
+data transformation, and request/response manipulation.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type TransformationRule struct {
+    Path        string
+    Method      string
+    Transform   func(*http.Request, *ResponseCapture) error
+}
+
+type ResponseCapture struct {
+    StatusCode int
+    Headers    http.Header
+    Body       []byte
+    Modified   bool
+}
+
+type RequestTransformer struct {
+    rules []TransformationRule
+}
+
+func NewRequestTransformer() *RequestTransformer {
+    return &RequestTransformer{
+        rules: make([]TransformationRule, 0),
+    }
+}
+
+func (rt *RequestTransformer) AddRule(path, method string, 
+                                     transform func(*http.Request, *ResponseCapture) error) {
+    rt.rules = append(rt.rules, TransformationRule{
+        Path:      path,
+        Method:    method,
+        Transform: transform,
+    })
+}
+
+func (rt *RequestTransformer) Apply(r *http.Request, rc *ResponseCapture) error {
+    for _, rule := range rt.rules {
+        if (rule.Path == "*" || strings.Contains(r.URL.Path, rule.Path)) &&
+           (rule.Method == "*" || rule.Method == r.Method) {
+            if err := rule.Transform(r, rc); err != nil {
+                return err
+            }
+        }
+    }
+    return nil
+}
+
+type responseWriter struct {
+    http.ResponseWriter
+    statusCode int
+    body       *bytes.Buffer
+    headers    http.Header
+}
+
+func newResponseWriter(w http.ResponseWriter) *responseWriter {
+    return &responseWriter{
+        ResponseWriter: w,
+        statusCode:     200,
+        body:          new(bytes.Buffer),
+        headers:       make(http.Header),
+    }
+}
+
+func (rw *responseWriter) WriteHeader(statusCode int) {
+    rw.statusCode = statusCode
+    // Don't write header yet, we need to transform first
+}
+
+func (rw *responseWriter) Write(data []byte) (int, error) {
+    return rw.body.Write(data)
+}
+
+func (rw *responseWriter) Header() http.Header {
+    // Merge headers
+    for k, v := range rw.ResponseWriter.Header() {
+        rw.headers[k] = v
+    }
+    return rw.headers
+}
+
+func TransformationMiddleware(transformer *RequestTransformer) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Capture the response
+            rw := newResponseWriter(w)
+            
+            // Execute the handler
+            next.ServeHTTP(rw, r)
+            
+            // Create response capture
+            rc := &ResponseCapture{
+                StatusCode: rw.statusCode,
+                Headers:    rw.headers,
+                Body:       rw.body.Bytes(),
+                Modified:   false,
+            }
+            
+            // Apply transformations
+            if err := transformer.Apply(r, rc); err != nil {
+                log.Printf("Transformation error: %v", err)
+                http.Error(w, "Transformation failed", http.StatusInternalServerError)
+                return
+            }
+            
+            // Write the final response
+            for k, v := range rc.Headers {
+                w.Header()[k] = v
+            }
+            
+            if rc.Modified {
+                w.Header().Set("X-Transformed", "true")
+                w.Header().Set("Content-Length", strconv.Itoa(len(rc.Body)))
+            }
+            
+            w.WriteHeader(rc.StatusCode)
+            w.Write(rc.Body)
+        })
+    }
+}
+
+// Transformation functions
+func AddTimestampTransform(r *http.Request, rc *ResponseCapture) error {
+    if strings.Contains(rc.Headers.Get("Content-Type"), "application/json") {
+        var data map[string]interface{}
+        if err := json.Unmarshal(rc.Body, &data); err != nil {
+            return err
+        }
+        
+        data["transformed_at"] = time.Now().Format(time.RFC3339)
+        data["transform_type"] = "timestamp_added"
+        
+        newBody, err := json.Marshal(data)
+        if err != nil {
+            return err
+        }
+        
+        rc.Body = newBody
+        rc.Modified = true
+    }
+    return nil
+}
+
+func AddRequestInfoTransform(r *http.Request, rc *ResponseCapture) error {
+    if strings.Contains(rc.Headers.Get("Content-Type"), "application/json") {
+        var data map[string]interface{}
+        if err := json.Unmarshal(rc.Body, &data); err != nil {
+            return err
+        }
+        
+        data["request_info"] = map[string]interface{}{
+            "method":      r.Method,
+            "path":        r.URL.Path,
+            "user_agent":  r.Header.Get("User-Agent"),
+            "remote_addr": r.RemoteAddr,
+            "query_params": r.URL.Query(),
+        }
+        
+        newBody, err := json.Marshal(data)
+        if err != nil {
+            return err
+        }
+        
+        rc.Body = newBody
+        rc.Modified = true
+    }
+    return nil
+}
+
+func FilterSensitiveDataTransform(r *http.Request, rc *ResponseCapture) error {
+    if strings.Contains(rc.Headers.Get("Content-Type"), "application/json") {
+        var data map[string]interface{}
+        if err := json.Unmarshal(rc.Body, &data); err != nil {
+            return err
+        }
+        
+        // Remove sensitive fields
+        sensitiveFields := []string{"password", "secret", "token", "key"}
+        
+        modified := false
+        var filterRecursive func(obj interface{}) interface{}
+        filterRecursive = func(obj interface{}) interface{} {
+            switch v := obj.(type) {
+            case map[string]interface{}:
+                filtered := make(map[string]interface{})
+                for key, value := range v {
+                    lowerKey := strings.ToLower(key)
+                    isSensitive := false
+                    
+                    for _, sensitive := range sensitiveFields {
+                        if strings.Contains(lowerKey, sensitive) {
+                            isSensitive = true
+                            break
+                        }
+                    }
+                    
+                    if isSensitive {
+                        filtered[key] = "[FILTERED]"
+                        modified = true
+                    } else {
+                        filtered[key] = filterRecursive(value)
+                    }
+                }
+                return filtered
+            case []interface{}:
+                filtered := make([]interface{}, len(v))
+                for i, item := range v {
+                    filtered[i] = filterRecursive(item)
+                }
+                return filtered
+            default:
+                return v
+            }
+        }
+        
+        filteredData := filterRecursive(data)
+        
+        if modified {
+            newBody, err := json.Marshal(filteredData)
+            if err != nil {
+                return err
+            }
+            
+            rc.Body = newBody
+            rc.Modified = true
+            rc.Headers.Set("X-Data-Filtered", "true")
+        }
+    }
+    return nil
+}
+
+func WrapResponseTransform(r *http.Request, rc *ResponseCapture) error {
+    if strings.Contains(rc.Headers.Get("Content-Type"), "application/json") {
+        var originalData interface{}
+        if err := json.Unmarshal(rc.Body, &originalData); err != nil {
+            return err
+        }
+        
+        wrappedData := map[string]interface{}{
+            "success": rc.StatusCode >= 200 && rc.StatusCode < 300,
+            "status_code": rc.StatusCode,
+            "data": originalData,
+            "metadata": map[string]interface{}{
+                "timestamp": time.Now().Format(time.RFC3339),
+                "version": "1.0",
+                "endpoint": r.URL.Path,
+            },
+        }
+        
+        newBody, err := json.Marshal(wrappedData)
+        if err != nil {
+            return err
+        }
+        
+        rc.Body = newBody
+        rc.Modified = true
+    }
+    return nil
+}
+
+func PaginationTransform(r *http.Request, rc *ResponseCapture) error {
+    if strings.Contains(rc.Headers.Get("Content-Type"), "application/json") {
+        page := r.URL.Query().Get("page")
+        limit := r.URL.Query().Get("limit")
+        
+        if page != "" && limit != "" {
+            var data map[string]interface{}
+            if err := json.Unmarshal(rc.Body, &data); err != nil {
+                return err
+            }
+            
+            pageNum, _ := strconv.Atoi(page)
+            limitNum, _ := strconv.Atoi(limit)
+            
+            if pageNum < 1 {
+                pageNum = 1
+            }
+            if limitNum < 1 {
+                limitNum = 10
+            }
+            
+            // Add pagination metadata
+            data["pagination"] = map[string]interface{}{
+                "page": pageNum,
+                "limit": limitNum,
+                "has_next": pageNum < 5, // Simulate
+                "has_prev": pageNum > 1,
+                "total_pages": 5,
+                "total_items": 50,
+            }
+            
+            newBody, err := json.Marshal(data)
+            if err != nil {
+                return err
+            }
+            
+            rc.Body = newBody
+            rc.Modified = true
+        }
+    }
+    return nil
+}
+
+// Sample handlers
+func usersHandler(w http.ResponseWriter, r *http.Request) {
+    users := []map[string]interface{}{
+        {
+            "id": 1,
+            "name": "Alice Johnson",
+            "email": "alice@example.com",
+            "password": "secret123",
+            "api_key": "ak_123456789",
+            "role": "admin",
+        },
+        {
+            "id": 2,
+            "name": "Bob Smith", 
+            "email": "bob@example.com",
+            "password": "password456",
+            "api_key": "ak_987654321",
+            "role": "user",
+        },
+    }
+    
+    response := map[string]interface{}{
+        "message": "Hello there! User data retrieved",
+        "users": users,
+        "count": len(users),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func profileHandler(w http.ResponseWriter, r *http.Request) {
+    profile := map[string]interface{}{
+        "id": 123,
+        "username": "alice_dev",
+        "email": "alice@example.com",
+        "password": "super_secret_password",
+        "secret_token": "tok_abcdef123456",
+        "preferences": map[string]interface{}{
+            "theme": "dark",
+            "language": "en",
+            "notifications": true,
+        },
+        "created_at": "2023-01-15T10:30:00Z",
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(profile)
+}
+
+func dataHandler(w http.ResponseWriter, r *http.Request) {
+    data := map[string]interface{}{
+        "message": "Hello there! Raw data response",
+        "items": []string{"item1", "item2", "item3"},
+        "generated_at": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(data)
+}
+
+func transformationDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Transformation Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            .demo-section { background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            pre { background: #333; color: #fff; padding: 15px; border-radius: 3px; overflow-x: auto; max-height: 400px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 3px; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Transformation Demo</h1>
+        <p>Hello there! This demonstrates request/response transformation.</p>
+        
+        <div class="demo-section">
+            <h2>Data Filtering Transformation</h2>
+            <p>Removes sensitive fields from responses:</p>
+            <button onclick="testFiltering()">Test Data Filtering</button>
+            <div id="filtering-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Response Wrapping</h2>
+            <p>Wraps responses in standard format:</p>
+            <button onclick="testWrapping()">Test Response Wrapping</button>
+            <div id="wrapping-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Request Info Addition</h2>
+            <p>Adds request metadata to responses:</p>
+            <button onclick="testRequestInfo()">Test Request Info</button>
+            <div id="request-info-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Pagination Transformation</h2>
+            <p>Adds pagination metadata:</p>
+            <button onclick="testPagination()">Test Pagination</button>
+            <div id="pagination-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Multiple Transformations</h2>
+            <p>Combines multiple transformations:</p>
+            <button onclick="testMultiple()">Test Multiple Transforms</button>
+            <div id="multiple-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Test Commands</h2>
+            <pre>
+# Test data filtering
+curl http://localhost:8080/profile
+
+# Test response wrapping
+curl http://localhost:8080/wrapped/data
+
+# Test request info addition  
+curl -H "User-Agent: Custom-Client/1.0" http://localhost:8080/with-info/data
+
+# Test pagination
+curl "http://localhost:8080/paginated/users?page=2&limit=5"
+
+# Compare original vs transformed
+curl http://localhost:8080/users
+curl http://localhost:8080/filtered/users
+            </pre>
+        </div>
+        
+        <script>
+        function testFiltering() {
+            fetch('/profile')
+            .then(response => response.json())
+            .then(data => {
+                const isTransformed = data.password === '[FILTERED]';
+                document.getElementById('filtering-result').innerHTML = 
+                    '<h4>Data Filtering Result</h4>' +
+                    '<p>Sensitive data filtered: ' + isTransformed + '</p>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('filtering-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testWrapping() {
+            fetch('/wrapped/data')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('wrapping-result').innerHTML = 
+                    '<h4>Response Wrapping Result</h4>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('wrapping-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testRequestInfo() {
+            fetch('/with-info/data', {
+                headers: {
+                    'User-Agent': 'Demo-Client/1.0',
+                    'X-Custom-Header': 'test-value'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('request-info-result').innerHTML = 
+                    '<h4>Request Info Addition Result</h4>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('request-info-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testPagination() {
+            fetch('/paginated/users?page=2&limit=3')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('pagination-result').innerHTML = 
+                    '<h4>Pagination Transformation Result</h4>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('pagination-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testMultiple() {
+            fetch('/multi/profile?page=1&limit=10')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('multiple-result').innerHTML = 
+                    '<h4>Multiple Transformations Result</h4>' +
+                    '<p>Applied: Filtering + Wrapping + Pagination + Request Info</p>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('multiple-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // Create transformers for different routes
+    
+    // Basic transformer (adds timestamps)
+    basicTransformer := NewRequestTransformer()
+    basicTransformer.AddRule("*", "*", AddTimestampTransform)
+    
+    // Filtering transformer
+    filterTransformer := NewRequestTransformer()
+    filterTransformer.AddRule("*", "*", FilterSensitiveDataTransform)
+    
+    // Wrapping transformer
+    wrapTransformer := NewRequestTransformer()
+    wrapTransformer.AddRule("*", "*", WrapResponseTransform)
+    
+    // Request info transformer
+    requestInfoTransformer := NewRequestTransformer()
+    requestInfoTransformer.AddRule("*", "*", AddRequestInfoTransform)
+    
+    // Pagination transformer
+    paginationTransformer := NewRequestTransformer()
+    paginationTransformer.AddRule("*", "*", PaginationTransform)
+    
+    // Multi-transformer (combines multiple)
+    multiTransformer := NewRequestTransformer()
+    multiTransformer.AddRule("*", "*", FilterSensitiveDataTransform)
+    multiTransformer.AddRule("*", "*", WrapResponseTransform)
+    multiTransformer.AddRule("*", "*", AddRequestInfoTransform)
+    multiTransformer.AddRule("*", "*", PaginationTransform)
+    
+    mux := http.NewServeMux()
+    
+    // Demo page
+    mux.HandleFunc("/", transformationDemoHandler)
+    
+    // Original endpoints (minimal transformation)
+    mux.Handle("/users", TransformationMiddleware(basicTransformer)(http.HandlerFunc(usersHandler)))
+    mux.Handle("/profile", TransformationMiddleware(filterTransformer)(http.HandlerFunc(profileHandler)))
+    mux.Handle("/data", TransformationMiddleware(basicTransformer)(http.HandlerFunc(dataHandler)))
+    
+    // Transformed endpoints
+    mux.Handle("/filtered/", http.StripPrefix("/filtered", 
+        TransformationMiddleware(filterTransformer)(http.HandlerFunc(usersHandler))))
+    
+    mux.Handle("/wrapped/", http.StripPrefix("/wrapped", 
+        TransformationMiddleware(wrapTransformer)(http.HandlerFunc(dataHandler))))
+    
+    mux.Handle("/with-info/", http.StripPrefix("/with-info", 
+        TransformationMiddleware(requestInfoTransformer)(http.HandlerFunc(dataHandler))))
+    
+    mux.Handle("/paginated/", http.StripPrefix("/paginated", 
+        TransformationMiddleware(paginationTransformer)(http.HandlerFunc(usersHandler))))
+    
+    mux.Handle("/multi/", http.StripPrefix("/multi", 
+        TransformationMiddleware(multiTransformer)(http.HandlerFunc(profileHandler))))
+    
+    fmt.Println("=== HTTP Transformation Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Request/Response transformation")
+    fmt.Println("• Sensitive data filtering")
+    fmt.Println("• Response wrapping and metadata")
+    fmt.Println("• Request information injection")
+    fmt.Println("• Pagination transformation")
+    fmt.Println("• Multiple transformation chaining")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET / - Transformation demo page")
+    fmt.Println("  GET /users - Basic transformation")
+    fmt.Println("  GET /profile - Filtered sensitive data")
+    fmt.Println("  GET /wrapped/* - Response wrapping")
+    fmt.Println("  GET /with-info/* - Request info addition")
+    fmt.Println("  GET /paginated/* - Pagination metadata")
+    fmt.Println("  GET /multi/* - Multiple transformations")
+    
+    log.Fatal(http.ListenAndServe(":8080", mux))
+}
+```
+
+This transformation example demonstrates sophisticated request and response  
+manipulation techniques including data filtering, response wrapping, metadata  
+injection, and transformation chaining. These patterns are essential for  
+building flexible APIs that can adapt data format and content based on  
+different requirements.
+
+## HTTP performance monitoring and metrics
+
+Performance monitoring provides insights into application behavior and helps  
+identify bottlenecks. This example demonstrates comprehensive metrics  
+collection, performance tracking, and monitoring endpoints.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "runtime"
+    "sort"
+    "strconv"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type Metrics struct {
+    RequestCount     int64             `json:"request_count"`
+    ErrorCount       int64             `json:"error_count"`
+    TotalDuration    int64             `json:"total_duration_ns"`
+    ActiveRequests   int32             `json:"active_requests"`
+    EndpointMetrics  map[string]*EndpointMetrics `json:"endpoint_metrics"`
+    ResponseSizes    map[string]int64  `json:"response_sizes"`
+    StatusCodes      map[int]int64     `json:"status_codes"`
+    StartTime        time.Time         `json:"start_time"`
+    mu               sync.RWMutex
+}
+
+type EndpointMetrics struct {
+    Count        int64         `json:"count"`
+    TotalTime    int64         `json:"total_time_ns"`
+    MinTime      int64         `json:"min_time_ns"`
+    MaxTime      int64         `json:"max_time_ns"`
+    AvgTime      float64       `json:"avg_time_ns"`
+    ErrorCount   int64         `json:"error_count"`
+    LastAccessed time.Time     `json:"last_accessed"`
+    ResponseTimes []int64      `json:"-"` // For percentile calculation
+}
+
+type PerformanceMonitor struct {
+    metrics *Metrics
+}
+
+func NewPerformanceMonitor() *PerformanceMonitor {
+    return &PerformanceMonitor{
+        metrics: &Metrics{
+            EndpointMetrics: make(map[string]*EndpointMetrics),
+            ResponseSizes:   make(map[string]int64),
+            StatusCodes:     make(map[int]int64),
+            StartTime:       time.Now(),
+        },
+    }
+}
+
+func (pm *PerformanceMonitor) getOrCreateEndpointMetrics(endpoint string) *EndpointMetrics {
+    pm.metrics.mu.Lock()
+    defer pm.metrics.mu.Unlock()
+    
+    if em, exists := pm.metrics.EndpointMetrics[endpoint]; exists {
+        return em
+    }
+    
+    em := &EndpointMetrics{
+        MinTime:       int64(^uint64(0) >> 1), // Max int64
+        ResponseTimes: make([]int64, 0, 1000),
+    }
+    pm.metrics.EndpointMetrics[endpoint] = em
+    return em
+}
+
+func (pm *PerformanceMonitor) recordRequest(endpoint string, duration time.Duration, 
+                                           statusCode int, responseSize int64) {
+    durationNs := duration.Nanoseconds()
+    
+    // Update global metrics
+    atomic.AddInt64(&pm.metrics.RequestCount, 1)
+    atomic.AddInt64(&pm.metrics.TotalDuration, durationNs)
+    
+    if statusCode >= 400 {
+        atomic.AddInt64(&pm.metrics.ErrorCount, 1)
+    }
+    
+    // Update endpoint metrics
+    em := pm.getOrCreateEndpointMetrics(endpoint)
+    
+    em.Count++
+    em.TotalTime += durationNs
+    em.LastAccessed = time.Now()
+    
+    if statusCode >= 400 {
+        em.ErrorCount++
+    }
+    
+    if durationNs < em.MinTime {
+        em.MinTime = durationNs
+    }
+    if durationNs > em.MaxTime {
+        em.MaxTime = durationNs
+    }
+    
+    em.AvgTime = float64(em.TotalTime) / float64(em.Count)
+    
+    // Store response time for percentile calculation (limit to last 1000)
+    if len(em.ResponseTimes) >= 1000 {
+        em.ResponseTimes = em.ResponseTimes[1:]
+    }
+    em.ResponseTimes = append(em.ResponseTimes, durationNs)
+    
+    // Update status code metrics
+    pm.metrics.mu.Lock()
+    pm.metrics.StatusCodes[statusCode]++
+    
+    // Update response size metrics
+    sizeCategory := categorizeResponseSize(responseSize)
+    pm.metrics.ResponseSizes[sizeCategory]++
+    pm.metrics.mu.Unlock()
+}
+
+func categorizeResponseSize(size int64) string {
+    switch {
+    case size < 1024:
+        return "< 1KB"
+    case size < 10*1024:
+        return "1KB - 10KB"
+    case size < 100*1024:
+        return "10KB - 100KB"
+    case size < 1024*1024:
+        return "100KB - 1MB"
+    default:
+        return "> 1MB"
+    }
+}
+
+func (pm *PerformanceMonitor) calculatePercentile(times []int64, percentile float64) int64 {
+    if len(times) == 0 {
+        return 0
+    }
+    
+    sorted := make([]int64, len(times))
+    copy(sorted, times)
+    sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+    
+    index := int(float64(len(sorted)) * percentile / 100.0)
+    if index >= len(sorted) {
+        index = len(sorted) - 1
+    }
+    
+    return sorted[index]
+}
+
+type responseWriterWithSize struct {
+    http.ResponseWriter
+    statusCode   int
+    responseSize int64
+}
+
+func (rws *responseWriterWithSize) WriteHeader(statusCode int) {
+    rws.statusCode = statusCode
+    rws.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (rws *responseWriterWithSize) Write(data []byte) (int, error) {
+    rws.responseSize += int64(len(data))
+    return rws.ResponseWriter.Write(data)
+}
+
+func MonitoringMiddleware(pm *PerformanceMonitor) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            start := time.Now()
+            atomic.AddInt32(&pm.metrics.ActiveRequests, 1)
+            defer atomic.AddInt32(&pm.metrics.ActiveRequests, -1)
+            
+            // Wrap the response writer to capture status code and size
+            rws := &responseWriterWithSize{
+                ResponseWriter: w,
+                statusCode:    200,
+            }
+            
+            // Execute the handler
+            next.ServeHTTP(rws, r)
+            
+            // Record metrics
+            duration := time.Since(start)
+            endpoint := r.Method + " " + r.URL.Path
+            
+            pm.recordRequest(endpoint, duration, rws.statusCode, rws.responseSize)
+        })
+    }
+}
+
+func (pm *PerformanceMonitor) getMetricsSnapshot() map[string]interface{} {
+    pm.metrics.mu.RLock()
+    defer pm.metrics.mu.RUnlock()
+    
+    uptime := time.Since(pm.metrics.StartTime)
+    requestCount := atomic.LoadInt64(&pm.metrics.RequestCount)
+    totalDuration := atomic.LoadInt64(&pm.metrics.TotalDuration)
+    
+    var avgResponseTime float64
+    if requestCount > 0 {
+        avgResponseTime = float64(totalDuration) / float64(requestCount) / 1e6 // Convert to ms
+    }
+    
+    // Calculate endpoint percentiles
+    endpointDetails := make(map[string]interface{})
+    for endpoint, em := range pm.metrics.EndpointMetrics {
+        p50 := pm.calculatePercentile(em.ResponseTimes, 50)
+        p95 := pm.calculatePercentile(em.ResponseTimes, 95)
+        p99 := pm.calculatePercentile(em.ResponseTimes, 99)
+        
+        endpointDetails[endpoint] = map[string]interface{}{
+            "count":         em.Count,
+            "avg_time_ms":   em.AvgTime / 1e6,
+            "min_time_ms":   float64(em.MinTime) / 1e6,
+            "max_time_ms":   float64(em.MaxTime) / 1e6,
+            "p50_ms":        float64(p50) / 1e6,
+            "p95_ms":        float64(p95) / 1e6,
+            "p99_ms":        float64(p99) / 1e6,
+            "error_count":   em.ErrorCount,
+            "error_rate":    float64(em.ErrorCount) / float64(em.Count) * 100,
+            "last_accessed": em.LastAccessed.Format(time.RFC3339),
+        }
+    }
+    
+    // Get memory stats
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+    
+    return map[string]interface{}{
+        "server_info": map[string]interface{}{
+            "uptime_seconds":      uptime.Seconds(),
+            "start_time":          pm.metrics.StartTime.Format(time.RFC3339),
+            "active_requests":     atomic.LoadInt32(&pm.metrics.ActiveRequests),
+            "total_requests":      requestCount,
+            "total_errors":        atomic.LoadInt64(&pm.metrics.ErrorCount),
+            "error_rate_percent":  float64(atomic.LoadInt64(&pm.metrics.ErrorCount)) / float64(requestCount) * 100,
+            "avg_response_time_ms": avgResponseTime,
+            "requests_per_second": float64(requestCount) / uptime.Seconds(),
+        },
+        "memory_stats": map[string]interface{}{
+            "alloc_mb":         float64(m.Alloc) / 1024 / 1024,
+            "total_alloc_mb":   float64(m.TotalAlloc) / 1024 / 1024,
+            "sys_mb":           float64(m.Sys) / 1024 / 1024,
+            "num_gc":           m.NumGC,
+            "gc_cpu_fraction":  m.GCCPUFraction,
+        },
+        "runtime_stats": map[string]interface{}{
+            "goroutines":    runtime.NumGoroutine(),
+            "cgo_calls":     runtime.NumCgoCall(),
+            "go_version":    runtime.Version(),
+            "num_cpu":       runtime.NumCPU(),
+        },
+        "endpoint_metrics": endpointDetails,
+        "status_codes":     pm.metrics.StatusCodes,
+        "response_sizes":   pm.metrics.ResponseSizes,
+        "timestamp":        time.Now().Format(time.RFC3339),
+    }
+}
+
+// Sample handlers for testing
+func fastHandler(w http.ResponseWriter, r *http.Request) {
+    response := map[string]interface{}{
+        "message": "Hello there! Fast response",
+        "data":    "Quick operation completed",
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func slowHandler(w http.ResponseWriter, r *http.Request) {
+    // Simulate slow operation
+    delay := 100 + (time.Now().UnixNano() % 400) // 100-500ms
+    time.Sleep(time.Duration(delay) * time.Millisecond)
+    
+    response := map[string]interface{}{
+        "message": "Hello there! Slow response",
+        "data":    "Long operation completed",
+        "delay_ms": delay,
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func errorHandler(w http.ResponseWriter, r *http.Request) {
+    // Simulate random errors
+    if time.Now().UnixNano()%3 == 0 {
+        http.Error(w, "Simulated server error", http.StatusInternalServerError)
+        return
+    }
+    
+    if time.Now().UnixNano()%4 == 0 {
+        http.Error(w, "Simulated bad request", http.StatusBadRequest)
+        return
+    }
+    
+    response := map[string]interface{}{
+        "message": "Hello there! Success response",
+        "data":    "Operation completed successfully",
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func largeResponseHandler(w http.ResponseWriter, r *http.Request) {
+    size := 1000
+    if sizeParam := r.URL.Query().Get("size"); sizeParam != "" {
+        if s, err := strconv.Atoi(sizeParam); err == nil {
+            size = s
+        }
+    }
+    
+    // Generate large response
+    data := make([]map[string]interface{}, size)
+    for i := 0; i < size; i++ {
+        data[i] = map[string]interface{}{
+            "id":      i + 1,
+            "message": fmt.Sprintf("Hello there! Item %d", i+1),
+            "data":    fmt.Sprintf("Sample data for item %d", i+1),
+        }
+    }
+    
+    response := map[string]interface{}{
+        "message": "Hello there! Large response generated",
+        "items":   data,
+        "count":   size,
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func metricsHandler(pm *PerformanceMonitor) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        metrics := pm.getMetricsSnapshot()
+        
+        w.Header().Set("Content-Type", "application/json")
+        w.Header().Set("Cache-Control", "no-cache")
+        
+        json.NewEncoder(w).Encode(metrics)
+    }
+}
+
+func healthHandler(pm *PerformanceMonitor) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        metrics := pm.getMetricsSnapshot()
+        serverInfo := metrics["server_info"].(map[string]interface{})
+        
+        errorRate := serverInfo["error_rate_percent"].(float64)
+        avgResponseTime := serverInfo["avg_response_time_ms"].(float64)
+        activeRequests := serverInfo["active_requests"].(int32)
+        
+        healthy := errorRate < 10.0 && avgResponseTime < 1000.0 && activeRequests < 100
+        
+        status := "healthy"
+        if !healthy {
+            status = "unhealthy"
+            w.WriteHeader(http.StatusServiceUnavailable)
+        }
+        
+        health := map[string]interface{}{
+            "status": status,
+            "checks": map[string]interface{}{
+                "error_rate_ok": map[string]interface{}{
+                    "status": errorRate < 10.0,
+                    "value":  errorRate,
+                    "threshold": 10.0,
+                },
+                "response_time_ok": map[string]interface{}{
+                    "status": avgResponseTime < 1000.0,
+                    "value":  avgResponseTime,
+                    "threshold": 1000.0,
+                },
+                "load_ok": map[string]interface{}{
+                    "status": activeRequests < 100,
+                    "value":  activeRequests,
+                    "threshold": 100,
+                },
+            },
+            "timestamp": time.Now().Format(time.RFC3339),
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(health)
+    }
+}
+
+func monitoringDashboardHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Performance Monitoring Dashboard</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+            .metric-card { background: #f5f5f5; padding: 20px; border-radius: 8px; border: 1px solid #ddd; }
+            .metric-value { font-size: 2em; font-weight: bold; color: #007cba; }
+            .metric-label { color: #666; margin-bottom: 10px; }
+            .health-good { color: #28a745; }
+            .health-warning { color: #ffc107; }
+            .health-bad { color: #dc3545; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background: #f8f9fa; }
+            button { margin: 5px; padding: 10px 15px; }
+            .auto-refresh { background: #e8f4f8; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+        </style>
+    </head>
+    <body>
+        <h1>Performance Monitoring Dashboard</h1>
+        <p>Hello there! Real-time application performance metrics.</p>
+        
+        <div class="auto-refresh">
+            <label><input type="checkbox" id="auto-refresh" checked> Auto-refresh every 5 seconds</label>
+            <button onclick="refreshMetrics()">Refresh Now</button>
+        </div>
+        
+        <div class="dashboard">
+            <div class="metric-card">
+                <div class="metric-label">Total Requests</div>
+                <div class="metric-value" id="total-requests">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div class="metric-label">Error Rate</div>
+                <div class="metric-value" id="error-rate">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div class="metric-label">Avg Response Time</div>
+                <div class="metric-value" id="avg-response-time">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div class="metric-label">Active Requests</div>
+                <div class="metric-value" id="active-requests">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div class="metric-label">Requests/Second</div>
+                <div class="metric-value" id="requests-per-second">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div class="metric-label">Memory Usage</div>
+                <div class="metric-value" id="memory-usage">-</div>
+            </div>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h2>Endpoint Performance</h2>
+            <table id="endpoint-table">
+                <thead>
+                    <tr>
+                        <th>Endpoint</th>
+                        <th>Count</th>
+                        <th>Avg (ms)</th>
+                        <th>P95 (ms)</th>
+                        <th>P99 (ms)</th>
+                        <th>Error Rate</th>
+                    </tr>
+                </thead>
+                <tbody id="endpoint-tbody">
+                </tbody>
+            </table>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h2>Load Testing</h2>
+            <button onclick="generateLoad()">Generate Load</button>
+            <button onclick="generateErrors()">Generate Errors</button>
+            <button onclick="generateSlowRequests()">Generate Slow Requests</button>
+            <div id="load-result" style="margin-top: 10px;"></div>
+        </div>
+        
+        <script>
+        let refreshInterval;
+        
+        function refreshMetrics() {
+            fetch('/metrics')
+            .then(response => response.json())
+            .then(data => {
+                const serverInfo = data.server_info;
+                const memoryStats = data.memory_stats;
+                
+                document.getElementById('total-requests').textContent = 
+                    serverInfo.total_requests.toLocaleString();
+                
+                const errorRate = serverInfo.error_rate_percent;
+                const errorRateEl = document.getElementById('error-rate');
+                errorRateEl.textContent = errorRate.toFixed(2) + '%';
+                errorRateEl.className = 'metric-value ' + 
+                    (errorRate < 5 ? 'health-good' : errorRate < 10 ? 'health-warning' : 'health-bad');
+                
+                document.getElementById('avg-response-time').textContent = 
+                    serverInfo.avg_response_time_ms.toFixed(1) + ' ms';
+                
+                document.getElementById('active-requests').textContent = 
+                    serverInfo.active_requests;
+                
+                document.getElementById('requests-per-second').textContent = 
+                    serverInfo.requests_per_second.toFixed(1);
+                
+                document.getElementById('memory-usage').textContent = 
+                    memoryStats.alloc_mb.toFixed(1) + ' MB';
+                
+                // Update endpoint table
+                const tbody = document.getElementById('endpoint-tbody');
+                tbody.innerHTML = '';
+                
+                for (const [endpoint, metrics] of Object.entries(data.endpoint_metrics)) {
+                    const row = tbody.insertRow();
+                    row.insertCell(0).textContent = endpoint;
+                    row.insertCell(1).textContent = metrics.count;
+                    row.insertCell(2).textContent = metrics.avg_time_ms.toFixed(1);
+                    row.insertCell(3).textContent = metrics.p95_ms.toFixed(1);
+                    row.insertCell(4).textContent = metrics.p99_ms.toFixed(1);
+                    
+                    const errorCell = row.insertCell(5);
+                    errorCell.textContent = metrics.error_rate.toFixed(1) + '%';
+                    errorCell.className = metrics.error_rate < 5 ? 'health-good' : 
+                                         metrics.error_rate < 10 ? 'health-warning' : 'health-bad';
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching metrics:', error);
+            });
+        }
+        
+        function generateLoad() {
+            document.getElementById('load-result').innerHTML = 'Generating load...';
+            
+            const promises = [];
+            for (let i = 0; i < 50; i++) {
+                promises.push(fetch('/fast'));
+                promises.push(fetch('/slow'));
+                promises.push(fetch('/error'));
+            }
+            
+            Promise.allSettled(promises).then(() => {
+                document.getElementById('load-result').innerHTML = 
+                    'Load generation completed (150 requests)';
+                setTimeout(refreshMetrics, 1000);
+            });
+        }
+        
+        function generateErrors() {
+            const promises = [];
+            for (let i = 0; i < 20; i++) {
+                promises.push(fetch('/error'));
+            }
+            
+            Promise.allSettled(promises).then(() => {
+                document.getElementById('load-result').innerHTML = 
+                    'Error generation completed (20 requests)';
+                setTimeout(refreshMetrics, 1000);
+            });
+        }
+        
+        function generateSlowRequests() {
+            const promises = [];
+            for (let i = 0; i < 10; i++) {
+                promises.push(fetch('/slow'));
+                promises.push(fetch('/large?size=5000'));
+            }
+            
+            Promise.allSettled(promises).then(() => {
+                document.getElementById('load-result').innerHTML = 
+                    'Slow request generation completed (20 requests)';
+                setTimeout(refreshMetrics, 1000);
+            });
+        }
+        
+        // Auto-refresh functionality
+        document.getElementById('auto-refresh').addEventListener('change', function() {
+            if (this.checked) {
+                refreshInterval = setInterval(refreshMetrics, 5000);
+            } else {
+                clearInterval(refreshInterval);
+            }
+        });
+        
+        // Initial load and setup auto-refresh
+        refreshMetrics();
+        refreshInterval = setInterval(refreshMetrics, 5000);
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    monitor := NewPerformanceMonitor()
+    
+    mux := http.NewServeMux()
+    
+    // Monitoring middleware applied to all handlers
+    monitoredMux := MonitoringMiddleware(monitor)(mux)
+    
+    // Demo page
+    mux.HandleFunc("/", monitoringDashboardHandler)
+    
+    // Test endpoints
+    mux.HandleFunc("/fast", fastHandler)
+    mux.HandleFunc("/slow", slowHandler)
+    mux.HandleFunc("/error", errorHandler)
+    mux.HandleFunc("/large", largeResponseHandler)
+    
+    // Monitoring endpoints (not monitored to avoid recursion)
+    http.HandleFunc("/metrics", metricsHandler(monitor))
+    http.HandleFunc("/health", healthHandler(monitor))
+    
+    // Main application routes (monitored)
+    http.Handle("/", monitoredMux)
+    
+    fmt.Println("=== HTTP Performance Monitoring Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Request/response metrics collection")
+    fmt.Println("• Performance percentiles (P50, P95, P99)")
+    fmt.Println("• Error rate monitoring")
+    fmt.Println("• Memory and runtime statistics")
+    fmt.Println("• Real-time dashboard")
+    fmt.Println("• Health check endpoints")
+    fmt.Println()
+    fmt.Println("Monitoring endpoints:")
+    fmt.Println("  GET / - Performance dashboard")
+    fmt.Println("  GET /metrics - Raw metrics (JSON)")
+    fmt.Println("  GET /health - Health check")
+    fmt.Println()
+    fmt.Println("Test endpoints:")
+    fmt.Println("  GET /fast - Fast response (~10ms)")
+    fmt.Println("  GET /slow - Slow response (100-500ms)")
+    fmt.Println("  GET /error - Random errors (30% failure)")
+    fmt.Println("  GET /large?size=N - Large response")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This performance monitoring example demonstrates comprehensive metrics  
+collection including request counting, response time percentiles, error  
+tracking, and memory monitoring. Performance monitoring is essential for  
+maintaining application health and identifying optimization opportunities.
