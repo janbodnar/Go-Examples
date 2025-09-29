@@ -2,36 +2,37 @@
 
 Go's deployment capabilities make it one of the most attractive languages for  
 modern application development. Go compiles to static binaries by default,  
-enabling easy distribution and deployment across different environments without  
-dependency concerns. The language provides excellent cross-compilation support,  
-allowing developers to build binaries for multiple operating systems and  
-architectures from a single development machine.
+enabling easy distribution and deployment across different environments  
+without dependency concerns. The language provides excellent cross-compilation  
+support, allowing developers to build binaries for multiple operating systems  
+and architectures from a single development machine.  
 
 Go's deployment story is compelling because of several key features: static  
 linking produces self-contained executables, fast compilation times enable  
 rapid iteration, small binary sizes reduce deployment overhead, and excellent  
 containerization support makes Go applications ideal for modern cloud-native  
 deployments. The go build command provides comprehensive options for  
-optimizing binaries for production use.
+optimizing binaries for production use.  
 
 Cross-compilation in Go is remarkably straightforward, supporting over 20  
-operating systems and multiple architectures including ARM, AMD64, and emerging  
-platforms. This capability is essential for modern deployment scenarios where  
-applications need to run across diverse infrastructure environments. Go's  
-consistent behavior across platforms reduces deployment complexity and testing  
-overhead.
+operating systems and multiple architectures including ARM, AMD64, and  
+emerging platforms. This capability is essential for modern deployment  
+scenarios where applications need to run across diverse infrastructure  
+environments. Go's consistent behavior across platforms reduces deployment  
+complexity and testing overhead.  
 
 Container deployment has become the standard for Go applications, with Docker  
 providing excellent support for Go binaries. Go's static linking capability  
 eliminates the need for complex base images, allowing applications to run in  
 minimal containers like scratch or distroless images. This results in smaller  
-image sizes, reduced attack surface, and faster deployment times.
+image sizes, reduced attack surface, and faster deployment times.  
 
-Modern deployment strategies for Go applications include blue-green deployments,  
-rolling updates, canary releases, and serverless deployments. Go's fast startup  
-times and low resource consumption make it ideal for cloud-native patterns like  
-auto-scaling and function-as-a-service platforms. Understanding these deployment  
-patterns is crucial for building production-ready Go applications.
+Modern deployment strategies for Go applications include blue-green  
+deployments, rolling updates, canary releases, and serverless deployments.  
+Go's fast startup times and low resource consumption make it ideal for  
+cloud-native patterns like auto-scaling and function-as-a-service platforms.  
+Understanding these deployment patterns is crucial for building production-  
+ready Go applications.  
 
 
 ## Basic binary building
