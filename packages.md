@@ -1266,3 +1266,2121 @@ Good package documentation includes a package comment, detailed function and
 type comments, and usage examples. The go doc tool extracts this documentation  
 automatically. Comments should explain the purpose, behavior, and usage  
 patterns of exported identifiers.  
+
+## Blank identifier imports
+
+Blank identifier imports are used to import packages for their side effects  
+without directly using their exported identifiers.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    _ "net/http/pprof"  // Import for side effects only
+    "os"
+    "time"
+    
+    _ "image/jpeg"  // Registers JPEG decoder
+    _ "image/png"   // Registers PNG decoder
+)
+
+func main() {
+    // Start HTTP server with pprof endpoints automatically available
+    // The pprof package registers its handlers in the default ServeMux
+    go func() {
+        log.Println("Starting profiling server on :6060")
+        log.Println(http.ListenAndServe("localhost:6060", nil))
+    }()
+    
+    // Create a simple HTTP server
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Server started at %s\n", time.Now().Format(time.RFC3339))
+        fmt.Fprintf(w, "Process ID: %d\n", os.Getpid())
+        
+        // Simulate some work
+        start := time.Now()
+        time.Sleep(100 * time.Millisecond)
+        fmt.Fprintf(w, "Request processed in %v\n", time.Since(start))
+    })
+    
+    http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Status: OK\n")
+        fmt.Fprintf(w, "Time: %s\n", time.Now().Format(time.Kitchen))
+    })
+    
+    fmt.Println("Server starting on :8080")
+    fmt.Println("Profiling available at http://localhost:6060/debug/pprof/")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+// Example with image processing that benefits from blank imports
+// imageprocessor.go
+package main
+
+import (
+    "fmt"
+    "image"
+    _ "image/gif"   // Import for GIF support
+    _ "image/jpeg"  // Import for JPEG support  
+    _ "image/png"   // Import for PNG support
+    "os"
+)
+
+func processImage(filename string) error {
+    file, err := os.Open(filename)
+    if err != nil {
+        return fmt.Errorf("failed to open file: %w", err)
+    }
+    defer file.Close()
+    
+    // image.Decode automatically uses the appropriate decoder
+    // based on the registered formats from the blank imports
+    img, format, err := image.Decode(file)
+    if err != nil {
+        return fmt.Errorf("failed to decode image: %w", err)
+    }
+    
+    bounds := img.Bounds()
+    fmt.Printf("Image format: %s\n", format)
+    fmt.Printf("Dimensions: %dx%d\n", bounds.Dx(), bounds.Dy())
+    fmt.Printf("Color model: %T\n", img.ColorModel())
+    
+    return nil
+}
+
+func main() {
+    // The blank imports enable support for multiple image formats
+    fmt.Println("Supported image formats through blank imports:")
+    
+    // This would work with JPEG, PNG, or GIF files
+    testFiles := []string{"test.jpg", "test.png", "test.gif"}
+    
+    for _, file := range testFiles {
+        fmt.Printf("Attempting to process: %s\n", file)
+        if err := processImage(file); err != nil {
+            fmt.Printf("Error: %v\n", err)
+        }
+        fmt.Println()
+    }
+}
+```
+
+Blank imports execute the init functions of imported packages without making  
+their exported identifiers available. This is commonly used for registering  
+drivers, decoders, or handlers that integrate with larger systems through  
+package-level registration mechanisms.  
+
+## Conditional imports with build tags
+
+Build tags allow you to conditionally include packages based on build  
+constraints, enabling platform-specific or feature-specific code.  
+
+```go
+// logger_dev.go
+//go:build dev
+// +build dev
+
+package logger
+
+import (
+    "fmt"
+    "log"
+    "os"
+)
+
+var debugMode = true
+
+func init() {
+    log.SetFlags(log.LstdFlags | log.Lshortfile)
+    log.SetOutput(os.Stdout)
+    fmt.Println("Development logger initialized with debug mode")
+}
+
+func Debug(msg string, args ...interface{}) {
+    if debugMode {
+        log.Printf("[DEBUG] "+msg, args...)
+    }
+}
+
+func Info(msg string, args ...interface{}) {
+    log.Printf("[INFO] "+msg, args...)
+}
+
+// logger_prod.go
+//go:build prod
+// +build prod
+
+package logger
+
+import (
+    "io/ioutil"
+    "log"
+    "os"
+)
+
+var debugMode = false
+
+func init() {
+    // Production logger configuration
+    file, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    if err != nil {
+        log.Fatalln("Failed to open log file:", err)
+    }
+    log.SetOutput(file)
+    log.SetFlags(log.LstdFlags)
+}
+
+func Debug(msg string, args ...interface{}) {
+    // Debug messages are silently discarded in production
+}
+
+func Info(msg string, args ...interface{}) {
+    log.Printf("[INFO] "+msg, args...)
+}
+
+// database_sqlite.go
+//go:build sqlite
+// +build sqlite
+
+package database
+
+import (
+    "database/sql"
+    _ "github.com/mattn/go-sqlite3"  // SQLite driver
+)
+
+type Config struct {
+    DataSourceName string
+}
+
+func Connect(config Config) (*sql.DB, error) {
+    return sql.Open("sqlite3", config.DataSourceName)
+}
+
+func DefaultConfig() Config {
+    return Config{
+        DataSourceName: "app.db",
+    }
+}
+
+// database_postgres.go
+//go:build postgres
+// +build postgres
+
+package database
+
+import (
+    "database/sql"
+    _ "github.com/lib/pq"  // PostgreSQL driver
+)
+
+type Config struct {
+    Host     string
+    Port     int
+    User     string
+    Password string
+    DBName   string
+}
+
+func Connect(config Config) (*sql.DB, error) {
+    dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+        config.Host, config.Port, config.User, config.Password, config.DBName)
+    return sql.Open("postgres", dsn)
+}
+
+func DefaultConfig() Config {
+    return Config{
+        Host:     "localhost",
+        Port:     5432,
+        User:     "postgres",
+        Password: "password",
+        DBName:   "myapp",
+    }
+}
+
+// main.go
+package main
+
+import (
+    "fmt"
+    "your-module/database"
+    "your-module/logger"
+)
+
+func main() {
+    logger.Info("Application starting...")
+    logger.Debug("This is a debug message")
+    
+    // Database connection using build-tag specific implementation
+    config := database.DefaultConfig()
+    db, err := database.Connect(config)
+    if err != nil {
+        logger.Info("Database connection failed: %v", err)
+        return
+    }
+    defer db.Close()
+    
+    logger.Info("Database connected successfully")
+    logger.Debug("Using configuration: %+v", config)
+    
+    // Application logic here
+    fmt.Println("Application running...")
+}
+
+/*
+To build with different configurations:
+
+Development with SQLite:
+go build -tags "dev sqlite" -o myapp-dev
+
+Production with PostgreSQL:
+go build -tags "prod postgres" -o myapp-prod
+
+Development with PostgreSQL:
+go build -tags "dev postgres" -o myapp-dev-pg
+*/
+```
+
+Build tags provide powerful conditional compilation capabilities. They enable  
+the same codebase to support multiple environments, platforms, or feature  
+sets while maintaining clean separation of concerns and avoiding runtime  
+overhead for unused functionality.  
+
+## Internal packages
+
+Internal packages are a Go feature that restricts package imports to code  
+within the same module or parent directory tree.  
+
+```go
+// Directory structure:
+// myapp/
+//   ├── main.go
+//   ├── internal/
+//   │   ├── auth/
+//   │   │   └── auth.go
+//   │   ├── config/
+//   │   │   └── config.go
+//   │   └── database/
+//   │       └── db.go
+//   ├── api/
+//   │   └── handlers.go
+//   └── cmd/
+//       └── cli.go
+
+// internal/auth/auth.go
+package auth
+
+import (
+    "crypto/rand"
+    "encoding/hex"
+    "fmt"
+    "time"
+)
+
+type User struct {
+    ID       int
+    Username string
+    Email    string
+    Role     string
+}
+
+type Session struct {
+    Token   string
+    UserID  int
+    Expires time.Time
+}
+
+var sessions = make(map[string]*Session)
+
+func GenerateToken() string {
+    bytes := make([]byte, 16)
+    rand.Read(bytes)
+    return hex.EncodeToString(bytes)
+}
+
+func CreateSession(user *User) *Session {
+    session := &Session{
+        Token:   GenerateToken(),
+        UserID:  user.ID,
+        Expires: time.Now().Add(24 * time.Hour),
+    }
+    sessions[session.Token] = session
+    return session
+}
+
+func ValidateSession(token string) (*Session, error) {
+    session, exists := sessions[token]
+    if !exists {
+        return nil, fmt.Errorf("session not found")
+    }
+    
+    if time.Now().After(session.Expires) {
+        delete(sessions, token)
+        return nil, fmt.Errorf("session expired")
+    }
+    
+    return session, nil
+}
+
+func RevokeSession(token string) {
+    delete(sessions, token)
+}
+
+// internal/config/config.go
+package config
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+)
+
+type AppConfig struct {
+    Port         int    `json:"port"`
+    DatabaseURL  string `json:"database_url"`
+    JWTSecret    string `json:"jwt_secret"`
+    Environment  string `json:"environment"`
+    LogLevel     string `json:"log_level"`
+}
+
+var globalConfig *AppConfig
+
+func Load(filename string) error {
+    file, err := os.Open(filename)
+    if err != nil {
+        return fmt.Errorf("failed to open config file: %w", err)
+    }
+    defer file.Close()
+    
+    decoder := json.NewDecoder(file)
+    config := &AppConfig{}
+    if err := decoder.Decode(config); err != nil {
+        return fmt.Errorf("failed to decode config: %w", err)
+    }
+    
+    // Set defaults
+    if config.Port == 0 {
+        config.Port = 8080
+    }
+    if config.Environment == "" {
+        config.Environment = "development"
+    }
+    if config.LogLevel == "" {
+        config.LogLevel = "info"
+    }
+    
+    globalConfig = config
+    return nil
+}
+
+func Get() *AppConfig {
+    if globalConfig == nil {
+        // Return default config if none loaded
+        return &AppConfig{
+            Port:        8080,
+            Environment: "development",
+            LogLevel:    "info",
+        }
+    }
+    return globalConfig
+}
+
+func IsDevelopment() bool {
+    return Get().Environment == "development"
+}
+
+func IsProduction() bool {
+    return Get().Environment == "production"
+}
+
+// internal/database/db.go
+package database
+
+import (
+    "database/sql"
+    "fmt"
+    "myapp/internal/config"
+    
+    _ "github.com/lib/pq"
+)
+
+type DB struct {
+    conn *sql.DB
+}
+
+var instance *DB
+
+func Initialize() error {
+    cfg := config.Get()
+    db, err := sql.Open("postgres", cfg.DatabaseURL)
+    if err != nil {
+        return fmt.Errorf("failed to connect to database: %w", err)
+    }
+    
+    if err := db.Ping(); err != nil {
+        return fmt.Errorf("failed to ping database: %w", err)
+    }
+    
+    instance = &DB{conn: db}
+    return nil
+}
+
+func GetInstance() *DB {
+    if instance == nil {
+        panic("database not initialized")
+    }
+    return instance
+}
+
+func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
+    return db.conn.Query(query, args...)
+}
+
+func (db *DB) Exec(query string, args ...interface{}) (sql.Result, error) {
+    return db.conn.Exec(query, args...)
+}
+
+func (db *DB) Close() error {
+    if db.conn != nil {
+        return db.conn.Close()
+    }
+    return nil
+}
+
+// api/handlers.go
+package api
+
+import (
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "myapp/internal/auth"  // Can import internal packages from parent
+    "myapp/internal/config"
+)
+
+func LoginHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Parse login credentials
+    var credentials struct {
+        Username string `json:"username"`
+        Password string `json:"password"`
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+        http.Error(w, "Invalid JSON", http.StatusBadRequest)
+        return
+    }
+    
+    // Simulate user authentication
+    if credentials.Username == "admin" && credentials.Password == "password" {
+        user := &auth.User{
+            ID:       1,
+            Username: credentials.Username,
+            Email:    "admin@example.com",
+            Role:     "admin",
+        }
+        
+        session := auth.CreateSession(user)
+        
+        response := map[string]interface{}{
+            "token":   session.Token,
+            "expires": session.Expires,
+            "user":    user,
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+    } else {
+        http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+    }
+}
+
+func StatusHandler(w http.ResponseWriter, r *http.Request) {
+    cfg := config.Get()
+    status := map[string]interface{}{
+        "status":      "ok",
+        "environment": cfg.Environment,
+        "port":        cfg.Port,
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(status)
+}
+
+// main.go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    "myapp/api"
+    "myapp/internal/config"  // Can import internal packages
+    "myapp/internal/database"
+)
+
+func main() {
+    // Load configuration
+    if err := config.Load("config.json"); err != nil {
+        log.Printf("Warning: %v, using defaults", err)
+    }
+    
+    cfg := config.Get()
+    fmt.Printf("Starting server in %s mode on port %d\n", cfg.Environment, cfg.Port)
+    
+    // Initialize database
+    if err := database.Initialize(); err != nil {
+        log.Fatal("Database initialization failed:", err)
+    }
+    defer database.GetInstance().Close()
+    
+    // Setup routes
+    http.HandleFunc("/login", api.LoginHandler)
+    http.HandleFunc("/status", api.StatusHandler)
+    
+    // Start server
+    addr := fmt.Sprintf(":%d", cfg.Port)
+    log.Printf("Server listening on %s", addr)
+    log.Fatal(http.ListenAndServe(addr, nil))
+}
+```
+
+Internal packages are only importable by code within the same module or  
+parent directory tree. This provides strong encapsulation for implementation  
+details and prevents external dependencies on internal APIs. The "internal"  
+directory name has special meaning to the Go toolchain.  
+
+## Vendor directory usage
+
+The vendor directory allows you to include dependencies directly in your  
+project for reproducible builds and offline development.  
+
+```go
+// Project structure with vendoring:
+// myproject/
+//   ├── go.mod
+//   ├── go.sum
+//   ├── main.go
+//   ├── vendor/
+//   │   ├── modules.txt
+//   │   ├── github.com/
+//   │   │   ├── gorilla/
+//   │   │   │   └── mux/
+//   │   │   └── pkg/
+//   │   │       └── errors/
+//   │   └── gopkg.in/
+//   │       └── yaml.v3/
+//   └── internal/
+//       └── config/
+//           └── config.go
+
+// go.mod
+module myproject
+
+go 1.21
+
+require (
+    github.com/gorilla/mux v1.8.0
+    github.com/pkg/errors v0.9.1
+    gopkg.in/yaml.v3 v3.0.1
+)
+
+// internal/config/config.go
+package config
+
+import (
+    "fmt"
+    "io/ioutil"
+    "os"
+    
+    "github.com/pkg/errors"  // Vendored dependency
+    "gopkg.in/yaml.v3"       // Vendored dependency
+)
+
+type ServerConfig struct {
+    Host string `yaml:"host"`
+    Port int    `yaml:"port"`
+    TLS  struct {
+        Enabled  bool   `yaml:"enabled"`
+        CertFile string `yaml:"cert_file"`
+        KeyFile  string `yaml:"key_file"`
+    } `yaml:"tls"`
+}
+
+type DatabaseConfig struct {
+    Driver   string `yaml:"driver"`
+    Host     string `yaml:"host"`
+    Port     int    `yaml:"port"`
+    Name     string `yaml:"name"`
+    User     string `yaml:"user"`
+    Password string `yaml:"password"`
+}
+
+type Config struct {
+    App      string         `yaml:"app_name"`
+    Version  string         `yaml:"version"`
+    Debug    bool           `yaml:"debug"`
+    Server   ServerConfig   `yaml:"server"`
+    Database DatabaseConfig `yaml:"database"`
+    Features map[string]bool `yaml:"features"`
+}
+
+func LoadFromFile(filename string) (*Config, error) {
+    if _, err := os.Stat(filename); os.IsNotExist(err) {
+        return nil, errors.Wrap(err, "config file does not exist")
+    }
+    
+    data, err := ioutil.ReadFile(filename)
+    if err != nil {
+        return nil, errors.Wrap(err, "failed to read config file")
+    }
+    
+    var config Config
+    if err := yaml.Unmarshal(data, &config); err != nil {
+        return nil, errors.Wrap(err, "failed to parse YAML config")
+    }
+    
+    // Set defaults
+    if config.Server.Host == "" {
+        config.Server.Host = "localhost"
+    }
+    if config.Server.Port == 0 {
+        config.Server.Port = 8080
+    }
+    if config.Database.Driver == "" {
+        config.Database.Driver = "postgres"
+    }
+    
+    return &config, nil
+}
+
+func (c *Config) Validate() error {
+    if c.App == "" {
+        return errors.New("app_name is required")
+    }
+    if c.Version == "" {
+        return errors.New("version is required")
+    }
+    if c.Server.Port < 1 || c.Server.Port > 65535 {
+        return errors.New("server port must be between 1 and 65535")
+    }
+    if c.Server.TLS.Enabled {
+        if c.Server.TLS.CertFile == "" {
+            return errors.New("TLS cert_file is required when TLS is enabled")
+        }
+        if c.Server.TLS.KeyFile == "" {
+            return errors.New("TLS key_file is required when TLS is enabled")
+        }
+    }
+    return nil
+}
+
+func (c *Config) GetDatabaseURL() string {
+    return fmt.Sprintf("%s://%s:%s@%s:%d/%s",
+        c.Database.Driver,
+        c.Database.User,
+        c.Database.Password,
+        c.Database.Host,
+        c.Database.Port,
+        c.Database.Name,
+    )
+}
+
+// main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
+    
+    "github.com/gorilla/mux"      // Vendored dependency
+    "github.com/pkg/errors"       // Vendored dependency
+    "myproject/internal/config"
+)
+
+func main() {
+    // Load configuration
+    cfg, err := config.LoadFromFile("config.yaml")
+    if err != nil {
+        log.Fatal("Failed to load config:", err)
+    }
+    
+    if err := cfg.Validate(); err != nil {
+        log.Fatal("Invalid configuration:", err)
+    }
+    
+    fmt.Printf("Starting %s v%s\n", cfg.App, cfg.Version)
+    
+    // Create router using vendored gorilla/mux
+    router := mux.NewRouter()
+    
+    // API routes
+    api := router.PathPrefix("/api/v1").Subrouter()
+    api.HandleFunc("/health", healthHandler(cfg)).Methods("GET")
+    api.HandleFunc("/config", configHandler(cfg)).Methods("GET")
+    api.HandleFunc("/features", featuresHandler(cfg)).Methods("GET")
+    
+    // Static routes
+    router.HandleFunc("/", indexHandler).Methods("GET")
+    
+    // Create HTTP server
+    addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+    server := &http.Server{
+        Addr:         addr,
+        Handler:      router,
+        ReadTimeout:  30 * time.Second,
+        WriteTimeout: 30 * time.Second,
+        IdleTimeout:  60 * time.Second,
+    }
+    
+    // Start server
+    go func() {
+        log.Printf("Server listening on %s", addr)
+        if cfg.Server.TLS.Enabled {
+            if err := server.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+                log.Fatal("Server failed:", err)
+            }
+        } else {
+            if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+                log.Fatal("Server failed:", err)
+            }
+        }
+    }()
+    
+    // Wait for interrupt signal to gracefully shutdown
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    <-quit
+    log.Println("Shutting down server...")
+    
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    
+    if err := server.Shutdown(ctx); err != nil {
+        log.Fatal("Server forced to shutdown:", err)
+    }
+    
+    log.Println("Server exited")
+}
+
+func healthHandler(cfg *config.Config) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        fmt.Fprintf(w, `{"status": "ok", "app": "%s", "version": "%s"}`, cfg.App, cfg.Version)
+    }
+}
+
+func configHandler(cfg *config.Config) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        fmt.Fprintf(w, `{"debug": %t, "server": {"host": "%s", "port": %d}}`, 
+            cfg.Debug, cfg.Server.Host, cfg.Server.Port)
+    }
+}
+
+func featuresHandler(cfg *config.Config) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        w.Write([]byte("{\"features\": {"))
+        first := true
+        for feature, enabled := range cfg.Features {
+            if !first {
+                w.Write([]byte(","))
+            }
+            fmt.Fprintf(w, `"%s": %t`, feature, enabled)
+            first = false
+        }
+        w.Write([]byte("}}")
+    }
+}
+
+func indexHandler(w http.ResponseWriter, r *http.Request) {
+    html := `<!DOCTYPE html>
+<html>
+<head><title>My Project</title></head>
+<body>
+    <h1>Welcome to My Project</h1>
+    <p>API endpoints:</p>
+    <ul>
+        <li><a href="/api/v1/health">Health Check</a></li>
+        <li><a href="/api/v1/config">Configuration</a></li>
+        <li><a href="/api/v1/features">Features</a></li>
+    </ul>
+</body>
+</html>`
+    w.Header().Set("Content-Type", "text/html")
+    w.Write([]byte(html))
+}
+
+/*
+To use vendoring:
+
+1. Enable module mode:
+   go mod init myproject
+
+2. Add dependencies:
+   go get github.com/gorilla/mux@v1.8.0
+   go get github.com/pkg/errors@v0.9.1
+   go get gopkg.in/yaml.v3@v3.0.1
+
+3. Create vendor directory:
+   go mod vendor
+
+4. Build using vendor directory:
+   go build -mod=vendor
+
+5. Verify vendoring:
+   go mod verify
+*/
+```
+
+Vendoring creates a local copy of all dependencies in the vendor directory.  
+This ensures reproducible builds, enables offline development, and provides  
+protection against dependency changes. The go mod vendor command populates  
+the vendor directory with exact versions from go.mod and go.sum.  
+
+## Module-based imports
+
+Modern Go uses modules for dependency management, allowing for versioned  
+imports and semantic import versioning.  
+
+```go
+// go.mod - Module declaration and dependencies
+module github.com/myorg/myapp
+
+go 1.21
+
+require (
+    github.com/gin-gonic/gin v1.9.1
+    github.com/golang-jwt/jwt/v5 v5.0.0
+    github.com/google/uuid v1.3.0
+    github.com/redis/go-redis/v9 v9.1.0
+    gorm.io/driver/postgres v1.5.2
+    gorm.io/gorm v1.25.4
+)
+
+require (
+    // Indirect dependencies managed automatically
+    github.com/bytedance/sonic v1.9.1 // indirect
+    github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
+    github.com/gabriel-vasile/mimetype v1.4.2 // indirect
+    // ... more indirect dependencies
+)
+
+replace (
+    // Replace directive for local development
+    github.com/myorg/shared => ../shared
+    
+    // Replace specific version with fork
+    github.com/problematic/lib v1.2.3 => github.com/myorg/lib v1.2.4-fix
+)
+
+// auth/jwt.go - Using versioned imports
+package auth
+
+import (
+    "fmt"
+    "time"
+    
+    "github.com/golang-jwt/jwt/v5"  // v5 import path
+    "github.com/google/uuid"
+)
+
+type Claims struct {
+    UserID   string    `json:"user_id"`
+    Username string    `json:"username"`
+    Role     string    `json:"role"`
+    IssuedAt time.Time `json:"issued_at"`
+    jwt.RegisteredClaims
+}
+
+type JWTManager struct {
+    secretKey     string
+    tokenDuration time.Duration
+}
+
+func NewJWTManager(secretKey string, duration time.Duration) *JWTManager {
+    return &JWTManager{
+        secretKey:     secretKey,
+        tokenDuration: duration,
+    }
+}
+
+func (manager *JWTManager) Generate(userID, username, role string) (string, error) {
+    claims := Claims{
+        UserID:   userID,
+        Username: username,
+        Role:     role,
+        IssuedAt: time.Now(),
+        RegisteredClaims: jwt.RegisteredClaims{
+            ID:        uuid.New().String(),
+            ExpiresAt: jwt.NewNumericDate(time.Now().Add(manager.tokenDuration)),
+            IssuedAt:  jwt.NewNumericDate(time.Now()),
+            NotBefore: jwt.NewNumericDate(time.Now()),
+            Issuer:    "myapp",
+            Subject:   userID,
+        },
+    }
+    
+    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+    return token.SignedString([]byte(manager.secretKey))
+}
+
+func (manager *JWTManager) Verify(tokenString string) (*Claims, error) {
+    token, err := jwt.ParseWithClaims(
+        tokenString,
+        &Claims{},
+        func(token *jwt.Token) (interface{}, error) {
+            if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+                return nil, fmt.Errorf("unexpected token signing method")
+            }
+            return []byte(manager.secretKey), nil
+        },
+    )
+    
+    if err != nil {
+        return nil, fmt.Errorf("invalid token: %w", err)
+    }
+    
+    claims, ok := token.Claims.(*Claims)
+    if !ok {
+        return nil, fmt.Errorf("invalid token claims")
+    }
+    
+    return claims, nil
+}
+
+// cache/redis.go - Redis client with context support
+package cache
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "time"
+    
+    "github.com/redis/go-redis/v9"  // v9 with context support
+)
+
+type RedisCache struct {
+    client *redis.Client
+    ctx    context.Context
+}
+
+func NewRedisCache(addr, password string, db int) *RedisCache {
+    rdb := redis.NewClient(&redis.Options{
+        Addr:     addr,
+        Password: password,
+        DB:       db,
+    })
+    
+    return &RedisCache{
+        client: rdb,
+        ctx:    context.Background(),
+    }
+}
+
+func (r *RedisCache) Set(key string, value interface{}, expiration time.Duration) error {
+    data, err := json.Marshal(value)
+    if err != nil {
+        return fmt.Errorf("failed to marshal value: %w", err)
+    }
+    
+    return r.client.Set(r.ctx, key, data, expiration).Err()
+}
+
+func (r *RedisCache) Get(key string, dest interface{}) error {
+    val, err := r.client.Get(r.ctx, key).Result()
+    if err != nil {
+        if err == redis.Nil {
+            return fmt.Errorf("key not found: %s", key)
+        }
+        return fmt.Errorf("failed to get key: %w", err)
+    }
+    
+    return json.Unmarshal([]byte(val), dest)
+}
+
+func (r *RedisCache) Delete(key string) error {
+    return r.client.Del(r.ctx, key).Err()
+}
+
+func (r *RedisCache) Exists(key string) bool {
+    count, err := r.client.Exists(r.ctx, key).Result()
+    return err == nil && count > 0
+}
+
+func (r *RedisCache) Close() error {
+    return r.client.Close()
+}
+
+// models/user.go - GORM with PostgreSQL driver
+package models
+
+import (
+    "time"
+    
+    "github.com/google/uuid"
+    "gorm.io/gorm"
+)
+
+type User struct {
+    ID        uuid.UUID      `gorm:"type:uuid;primary_key" json:"id"`
+    Username  string         `gorm:"uniqueIndex;not null" json:"username"`
+    Email     string         `gorm:"uniqueIndex;not null" json:"email"`
+    Password  string         `gorm:"not null" json:"-"`
+    Role      string         `gorm:"default:'user'" json:"role"`
+    IsActive  bool           `gorm:"default:true" json:"is_active"`
+    CreatedAt time.Time      `json:"created_at"`
+    UpdatedAt time.Time      `json:"updated_at"`
+    DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (u *User) BeforeCreate(tx *gorm.DB) error {
+    if u.ID == uuid.Nil {
+        u.ID = uuid.New()
+    }
+    return nil
+}
+
+type UserRepository struct {
+    db *gorm.DB
+}
+
+func NewUserRepository(db *gorm.DB) *UserRepository {
+    return &UserRepository{db: db}
+}
+
+func (r *UserRepository) Create(user *User) error {
+    return r.db.Create(user).Error
+}
+
+func (r *UserRepository) GetByID(id uuid.UUID) (*User, error) {
+    var user User
+    err := r.db.First(&user, "id = ?", id).Error
+    return &user, err
+}
+
+func (r *UserRepository) GetByUsername(username string) (*User, error) {
+    var user User
+    err := r.db.First(&user, "username = ?", username).Error
+    return &user, err
+}
+
+func (r *UserRepository) Update(user *User) error {
+    return r.db.Save(user).Error
+}
+
+func (r *UserRepository) Delete(id uuid.UUID) error {
+    return r.db.Delete(&User{}, "id = ?", id).Error
+}
+
+// main.go - Main application using all imports
+package main
+
+import (
+    "log"
+    "net/http"
+    "time"
+    
+    "github.com/gin-gonic/gin"
+    "gorm.io/driver/postgres"
+    "gorm.io/gorm"
+    
+    "github.com/myorg/myapp/auth"
+    "github.com/myorg/myapp/cache"
+    "github.com/myorg/myapp/models"
+)
+
+func main() {
+    // Initialize database
+    dsn := "host=localhost user=postgres password=password dbname=myapp port=5432 sslmode=disable"
+    db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+    if err != nil {
+        log.Fatal("Failed to connect to database:", err)
+    }
+    
+    // Auto-migrate models
+    if err := db.AutoMigrate(&models.User{}); err != nil {
+        log.Fatal("Failed to migrate database:", err)
+    }
+    
+    // Initialize Redis cache
+    redisCache := cache.NewRedisCache("localhost:6379", "", 0)
+    defer redisCache.Close()
+    
+    // Initialize JWT manager
+    jwtManager := auth.NewJWTManager("secret-key", 24*time.Hour)
+    
+    // Initialize repositories
+    userRepo := models.NewUserRepository(db)
+    
+    // Create Gin router
+    r := gin.Default()
+    
+    // Routes
+    api := r.Group("/api/v1")
+    {
+        api.POST("/register", registerHandler(userRepo))
+        api.POST("/login", loginHandler(userRepo, jwtManager, redisCache))
+        api.GET("/profile", authMiddleware(jwtManager), profileHandler(userRepo))
+    }
+    
+    // Start server
+    log.Println("Server starting on :8080")
+    log.Fatal(http.ListenAndServe(":8080", r))
+}
+
+func registerHandler(repo *models.UserRepository) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // Registration logic
+        c.JSON(http.StatusOK, gin.H{"message": "User registered"})
+    }
+}
+
+func loginHandler(repo *models.UserRepository, jwt *auth.JWTManager, cache *cache.RedisCache) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // Login logic with JWT and Redis caching
+        c.JSON(http.StatusOK, gin.H{"message": "Login successful"})
+    }
+}
+
+func profileHandler(repo *models.UserRepository) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // Profile retrieval logic
+        c.JSON(http.StatusOK, gin.H{"message": "Profile data"})
+    }
+}
+
+func authMiddleware(jwt *auth.JWTManager) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // JWT authentication middleware
+        c.Next()
+    }
+}
+
+/*
+Module management commands:
+
+1. Initialize module:
+   go mod init github.com/myorg/myapp
+
+2. Add dependencies:
+   go get github.com/gin-gonic/gin@latest
+   go get github.com/golang-jwt/jwt/v5@latest
+
+3. Update dependencies:
+   go get -u ./...
+
+4. Clean up unused dependencies:
+   go mod tidy
+
+5. Verify dependencies:
+   go mod verify
+
+6. Download dependencies:
+   go mod download
+*/
+```
+
+Module-based imports provide version management, semantic versioning, and  
+reliable dependency resolution. Major version changes require different  
+import paths (semantic import versioning), enabling multiple versions of  
+the same package to coexist in a single build.  
+
+## Package interfaces
+
+Interfaces defined at the package level provide contract-based design  
+and enable polymorphism across different implementations.  
+
+```go
+// storage/interface.go
+package storage
+
+import (
+    "context"
+    "io"
+)
+
+// Storage defines the interface for data storage operations
+type Storage interface {
+    Store(ctx context.Context, key string, data io.Reader) error
+    Retrieve(ctx context.Context, key string) (io.ReadCloser, error)
+    Delete(ctx context.Context, key string) error
+    Exists(ctx context.Context, key string) (bool, error)
+    List(ctx context.Context, prefix string) ([]string, error)
+}
+
+// Metadata provides additional information about stored objects
+type Metadata interface {
+    GetMetadata(ctx context.Context, key string) (map[string]string, error)
+    SetMetadata(ctx context.Context, key string, metadata map[string]string) error
+}
+
+// StorageWithMetadata combines storage and metadata capabilities
+type StorageWithMetadata interface {
+    Storage
+    Metadata
+}
+
+// storage/filesystem.go
+package storage
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+    "strings"
+)
+
+type FileSystemStorage struct {
+    basePath string
+}
+
+func NewFileSystemStorage(basePath string) (*FileSystemStorage, error) {
+    if err := os.MkdirAll(basePath, 0755); err != nil {
+        return nil, fmt.Errorf("failed to create base directory: %w", err)
+    }
+    
+    return &FileSystemStorage{basePath: basePath}, nil
+}
+
+func (fs *FileSystemStorage) Store(ctx context.Context, key string, data io.Reader) error {
+    filePath := filepath.Join(fs.basePath, key)
+    
+    // Create directory if it doesn't exist
+    if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+        return fmt.Errorf("failed to create directory: %w", err)
+    }
+    
+    file, err := os.Create(filePath)
+    if err != nil {
+        return fmt.Errorf("failed to create file: %w", err)
+    }
+    defer file.Close()
+    
+    _, err = io.Copy(file, data)
+    return err
+}
+
+func (fs *FileSystemStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, error) {
+    filePath := filepath.Join(fs.basePath, key)
+    return os.Open(filePath)
+}
+
+func (fs *FileSystemStorage) Delete(ctx context.Context, key string) error {
+    filePath := filepath.Join(fs.basePath, key)
+    return os.Remove(filePath)
+}
+
+func (fs *FileSystemStorage) Exists(ctx context.Context, key string) (bool, error) {
+    filePath := filepath.Join(fs.basePath, key)
+    _, err := os.Stat(filePath)
+    if err == nil {
+        return true, nil
+    }
+    if os.IsNotExist(err) {
+        return false, nil
+    }
+    return false, err
+}
+
+func (fs *FileSystemStorage) List(ctx context.Context, prefix string) ([]string, error) {
+    var keys []string
+    
+    err := filepath.Walk(fs.basePath, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        
+        if !info.IsDir() {
+            relPath, err := filepath.Rel(fs.basePath, path)
+            if err != nil {
+                return err
+            }
+            
+            if strings.HasPrefix(relPath, prefix) {
+                keys = append(keys, relPath)
+            }
+        }
+        return nil
+    })
+    
+    return keys, err
+}
+
+// storage/memory.go
+package storage
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    "io"
+    "strings"
+    "sync"
+)
+
+type MemoryStorage struct {
+    data     map[string][]byte
+    metadata map[string]map[string]string
+    mutex    sync.RWMutex
+}
+
+func NewMemoryStorage() *MemoryStorage {
+    return &MemoryStorage{
+        data:     make(map[string][]byte),
+        metadata: make(map[string]map[string]string),
+    }
+}
+
+func (ms *MemoryStorage) Store(ctx context.Context, key string, data io.Reader) error {
+    content, err := io.ReadAll(data)
+    if err != nil {
+        return fmt.Errorf("failed to read data: %w", err)
+    }
+    
+    ms.mutex.Lock()
+    defer ms.mutex.Unlock()
+    
+    ms.data[key] = content
+    return nil
+}
+
+func (ms *MemoryStorage) Retrieve(ctx context.Context, key string) (io.ReadCloser, error) {
+    ms.mutex.RLock()
+    defer ms.mutex.RUnlock()
+    
+    content, exists := ms.data[key]
+    if !exists {
+        return nil, fmt.Errorf("key not found: %s", key)
+    }
+    
+    return io.NopCloser(bytes.NewReader(content)), nil
+}
+
+func (ms *MemoryStorage) Delete(ctx context.Context, key string) error {
+    ms.mutex.Lock()
+    defer ms.mutex.Unlock()
+    
+    delete(ms.data, key)
+    delete(ms.metadata, key)
+    return nil
+}
+
+func (ms *MemoryStorage) Exists(ctx context.Context, key string) (bool, error) {
+    ms.mutex.RLock()
+    defer ms.mutex.RUnlock()
+    
+    _, exists := ms.data[key]
+    return exists, nil
+}
+
+func (ms *MemoryStorage) List(ctx context.Context, prefix string) ([]string, error) {
+    ms.mutex.RLock()
+    defer ms.mutex.Unlock()
+    
+    var keys []string
+    for key := range ms.data {
+        if strings.HasPrefix(key, prefix) {
+            keys = append(keys, key)
+        }
+    }
+    return keys, nil
+}
+
+func (ms *MemoryStorage) GetMetadata(ctx context.Context, key string) (map[string]string, error) {
+    ms.mutex.RLock()
+    defer ms.mutex.RUnlock()
+    
+    metadata, exists := ms.metadata[key]
+    if !exists {
+        return make(map[string]string), nil
+    }
+    
+    // Return a copy to prevent external modification
+    result := make(map[string]string)
+    for k, v := range metadata {
+        result[k] = v
+    }
+    return result, nil
+}
+
+func (ms *MemoryStorage) SetMetadata(ctx context.Context, key string, metadata map[string]string) error {
+    ms.mutex.Lock()
+    defer ms.mutex.Unlock()
+    
+    if ms.metadata[key] == nil {
+        ms.metadata[key] = make(map[string]string)
+    }
+    
+    for k, v := range metadata {
+        ms.metadata[key][k] = v
+    }
+    return nil
+}
+
+// main.go
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "log"
+    "strings"
+    "your-module/storage"
+)
+
+func demonstrateStorage(s storage.Storage, name string) {
+    ctx := context.Background()
+    
+    fmt.Printf("\n=== Demonstrating %s ===\n", name)
+    
+    // Store data
+    data := strings.NewReader("Hello there, this is test data!")
+    if err := s.Store(ctx, "test/file1.txt", data); err != nil {
+        log.Printf("Store error: %v", err)
+        return
+    }
+    
+    // Check if exists
+    exists, err := s.Exists(ctx, "test/file1.txt")
+    if err != nil {
+        log.Printf("Exists error: %v", err)
+        return
+    }
+    fmt.Printf("File exists: %t\n", exists)
+    
+    // Retrieve data
+    reader, err := s.Retrieve(ctx, "test/file1.txt")
+    if err != nil {
+        log.Printf("Retrieve error: %v", err)
+        return
+    }
+    defer reader.Close()
+    
+    content, err := io.ReadAll(reader)
+    if err != nil {
+        log.Printf("Read error: %v", err)
+        return
+    }
+    fmt.Printf("Retrieved content: %s\n", string(content))
+    
+    // Store more files for listing
+    s.Store(ctx, "test/file2.txt", strings.NewReader("Second file"))
+    s.Store(ctx, "other/file3.txt", strings.NewReader("Third file"))
+    
+    // List files with prefix
+    keys, err := s.List(ctx, "test/")
+    if err != nil {
+        log.Printf("List error: %v", err)
+        return
+    }
+    fmt.Printf("Files with 'test/' prefix: %v\n", keys)
+    
+    // Test metadata if supported
+    if metaStorage, ok := s.(storage.StorageWithMetadata); ok {
+        metadata := map[string]string{
+            "content-type": "text/plain",
+            "created-by":   "demo-app",
+        }
+        if err := metaStorage.SetMetadata(ctx, "test/file1.txt", metadata); err != nil {
+            log.Printf("SetMetadata error: %v", err)
+        } else {
+            retrievedMeta, err := metaStorage.GetMetadata(ctx, "test/file1.txt")
+            if err != nil {
+                log.Printf("GetMetadata error: %v", err)
+            } else {
+                fmt.Printf("Metadata: %v\n", retrievedMeta)
+            }
+        }
+    }
+}
+
+func main() {
+    // Create file system storage
+    fsStorage, err := storage.NewFileSystemStorage("./data")
+    if err != nil {
+        log.Fatal("Failed to create filesystem storage:", err)
+    }
+    
+    // Create memory storage
+    memStorage := storage.NewMemoryStorage()
+    
+    // Demonstrate both implementations using the same interface
+    storages := []struct {
+        impl storage.Storage
+        name string
+    }{
+        {fsStorage, "FileSystem Storage"},
+        {memStorage, "Memory Storage"},
+    }
+    
+    for _, s := range storages {
+        demonstrateStorage(s.impl, s.name)
+    }
+    
+    // Cleanup
+    ctx := context.Background()
+    fsStorage.Delete(ctx, "test/file1.txt")
+    fsStorage.Delete(ctx, "test/file2.txt")
+    fsStorage.Delete(ctx, "other/file3.txt")
+}
+```
+
+Package-level interfaces enable polymorphism and clean architecture patterns.  
+Different implementations can be swapped without changing client code,  
+promoting testability and flexibility. Interface segregation allows  
+for focused contracts that are easier to implement and understand.  
+
+## Package constants and variables
+
+Package-level constants and variables provide shared state and configuration  
+for package functionality.  
+
+```go
+// http/constants.go
+package http
+
+import "time"
+
+// HTTP status code constants
+const (
+    StatusContinue           = 100
+    StatusSwitchingProtocols = 101
+    StatusProcessing         = 102
+    StatusEarlyHints         = 103
+    
+    StatusOK                   = 200
+    StatusCreated              = 201
+    StatusAccepted             = 202
+    StatusNonAuthoritativeInfo = 203
+    StatusNoContent            = 204
+    StatusResetContent         = 205
+    StatusPartialContent       = 206
+    
+    StatusMultipleChoices   = 300
+    StatusMovedPermanently  = 301
+    StatusFound             = 302
+    StatusSeeOther          = 303
+    StatusNotModified       = 304
+    StatusUseProxy          = 305
+    StatusTemporaryRedirect = 307
+    StatusPermanentRedirect = 308
+    
+    StatusBadRequest                   = 400
+    StatusUnauthorized                 = 401
+    StatusPaymentRequired              = 402
+    StatusForbidden                    = 403
+    StatusNotFound                     = 404
+    StatusMethodNotAllowed             = 405
+    StatusNotAcceptable                = 406
+    StatusProxyAuthRequired            = 407
+    StatusRequestTimeout               = 408
+    StatusConflict                     = 409
+    StatusGone                         = 410
+    StatusLengthRequired               = 411
+    StatusPreconditionFailed           = 412
+    StatusRequestEntityTooLarge        = 413
+    StatusRequestURITooLong            = 414
+    StatusUnsupportedMediaType         = 415
+    StatusRequestedRangeNotSatisfiable = 416
+    StatusExpectationFailed            = 417
+    StatusTeapot                       = 418
+    StatusMisdirectedRequest           = 421
+    StatusUnprocessableEntity          = 422
+    StatusLocked                       = 423
+    StatusFailedDependency             = 424
+    StatusTooEarly                     = 425
+    StatusUpgradeRequired              = 426
+    StatusPreconditionRequired         = 428
+    StatusTooManyRequests              = 429
+    StatusRequestHeaderFieldsTooLarge  = 431
+    StatusUnavailableForLegalReasons   = 451
+    
+    StatusInternalServerError           = 500
+    StatusNotImplemented                = 501
+    StatusBadGateway                    = 502
+    StatusServiceUnavailable            = 503
+    StatusGatewayTimeout                = 504
+    StatusHTTPVersionNotSupported       = 505
+    StatusVariantAlsoNegotiates         = 506
+    StatusInsufficientStorage           = 507
+    StatusLoopDetected                  = 508
+    StatusNotExtended                   = 510
+    StatusNetworkAuthenticationRequired = 511
+)
+
+// HTTP method constants
+const (
+    MethodGet     = "GET"
+    MethodHead    = "HEAD"
+    MethodPost    = "POST"
+    MethodPut     = "PUT"
+    MethodPatch   = "PATCH"
+    MethodDelete  = "DELETE"
+    MethodConnect = "CONNECT"
+    MethodOptions = "OPTIONS"
+    MethodTrace   = "TRACE"
+)
+
+// Header name constants
+const (
+    HeaderAccept                          = "Accept"
+    HeaderAcceptCharset                   = "Accept-Charset"
+    HeaderAcceptEncoding                  = "Accept-Encoding"
+    HeaderAcceptLanguage                  = "Accept-Language"
+    HeaderAcceptRanges                    = "Accept-Ranges"
+    HeaderAccessControlAllowCredentials   = "Access-Control-Allow-Credentials"
+    HeaderAccessControlAllowHeaders       = "Access-Control-Allow-Headers"
+    HeaderAccessControlAllowMethods       = "Access-Control-Allow-Methods"
+    HeaderAccessControlAllowOrigin        = "Access-Control-Allow-Origin"
+    HeaderAccessControlExposeHeaders      = "Access-Control-Expose-Headers"
+    HeaderAccessControlMaxAge             = "Access-Control-Max-Age"
+    HeaderAccessControlRequestHeaders     = "Access-Control-Request-Headers"
+    HeaderAccessControlRequestMethod      = "Access-Control-Request-Method"
+    HeaderAge                             = "Age"
+    HeaderAllow                           = "Allow"
+    HeaderAuthorization                   = "Authorization"
+    HeaderCacheControl                    = "Cache-Control"
+    HeaderConnection                      = "Connection"
+    HeaderContentDisposition              = "Content-Disposition"
+    HeaderContentEncoding                 = "Content-Encoding"
+    HeaderContentLanguage                 = "Content-Language"
+    HeaderContentLength                   = "Content-Length"
+    HeaderContentLocation                 = "Content-Location"
+    HeaderContentMD5                      = "Content-MD5"
+    HeaderContentRange                    = "Content-Range"
+    HeaderContentType                     = "Content-Type"
+    HeaderCookie                          = "Cookie"
+    HeaderDate                            = "Date"
+    HeaderEtag                            = "Etag"
+    HeaderExpect                          = "Expect"
+    HeaderExpires                         = "Expires"
+    HeaderFrom                            = "From"
+    HeaderHost                            = "Host"
+    HeaderIfMatch                         = "If-Match"
+    HeaderIfModifiedSince                 = "If-Modified-Since"
+    HeaderIfNoneMatch                     = "If-None-Match"
+    HeaderIfRange                         = "If-Range"
+    HeaderIfUnmodifiedSince               = "If-Unmodified-Since"
+    HeaderLastModified                    = "Last-Modified"
+    HeaderLocation                        = "Location"
+    HeaderMaxForwards                     = "Max-Forwards"
+    HeaderOrigin                          = "Origin"
+    HeaderPragma                          = "Pragma"
+    HeaderProxyAuthenticate               = "Proxy-Authenticate"
+    HeaderProxyAuthorization              = "Proxy-Authorization"
+    HeaderRange                           = "Range"
+    HeaderReferer                         = "Referer"
+    HeaderRetryAfter                      = "Retry-After"
+    HeaderServer                          = "Server"
+    HeaderSetCookie                       = "Set-Cookie"
+    HeaderTE                              = "Te"
+    HeaderTrailer                         = "Trailer"
+    HeaderTransferEncoding                = "Transfer-Encoding"
+    HeaderUpgrade                         = "Upgrade"
+    HeaderUserAgent                       = "User-Agent"
+    HeaderVary                            = "Vary"
+    HeaderVia                             = "Via"
+    HeaderWarning                         = "Warning"
+    HeaderWWWAuthenticate                 = "WWW-Authenticate"
+)
+
+// Timeout constants
+const (
+    DefaultTimeout         = 30 * time.Second
+    DefaultKeepAliveTimeout = 90 * time.Second
+    DefaultReadTimeout     = 15 * time.Second
+    DefaultWriteTimeout    = 15 * time.Second
+    DefaultIdleTimeout     = 60 * time.Second
+)
+
+// http/variables.go
+package http
+
+import (
+    "fmt"
+    "net/http"
+    "sync"
+)
+
+// Package-level variables for shared state
+var (
+    // DefaultClient provides a default HTTP client with sensible timeouts
+    DefaultClient *http.Client
+    
+    // RequestCounter tracks the number of requests made
+    RequestCounter int64
+    
+    // ActiveConnections tracks current active connections
+    ActiveConnections int32
+    
+    // StatusMessages maps status codes to human-readable messages
+    StatusMessages map[int]string
+    
+    // GlobalHeaders are headers added to all requests
+    GlobalHeaders map[string]string
+    
+    // Mutex for thread-safe operations
+    mu sync.RWMutex
+    
+    // Debug mode flag
+    DebugMode bool
+    
+    // Default user agent string
+    DefaultUserAgent string
+)
+
+// Package initialization
+func init() {
+    // Initialize default client
+    DefaultClient = &http.Client{
+        Timeout: DefaultTimeout,
+        Transport: &http.Transport{
+            MaxIdleConns:        100,
+            IdleConnTimeout:     DefaultIdleTimeout,
+            DisableCompression:  false,
+            DisableKeepAlives:   false,
+        },
+    }
+    
+    // Initialize status messages
+    StatusMessages = map[int]string{
+        StatusOK:                    "OK",
+        StatusCreated:               "Created",
+        StatusAccepted:              "Accepted",
+        StatusNoContent:             "No Content",
+        StatusBadRequest:            "Bad Request",
+        StatusUnauthorized:          "Unauthorized",
+        StatusForbidden:             "Forbidden",
+        StatusNotFound:              "Not Found",
+        StatusMethodNotAllowed:      "Method Not Allowed",
+        StatusConflict:              "Conflict",
+        StatusInternalServerError:   "Internal Server Error",
+        StatusNotImplemented:        "Not Implemented",
+        StatusBadGateway:           "Bad Gateway",
+        StatusServiceUnavailable:   "Service Unavailable",
+        StatusGatewayTimeout:       "Gateway Timeout",
+    }
+    
+    // Initialize global headers
+    GlobalHeaders = make(map[string]string)
+    GlobalHeaders[HeaderUserAgent] = "MyApp/1.0"
+    
+    // Set default user agent
+    DefaultUserAgent = "MyApp/1.0 (Go HTTP Client)"
+    
+    fmt.Println("HTTP package initialized")
+}
+
+// Exported functions to work with package variables
+func SetDebugMode(enabled bool) {
+    mu.Lock()
+    defer mu.Unlock()
+    DebugMode = enabled
+}
+
+func IsDebugMode() bool {
+    mu.RLock()
+    defer mu.RUnlock()
+    return DebugMode
+}
+
+func IncrementRequestCounter() int64 {
+    mu.Lock()
+    defer mu.Unlock()
+    RequestCounter++
+    return RequestCounter
+}
+
+func GetRequestCount() int64 {
+    mu.RLock()
+    defer mu.RUnlock()
+    return RequestCounter
+}
+
+func SetGlobalHeader(key, value string) {
+    mu.Lock()
+    defer mu.Unlock()
+    GlobalHeaders[key] = value
+}
+
+func GetGlobalHeaders() map[string]string {
+    mu.RLock()
+    defer mu.RUnlock()
+    
+    // Return a copy to prevent external modification
+    headers := make(map[string]string)
+    for k, v := range GlobalHeaders {
+        headers[k] = v
+    }
+    return headers
+}
+
+func GetStatusMessage(code int) string {
+    mu.RLock()
+    defer mu.RUnlock()
+    
+    if message, exists := StatusMessages[code]; exists {
+        return message
+    }
+    return fmt.Sprintf("Unknown Status Code: %d", code)
+}
+
+func SetDefaultTimeout(timeout time.Duration) {
+    mu.Lock()
+    defer mu.Unlock()
+    DefaultClient.Timeout = timeout
+}
+
+// http/client.go
+package http
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "sync/atomic"
+)
+
+// Request represents an HTTP request with additional metadata
+type Request struct {
+    Method  string
+    URL     string
+    Headers map[string]string
+    Body    interface{}
+}
+
+// Response represents an HTTP response with parsed data
+type Response struct {
+    StatusCode int
+    Status     string
+    Headers    map[string]string
+    Body       []byte
+    Request    *Request
+}
+
+// Client wraps the default HTTP client with additional functionality
+type Client struct {
+    httpClient *http.Client
+    baseURL    string
+    headers    map[string]string
+}
+
+func NewClient(baseURL string) *Client {
+    return &Client{
+        httpClient: DefaultClient,
+        baseURL:    baseURL,
+        headers:    GetGlobalHeaders(),
+    }
+}
+
+func (c *Client) SetHeader(key, value string) {
+    if c.headers == nil {
+        c.headers = make(map[string]string)
+    }
+    c.headers[key] = value
+}
+
+func (c *Client) Do(req *Request) (*Response, error) {
+    // Increment request counter
+    count := IncrementRequestCounter()
+    
+    if IsDebugMode() {
+        fmt.Printf("Making request #%d: %s %s\n", count, req.Method, req.URL)
+    }
+    
+    // Prepare request body
+    var bodyReader io.Reader
+    if req.Body != nil {
+        switch body := req.Body.(type) {
+        case string:
+            bodyReader = bytes.NewReader([]byte(body))
+        case []byte:
+            bodyReader = bytes.NewReader(body)
+        default:
+            jsonBody, err := json.Marshal(body)
+            if err != nil {
+                return nil, fmt.Errorf("failed to marshal request body: %w", err)
+            }
+            bodyReader = bytes.NewReader(jsonBody)
+        }
+    }
+    
+    // Create HTTP request
+    fullURL := c.baseURL + req.URL
+    httpReq, err := http.NewRequest(req.Method, fullURL, bodyReader)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create request: %w", err)
+    }
+    
+    // Add headers
+    for key, value := range c.headers {
+        httpReq.Header.Set(key, value)
+    }
+    for key, value := range req.Headers {
+        httpReq.Header.Set(key, value)
+    }
+    
+    // Track active connection
+    atomic.AddInt32(&ActiveConnections, 1)
+    defer atomic.AddInt32(&ActiveConnections, -1)
+    
+    // Make request
+    httpResp, err := c.httpClient.Do(httpReq)
+    if err != nil {
+        return nil, fmt.Errorf("request failed: %w", err)
+    }
+    defer httpResp.Body.Close()
+    
+    // Read response body
+    body, err := io.ReadAll(httpResp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read response body: %w", err)
+    }
+    
+    // Parse response headers
+    headers := make(map[string]string)
+    for key, values := range httpResp.Header {
+        if len(values) > 0 {
+            headers[key] = values[0]
+        }
+    }
+    
+    response := &Response{
+        StatusCode: httpResp.StatusCode,
+        Status:     GetStatusMessage(httpResp.StatusCode),
+        Headers:    headers,
+        Body:       body,
+        Request:    req,
+    }
+    
+    if IsDebugMode() {
+        fmt.Printf("Response #%d: %d %s\n", count, response.StatusCode, response.Status)
+    }
+    
+    return response, nil
+}
+
+func (c *Client) Get(url string) (*Response, error) {
+    return c.Do(&Request{Method: MethodGet, URL: url})
+}
+
+func (c *Client) Post(url string, body interface{}) (*Response, error) {
+    return c.Do(&Request{Method: MethodPost, URL: url, Body: body})
+}
+
+func (c *Client) Put(url string, body interface{}) (*Response, error) {
+    return c.Do(&Request{Method: MethodPut, URL: url, Body: body})
+}
+
+func (c *Client) Delete(url string) (*Response, error) {
+    return c.Do(&Request{Method: MethodDelete, URL: url})
+}
+
+// Package-level convenience functions
+func Get(url string) (*Response, error) {
+    client := NewClient("")
+    return client.Get(url)
+}
+
+func Post(url string, body interface{}) (*Response, error) {
+    client := NewClient("")
+    return client.Post(url, body)
+}
+
+func GetStats() (requestCount int64, activeConnections int32) {
+    return GetRequestCount(), atomic.LoadInt32(&ActiveConnections)
+}
+
+// main.go
+package main
+
+import (
+    "fmt"
+    "log"
+    "time"
+    "your-module/http"
+)
+
+func main() {
+    // Configure package-level settings
+    http.SetDebugMode(true)
+    http.SetGlobalHeader("X-API-Version", "v1")
+    http.SetDefaultTimeout(10 * time.Second)
+    
+    // Create HTTP client
+    client := http.NewClient("https://httpbin.org")
+    client.SetHeader(http.HeaderContentType, "application/json")
+    
+    // Make requests using package constants
+    response, err := client.Get("/get")
+    if err != nil {
+        log.Fatal("GET request failed:", err)
+    }
+    
+    fmt.Printf("Status: %d (%s)\n", response.StatusCode, response.Status)
+    fmt.Printf("Response body length: %d bytes\n", len(response.Body))
+    
+    // Make POST request
+    postData := map[string]string{
+        "message": "Hello there!",
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    response, err = client.Post("/post", postData)
+    if err != nil {
+        log.Fatal("POST request failed:", err)
+    }
+    
+    fmt.Printf("POST Status: %d\n", response.StatusCode)
+    
+    // Check package statistics
+    requestCount, activeConns := http.GetStats()
+    fmt.Printf("Total requests made: %d\n", requestCount)
+    fmt.Printf("Active connections: %d\n", activeConns)
+    
+    // Test status code constants
+    fmt.Printf("HTTP Status Messages:\n")
+    codes := []int{
+        http.StatusOK, 
+        http.StatusCreated, 
+        http.StatusBadRequest, 
+        http.StatusNotFound, 
+        http.StatusInternalServerError,
+    }
+    
+    for _, code := range codes {
+        fmt.Printf("  %d: %s\n", code, http.GetStatusMessage(code))
+    }
+    
+    // Display global headers
+    fmt.Printf("Global headers: %v\n", http.GetGlobalHeaders())
+}
+```
+
+Package constants and variables provide shared configuration and state  
+management. Constants offer compile-time guarantees and eliminate magic  
+numbers, while package variables enable shared state with proper  
+synchronization. Initialization functions set up default values and  
+prepare the package for use.  
