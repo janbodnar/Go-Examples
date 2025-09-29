@@ -3194,8 +3194,819 @@ func min(a, b int) int {
     return b
 }
 ```
+
+## TCP network connections
+
+TCP connections provide reliable network communication using the  
+standard networking interfaces for client-server applications.  
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "io"
+    "net"
+    "strings"
+    "time"
+)
+
+func main() {
+    // Start a simple TCP server in a goroutine
+    go func() {
+        listener, err := net.Listen("tcp", ":8080")
+        if err != nil {
+            fmt.Printf("Error starting server: %v\n", err)
+            return
+        }
+        defer listener.Close()
+        
+        fmt.Println("TCP server listening on :8080")
+        
+        for {
+            conn, err := listener.Accept()
+            if err != nil {
+                fmt.Printf("Error accepting connection: %v\n", err)
+                continue
+            }
+            
+            // Handle client in goroutine
+            go handleClient(conn)
+        }
+    }()
+    
+    // Give server time to start
+    time.Sleep(100 * time.Millisecond)
+    
+    // TCP client connection
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        fmt.Printf("Error connecting to server: %v\n", err)
+        return
+    }
+    defer conn.Close()
+    
+    fmt.Println("Connected to TCP server")
+    
+    // Send data to server
+    messages := []string{
+        "hello there server",
+        "this is message 2",
+        "final message",
+    }
+    
+    for i, msg := range messages {
+        _, err = conn.Write([]byte(msg + "\n"))
+        if err != nil {
+            fmt.Printf("Error sending message %d: %v\n", i+1, err)
+            continue
+        }
+        
+        // Read response
+        response := make([]byte, 1024)
+        n, err := conn.Read(response)
+        if err != nil {
+            fmt.Printf("Error reading response %d: %v\n", i+1, err)
+            continue
+        }
+        
+        fmt.Printf("Server response %d: %s", i+1, string(response[:n]))
+    }
+    
+    // TCP connection with timeout
+    timeout := 5 * time.Second
+    conn2, err := net.DialTimeout("tcp", "localhost:8080", timeout)
+    if err != nil {
+        fmt.Printf("Error connecting with timeout: %v\n", err)
+        return
+    }
+    defer conn2.Close()
+    
+    // Set read/write timeouts
+    conn2.SetReadDeadline(time.Now().Add(timeout))
+    conn2.SetWriteDeadline(time.Now().Add(timeout))
+    
+    _, err = conn2.Write([]byte("timeout test message\n"))
+    if err != nil {
+        fmt.Printf("Error writing with timeout: %v\n", err)
+        return
+    }
+    
+    timeoutResp := make([]byte, 1024)
+    n, err := conn2.Read(timeoutResp)
+    if err != nil {
+        fmt.Printf("Error reading with timeout: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Timeout test response: %s", string(timeoutResp[:n]))
+    
+    // Bidirectional communication
+    conn3, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        fmt.Printf("Error connecting for bidirectional: %v\n", err)
+        return
+    }
+    defer conn3.Close()
+    
+    // Send and receive simultaneously
+    go func() {
+        scanner := bufio.NewScanner(conn3)
+        for scanner.Scan() {
+            fmt.Printf("Received: %s\n", scanner.Text())
+        }
+    }()
+    
+    // Send multiple messages
+    for i := 1; i <= 3; i++ {
+        msg := fmt.Sprintf("bidirectional message %d\n", i)
+        _, err = conn3.Write([]byte(msg))
+        if err != nil {
+            fmt.Printf("Error in bidirectional send: %v\n", err)
+            break
+        }
+        time.Sleep(100 * time.Millisecond)
+    }
+    
+    time.Sleep(500 * time.Millisecond) // Allow responses to complete
+}
+
+func handleClient(conn net.Conn) {
+    defer conn.Close()
+    
+    scanner := bufio.NewScanner(conn)
+    messageNum := 1
+    
+    for scanner.Scan() {
+        message := scanner.Text()
+        fmt.Printf("Server received: %s\n", message)
+        
+        // Echo back with prefix
+        response := fmt.Sprintf("Echo %d: %s\n", messageNum, message)
+        _, err := conn.Write([]byte(response))
+        if err != nil {
+            fmt.Printf("Error sending response: %v\n", err)
+            break
+        }
+        
+        messageNum++
+    }
+    
+    if err := scanner.Err(); err != nil {
+        fmt.Printf("Error reading from client: %v\n", err)
+    }
 }
 ```
+
+## Concurrent IO operations
+
+Concurrent IO demonstrates goroutines and channels for parallel  
+data processing and coordinated IO operations.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+    "sync"
+    "time"
+)
+
+func main() {
+    // Concurrent file processing simulation
+    files := []string{
+        "File 1 content with substantial data for processing\n",
+        "File 2 has different content and structure\n", 
+        "File 3 contains important information for analysis\n",
+        "File 4 includes various data points and metrics\n",
+        "File 5 wraps up the dataset with summary information\n",
+    }
+    
+    // Process files concurrently
+    var wg sync.WaitGroup
+    results := make(chan string, len(files))
+    
+    for i, content := range files {
+        wg.Add(1)
+        go func(fileNum int, data string) {
+            defer wg.Done()
+            
+            // Simulate processing time
+            time.Sleep(time.Duration(fileNum*100) * time.Millisecond)
+            
+            // Process the "file"
+            reader := strings.NewReader(data)
+            processed, err := io.ReadAll(reader)
+            if err != nil {
+                results <- fmt.Sprintf("Error processing file %d: %v", fileNum, err)
+                return
+            }
+            
+            result := fmt.Sprintf("File %d processed: %d bytes", fileNum, len(processed))
+            results <- result
+        }(i+1, content)
+    }
+    
+    // Close results channel when all goroutines complete
+    go func() {
+        wg.Wait()
+        close(results)
+    }()
+    
+    // Collect results
+    fmt.Println("Concurrent file processing results:")
+    for result := range results {
+        fmt.Printf("  %s\n", result)
+    }
+    
+    // Producer-consumer pattern
+    dataChannel := make(chan []byte, 10)
+    processedChannel := make(chan string, 10)
+    
+    // Producer goroutine
+    go func() {
+        defer close(dataChannel)
+        
+        for i := 1; i <= 8; i++ {
+            data := fmt.Sprintf("Data packet %d with content for processing", i)
+            dataChannel <- []byte(data)
+            time.Sleep(50 * time.Millisecond)
+        }
+    }()
+    
+    // Consumer goroutines
+    numWorkers := 3
+    var consumerWg sync.WaitGroup
+    
+    for worker := 1; worker <= numWorkers; worker++ {
+        consumerWg.Add(1)
+        go func(workerID int) {
+            defer consumerWg.Done()
+            
+            for data := range dataChannel {
+                // Process data
+                reader := strings.NewReader(string(data))
+                content, err := io.ReadAll(reader)
+                if err != nil {
+                    processedChannel <- fmt.Sprintf("Worker %d error: %v", workerID, err)
+                    continue
+                }
+                
+                result := fmt.Sprintf("Worker %d processed %d bytes", workerID, len(content))
+                processedChannel <- result
+                
+                // Simulate processing time
+                time.Sleep(100 * time.Millisecond)
+            }
+        }(worker)
+    }
+    
+    // Close processed channel when all consumers complete
+    go func() {
+        consumerWg.Wait()
+        close(processedChannel)
+    }()
+    
+    // Collect processed results
+    fmt.Println("\nProducer-consumer results:")
+    for result := range processedChannel {
+        fmt.Printf("  %s\n", result)
+    }
+    
+    // Parallel IO with error handling
+    tasks := []string{
+        "Task 1: Read configuration data",
+        "Task 2: Process user input",
+        "Task 3: Generate report data",
+        "Task 4: Validate output format",
+        "Task 5: Finalize processing",
+    }
+    
+    type taskResult struct {
+        TaskID int
+        Result string
+        Error  error
+    }
+    
+    resultChannel := make(chan taskResult, len(tasks))
+    
+    // Execute tasks in parallel
+    for i, task := range tasks {
+        go func(taskID int, taskDesc string) {
+            // Simulate IO operation
+            reader := strings.NewReader(fmt.Sprintf("Data for %s", taskDesc))
+            
+            time.Sleep(time.Duration(taskID*80) * time.Millisecond)
+            
+            data, err := io.ReadAll(reader)
+            if err != nil {
+                resultChannel <- taskResult{TaskID: taskID, Error: err}
+                return
+            }
+            
+            result := fmt.Sprintf("Task %d completed: processed %d bytes", taskID, len(data))
+            resultChannel <- taskResult{TaskID: taskID, Result: result}
+        }(i+1, task)
+    }
+    
+    // Collect all task results
+    fmt.Println("\nParallel task results:")
+    for i := 0; i < len(tasks); i++ {
+        result := <-resultChannel
+        if result.Error != nil {
+            fmt.Printf("  Task %d failed: %v\n", result.TaskID, result.Error)
+        } else {
+            fmt.Printf("  %s\n", result.Result)
+        }
+    }
+    
+    // Synchronized IO with mutex
+    var mu sync.Mutex
+    var sharedData strings.Builder
+    
+    var writerWg sync.WaitGroup
+    
+    // Multiple writers with synchronization
+    for writer := 1; writer <= 4; writer++ {
+        writerWg.Add(1)
+        go func(writerID int) {
+            defer writerWg.Done()
+            
+            for i := 1; i <= 3; i++ {
+                data := fmt.Sprintf("Writer %d, message %d\n", writerID, i)
+                
+                mu.Lock()
+                sharedData.WriteString(data)
+                mu.Unlock()
+                
+                time.Sleep(25 * time.Millisecond)
+            }
+        }(writer)
+    }
+    
+    writerWg.Wait()
+    
+    fmt.Printf("\nSynchronized writing result:\n%s", sharedData.String())
+}
 ```
+
+## Custom reader implementation
+
+Custom readers demonstrate how to implement the io.Reader interface  
+for specialized data sources and processing needs.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+)
+
+// NumberReader generates sequential numbers as text
+type NumberReader struct {
+    current int
+    max     int
+}
+
+func NewNumberReader(max int) *NumberReader {
+    return &NumberReader{current: 1, max: max}
+}
+
+func (nr *NumberReader) Read(p []byte) (n int, err error) {
+    if nr.current > nr.max {
+        return 0, io.EOF
+    }
+    
+    data := fmt.Sprintf("Number: %d\n", nr.current)
+    nr.current++
+    
+    if len(p) < len(data) {
+        return 0, fmt.Errorf("buffer too small")
+    }
+    
+    copy(p, data)
+    return len(data), nil
+}
+
+// RepeatingReader repeats a pattern multiple times
+type RepeatingReader struct {
+    pattern string
+    count   int
+    pos     int
+}
+
+func NewRepeatingReader(pattern string, count int) *RepeatingReader {
+    return &RepeatingReader{
+        pattern: pattern,
+        count:   count,
+        pos:     0,
+    }
+}
+
+func (rr *RepeatingReader) Read(p []byte) (n int, err error) {
+    if rr.count <= 0 {
+        return 0, io.EOF
+    }
+    
+    totalCopied := 0
+    
+    for totalCopied < len(p) && rr.count > 0 {
+        // Copy from current position in pattern
+        available := len(rr.pattern) - rr.pos
+        needed := len(p) - totalCopied
+        
+        copyLen := min(available, needed)
+        copy(p[totalCopied:], rr.pattern[rr.pos:rr.pos+copyLen])
+        
+        totalCopied += copyLen
+        rr.pos += copyLen
+        
+        // If we've read the entire pattern, reset and decrement count
+        if rr.pos >= len(rr.pattern) {
+            rr.pos = 0
+            rr.count--
+        }
+    }
+    
+    return totalCopied, nil
+}
+
+// FilterReader filters out specific bytes
+type FilterReader struct {
+    source io.Reader
+    filter byte
+}
+
+func NewFilterReader(source io.Reader, filter byte) *FilterReader {
+    return &FilterReader{source: source, filter: filter}
+}
+
+func (fr *FilterReader) Read(p []byte) (n int, err error) {
+    buffer := make([]byte, len(p))
+    readBytes, err := fr.source.Read(buffer)
+    if err != nil {
+        return 0, err
+    }
+    
+    filtered := 0
+    for i := 0; i < readBytes; i++ {
+        if buffer[i] != fr.filter {
+            p[filtered] = buffer[i]
+            filtered++
+        }
+    }
+    
+    return filtered, nil
+}
+
+// ProgressReader tracks reading progress
+type ProgressReader struct {
+    source    io.Reader
+    total     int64
+    read      int64
+    callback  func(read, total int64)
+}
+
+func NewProgressReader(source io.Reader, total int64, callback func(read, total int64)) *ProgressReader {
+    return &ProgressReader{
+        source:   source,
+        total:    total,
+        callback: callback,
+    }
+}
+
+func (pr *ProgressReader) Read(p []byte) (n int, err error) {
+    n, err = pr.source.Read(p)
+    pr.read += int64(n)
+    
+    if pr.callback != nil {
+        pr.callback(pr.read, pr.total)
+    }
+    
+    return n, err
+}
+
+func main() {
+    // Test NumberReader
+    fmt.Println("NumberReader example:")
+    numberReader := NewNumberReader(5)
+    
+    buffer := make([]byte, 20)
+    for {
+        n, err := numberReader.Read(buffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Printf("Error: %v\n", err)
+            break
+        }
+        
+        fmt.Printf("Read: %s", string(buffer[:n]))
+    }
+    
+    // Test RepeatingReader
+    fmt.Println("\nRepeatingReader example:")
+    repeatingReader := NewRepeatingReader("ABC", 3)
+    
+    allData, err := io.ReadAll(repeatingReader)
+    if err != nil {
+        fmt.Printf("Error reading all: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Repeated pattern: %s\n", string(allData))
+    
+    // Test FilterReader
+    fmt.Println("\nFilterReader example:")
+    source := NewRepeatingReader("ABCABC", 2)
+    filterReader := NewFilterReader(source, 'B')
+    
+    filteredData, err := io.ReadAll(filterReader)
+    if err != nil {
+        fmt.Printf("Error reading filtered: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Filtered data (removed 'B'): %s\n", string(filteredData))
+    
+    // Test ProgressReader
+    fmt.Println("\nProgressReader example:")
+    sourceData := NewRepeatingReader("Hello there from progress reader! ", 5)
+    totalSize := int64(len("Hello there from progress reader! ") * 5)
+    
+    progressReader := NewProgressReader(sourceData, totalSize, func(read, total int64) {
+        percent := float64(read) / float64(total) * 100
+        fmt.Printf("Progress: %d/%d bytes (%.1f%%)\n", read, total, percent)
+    })
+    
+    progressBuffer := make([]byte, 50)
+    for {
+        n, err := progressReader.Read(progressBuffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Printf("Progress error: %v\n", err)
+            break
+        }
+        
+        // Process the data (just count for this example)
+        _ = n
+    }
+    
+    fmt.Println("Progress reading completed")
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
 ```
+
+## Custom writer implementation
+
+Custom writers show how to implement the io.Writer interface for  
+specialized output processing and data transformation.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+    "time"
+)
+
+// PrefixWriter adds a prefix to each line
+type PrefixWriter struct {
+    dest   io.Writer
+    prefix string
+    buffer []byte
+}
+
+func NewPrefixWriter(dest io.Writer, prefix string) *PrefixWriter {
+    return &PrefixWriter{
+        dest:   dest,
+        prefix: prefix,
+        buffer: make([]byte, 0),
+    }
+}
+
+func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
+    originalLen := len(p)
+    pw.buffer = append(pw.buffer, p...)
+    
+    for {
+        lineEnd := -1
+        for i, b := range pw.buffer {
+            if b == '\n' {
+                lineEnd = i
+                break
+            }
+        }
+        
+        if lineEnd == -1 {
+            break // No complete line found
+        }
+        
+        // Write line with prefix
+        line := string(pw.buffer[:lineEnd+1])
+        prefixedLine := pw.prefix + line
+        
+        _, err = pw.dest.Write([]byte(prefixedLine))
+        if err != nil {
+            return 0, err
+        }
+        
+        // Remove processed line from buffer
+        pw.buffer = pw.buffer[lineEnd+1:]
+    }
+    
+    return originalLen, nil
+}
+
+// CountingWriter counts bytes written
+type CountingWriter struct {
+    dest  io.Writer
+    count int64
+}
+
+func NewCountingWriter(dest io.Writer) *CountingWriter {
+    return &CountingWriter{dest: dest}
+}
+
+func (cw *CountingWriter) Write(p []byte) (n int, err error) {
+    n, err = cw.dest.Write(p)
+    cw.count += int64(n)
+    return n, err
+}
+
+func (cw *CountingWriter) Count() int64 {
+    return cw.count
+}
+
+// TimestampWriter adds timestamps to output
+type TimestampWriter struct {
+    dest   io.Writer
+    format string
+}
+
+func NewTimestampWriter(dest io.Writer, format string) *TimestampWriter {
+    return &TimestampWriter{
+        dest:   dest,
+        format: format,
+    }
+}
+
+func (tw *TimestampWriter) Write(p []byte) (n int, err error) {
+    timestamp := time.Now().Format(tw.format)
+    timestamped := fmt.Sprintf("[%s] %s", timestamp, string(p))
+    
+    _, err = tw.dest.Write([]byte(timestamped))
+    if err != nil {
+        return 0, err
+    }
+    
+    return len(p), nil
+}
+
+// UppercaseWriter converts text to uppercase
+type UppercaseWriter struct {
+    dest io.Writer
+}
+
+func NewUppercaseWriter(dest io.Writer) *UppercaseWriter {
+    return &UppercaseWriter{dest: dest}
+}
+
+func (uw *UppercaseWriter) Write(p []byte) (n int, err error) {
+    uppercased := strings.ToUpper(string(p))
+    _, err = uw.dest.Write([]byte(uppercased))
+    if err != nil {
+        return 0, err
+    }
+    
+    return len(p), nil
+}
+
+// TeeWriter writes to multiple destinations
+type TeeWriter struct {
+    writers []io.Writer
+}
+
+func NewTeeWriter(writers ...io.Writer) *TeeWriter {
+    return &TeeWriter{writers: writers}
+}
+
+func (tw *TeeWriter) Write(p []byte) (n int, err error) {
+    for _, writer := range tw.writers {
+        n, err = writer.Write(p)
+        if err != nil {
+            return n, err
+        }
+    }
+    
+    return len(p), nil
+}
+
+func main() {
+    // Test PrefixWriter
+    fmt.Println("PrefixWriter example:")
+    var buffer1 strings.Builder
+    prefixWriter := NewPrefixWriter(&buffer1, "[LOG] ")
+    
+    text := "First line\nSecond line\nThird line\n"
+    prefixWriter.Write([]byte(text))
+    
+    fmt.Printf("Prefixed output:\n%s\n", buffer1.String())
+    
+    // Test CountingWriter
+    fmt.Println("CountingWriter example:")
+    var buffer2 strings.Builder
+    countingWriter := NewCountingWriter(&buffer2)
+    
+    data := []string{
+        "hello there from counting writer\n",
+        "second line of data\n", 
+        "final line with more content\n",
+    }
+    
+    for _, line := range data {
+        countingWriter.Write([]byte(line))
+    }
+    
+    fmt.Printf("Total bytes written: %d\n", countingWriter.Count())
+    fmt.Printf("Written content:\n%s\n", buffer2.String())
+    
+    // Test TimestampWriter
+    fmt.Println("TimestampWriter example:")
+    var buffer3 strings.Builder
+    timestampWriter := NewTimestampWriter(&buffer3, "2006-01-02 15:04:05")
+    
+    timestampWriter.Write([]byte("Application started\n"))
+    time.Sleep(10 * time.Millisecond)
+    timestampWriter.Write([]byte("Processing data\n"))
+    time.Sleep(10 * time.Millisecond)
+    timestampWriter.Write([]byte("Operation completed\n"))
+    
+    fmt.Printf("Timestamped output:\n%s\n", buffer3.String())
+    
+    // Test UppercaseWriter
+    fmt.Println("UppercaseWriter example:")
+    var buffer4 strings.Builder
+    uppercaseWriter := NewUppercaseWriter(&buffer4)
+    
+    uppercaseWriter.Write([]byte("hello there from uppercase writer\n"))
+    uppercaseWriter.Write([]byte("this text will be converted\n"))
+    
+    fmt.Printf("Uppercase output:\n%s\n", buffer4.String())
+    
+    // Test TeeWriter
+    fmt.Println("TeeWriter example:")
+    var buffer5 strings.Builder
+    var buffer6 strings.Builder
+    teeWriter := NewTeeWriter(&buffer5, &buffer6)
+    
+    teeWriter.Write([]byte("This goes to both destinations\n"))
+    teeWriter.Write([]byte("Second line for both\n"))
+    
+    fmt.Printf("First destination:\n%s\n", buffer5.String())
+    fmt.Printf("Second destination:\n%s\n", buffer6.String())
+    
+    // Combine multiple custom writers
+    fmt.Println("Combined writers example:")
+    var finalBuffer strings.Builder
+    
+    // Chain: counting -> prefix -> timestamp -> final buffer
+    countWriter := NewCountingWriter(&finalBuffer)
+    prefixedCount := NewPrefixWriter(countWriter, "[INFO] ")
+    timestampedPrefix := NewTimestampWriter(prefixedCount, "15:04:05")
+    
+    messages := []string{
+        "System initialized\n",
+        "Processing started\n",
+        "Task completed successfully\n",
+    }
+    
+    for _, msg := range messages {
+        timestampedPrefix.Write([]byte(msg))
+        time.Sleep(5 * time.Millisecond)
+    }
+    
+    fmt.Printf("Combined output:\n%s", finalBuffer.String())
+    fmt.Printf("Total bytes in final buffer: %d\n", countWriter.Count())
+}
 ```
+
+This comprehensive collection provides 100 detailed Go IO examples covering all major  
+aspects of input/output operations in Go. From basic interfaces to advanced patterns,  
+these examples demonstrate practical applications, best practices, and real-world  
+usage scenarios for effective IO programming in Go applications.
