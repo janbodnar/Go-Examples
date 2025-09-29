@@ -1412,3 +1412,1993 @@ Cache operations with context enable timeout-aware data access, background
 refresh coordination, and graceful degradation when caching operations fail  
 or are cancelled.  
 
+## Distributed tracing with context
+
+Context values are commonly used for distributed tracing, carrying trace  
+and span IDs across service boundaries for observability.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "math/rand"
+    "time"
+)
+
+type TraceID string
+type SpanID string
+
+type Span struct {
+    TraceID   TraceID
+    SpanID    SpanID
+    ParentID  SpanID
+    Operation string
+    StartTime time.Time
+    EndTime   time.Time
+    Tags      map[string]string
+}
+
+type Tracer struct {
+    spans []Span
+}
+
+func NewTracer() *Tracer {
+    return &Tracer{
+        spans: make([]Span, 0),
+    }
+}
+
+func (t *Tracer) StartSpan(ctx context.Context, operation string) (context.Context, *Span) {
+    traceID := getTraceID(ctx)
+    parentSpanID := getSpanID(ctx)
+    
+    if traceID == "" {
+        traceID = TraceID(fmt.Sprintf("trace-%d", rand.Int63()))
+    }
+    
+    span := &Span{
+        TraceID:   traceID,
+        SpanID:    SpanID(fmt.Sprintf("span-%d", rand.Int63())),
+        ParentID:  parentSpanID,
+        Operation: operation,
+        StartTime: time.Now(),
+        Tags:      make(map[string]string),
+    }
+    
+    fmt.Printf("Started span: %s (trace: %s, parent: %s)\n", 
+              span.SpanID, span.TraceID, span.ParentID)
+    
+    // Add span to context
+    ctx = context.WithValue(ctx, "traceID", span.TraceID)
+    ctx = context.WithValue(ctx, "spanID", span.SpanID)
+    
+    return ctx, span
+}
+
+func (t *Tracer) FinishSpan(span *Span) {
+    span.EndTime = time.Now()
+    duration := span.EndTime.Sub(span.StartTime)
+    
+    fmt.Printf("Finished span: %s (duration: %v)\n", span.SpanID, duration)
+    t.spans = append(t.spans, *span)
+}
+
+func (t *Tracer) PrintTrace(traceID TraceID) {
+    fmt.Printf("\n=== Trace: %s ===\n", traceID)
+    for _, span := range t.spans {
+        if span.TraceID == traceID {
+            duration := span.EndTime.Sub(span.StartTime)
+            fmt.Printf("  Span: %s | Op: %s | Duration: %v | Parent: %s\n",
+                      span.SpanID, span.Operation, duration, span.ParentID)
+        }
+    }
+}
+
+func getTraceID(ctx context.Context) TraceID {
+    if traceID, ok := ctx.Value("traceID").(TraceID); ok {
+        return traceID
+    }
+    return ""
+}
+
+func getSpanID(ctx context.Context) SpanID {
+    if spanID, ok := ctx.Value("spanID").(SpanID); ok {
+        return spanID
+    }
+    return ""
+}
+
+func authenticateUser(ctx context.Context, tracer *Tracer, userID string) error {
+    ctx, span := tracer.StartSpan(ctx, "authenticate_user")
+    defer tracer.FinishSpan(span)
+    
+    span.Tags["user.id"] = userID
+    
+    // Simulate authentication work
+    time.Sleep(100 * time.Millisecond)
+    
+    if userID == "invalid" {
+        span.Tags["error"] = "authentication_failed"
+        return fmt.Errorf("authentication failed for user %s", userID)
+    }
+    
+    span.Tags["result"] = "success"
+    return nil
+}
+
+func fetchUserProfile(ctx context.Context, tracer *Tracer, userID string) (map[string]interface{}, error) {
+    ctx, span := tracer.StartSpan(ctx, "fetch_user_profile")
+    defer tracer.FinishSpan(span)
+    
+    span.Tags["user.id"] = userID
+    span.Tags["service"] = "user-service"
+    
+    // Simulate database call with nested span
+    profile, err := queryDatabase(ctx, tracer, "SELECT * FROM users WHERE id = ?", userID)
+    if err != nil {
+        span.Tags["error"] = err.Error()
+        return nil, err
+    }
+    
+    span.Tags["result"] = "success"
+    return profile, nil
+}
+
+func queryDatabase(ctx context.Context, tracer *Tracer, query string, args ...interface{}) (map[string]interface{}, error) {
+    ctx, span := tracer.StartSpan(ctx, "database_query")
+    defer tracer.FinishSpan(span)
+    
+    span.Tags["db.statement"] = query
+    span.Tags["db.type"] = "postgresql"
+    
+    // Check for context cancellation
+    select {
+    case <-time.After(50 * time.Millisecond):
+        result := map[string]interface{}{
+            "id":   args[0],
+            "name": "User " + args[0].(string),
+            "age":  25,
+        }
+        span.Tags["db.rows_affected"] = "1"
+        return result, nil
+    case <-ctx.Done():
+        span.Tags["error"] = "cancelled"
+        return nil, ctx.Err()
+    }
+}
+
+func processRequest(ctx context.Context, tracer *Tracer, userID string) error {
+    ctx, span := tracer.StartSpan(ctx, "process_request")
+    defer tracer.FinishSpan(span)
+    
+    span.Tags["request.user_id"] = userID
+    
+    // Step 1: Authenticate
+    if err := authenticateUser(ctx, tracer, userID); err != nil {
+        span.Tags["error"] = "authentication_failed"
+        return err
+    }
+    
+    // Step 2: Fetch profile
+    profile, err := fetchUserProfile(ctx, tracer, userID)
+    if err != nil {
+        span.Tags["error"] = "profile_fetch_failed"
+        return err
+    }
+    
+    span.Tags["profile.name"] = profile["name"].(string)
+    span.Tags["result"] = "success"
+    
+    fmt.Printf("Request processed successfully for user: %s\n", profile["name"])
+    return nil
+}
+
+func main() {
+    tracer := NewTracer()
+    
+    // Create root context
+    ctx := context.Background()
+    
+    // Process multiple requests
+    requests := []string{"user123", "user456", "invalid"}
+    
+    for _, userID := range requests {
+        fmt.Printf("\n--- Processing request for user: %s ---\n", userID)
+        
+        // Create context with timeout for each request
+        requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+        
+        err := processRequest(requestCtx, tracer, userID)
+        if err != nil {
+            fmt.Printf("Request failed: %v\n", err)
+        }
+        
+        cancel()
+        
+        // Print trace for this request
+        if traceID := getTraceID(requestCtx); traceID != "" {
+            tracer.PrintTrace(traceID)
+        }
+    }
+    
+    fmt.Printf("\nTotal spans recorded: %d\n", len(tracer.spans))
+}
+```
+
+Distributed tracing with context enables request tracking across service  
+boundaries, providing visibility into complex distributed operations and  
+helping identify performance bottlenecks and errors.  
+
+## Context middleware patterns
+
+Middleware functions can enhance requests with context values, timeouts,  
+and cancellation logic in a composable manner.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+    "strconv"
+    "time"
+)
+
+type Middleware func(http.Handler) http.Handler
+
+// Request ID middleware
+func RequestIDMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+        ctx := context.WithValue(r.Context(), "requestID", requestID)
+        
+        w.Header().Set("X-Request-ID", requestID)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+
+// Timeout middleware
+func TimeoutMiddleware(timeout time.Duration) Middleware {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            ctx, cancel := context.WithTimeout(r.Context(), timeout)
+            defer cancel()
+            
+            // Create a channel to signal completion
+            done := make(chan struct{})
+            
+            go func() {
+                defer close(done)
+                next.ServeHTTP(w, r.WithContext(ctx))
+            }()
+            
+            select {
+            case <-done:
+                // Request completed normally
+            case <-ctx.Done():
+                // Request timed out
+                w.WriteHeader(http.StatusRequestTimeout)
+                fmt.Fprintf(w, "Request timeout after %v", timeout)
+                log.Printf("Request timeout: %s %s", r.Method, r.URL.Path)
+            }
+        })
+    }
+}
+
+// Logging middleware
+func LoggingMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        requestID := r.Context().Value("requestID")
+        
+        log.Printf("Started %s %s (ID: %v)", r.Method, r.URL.Path, requestID)
+        
+        // Wrap ResponseWriter to capture status code
+        wrapped := &responseWriter{ResponseWriter: w, statusCode: 200}
+        next.ServeHTTP(wrapped, r)
+        
+        duration := time.Since(start)
+        log.Printf("Completed %s %s (ID: %v) - Status: %d, Duration: %v", 
+                  r.Method, r.URL.Path, requestID, wrapped.statusCode, duration)
+    })
+}
+
+type responseWriter struct {
+    http.ResponseWriter
+    statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+    rw.statusCode = code
+    rw.ResponseWriter.WriteHeader(code)
+}
+
+// Authentication middleware
+func AuthMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        token := r.Header.Get("Authorization")
+        if token == "" {
+            w.WriteHeader(http.StatusUnauthorized)
+            fmt.Fprintf(w, "Missing authorization header")
+            return
+        }
+        
+        // Simulate token validation
+        userID := validateToken(r.Context(), token)
+        if userID == "" {
+            w.WriteHeader(http.StatusUnauthorized)
+            fmt.Fprintf(w, "Invalid token")
+            return
+        }
+        
+        // Add user to context
+        ctx := context.WithValue(r.Context(), "userID", userID)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+
+func validateToken(ctx context.Context, token string) string {
+    // Simulate token validation with context timeout
+    select {
+    case <-time.After(100 * time.Millisecond):
+        if token == "Bearer valid-token" {
+            return "user123"
+        }
+        return ""
+    case <-ctx.Done():
+        return ""
+    }
+}
+
+// Rate limiting middleware
+func RateLimitMiddleware(requestsPerSecond int) Middleware {
+    ticker := time.NewTicker(time.Second / time.Duration(requestsPerSecond))
+    
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            select {
+            case <-ticker.C:
+                next.ServeHTTP(w, r)
+            case <-r.Context().Done():
+                w.WriteHeader(http.StatusRequestTimeout)
+                fmt.Fprintf(w, "Request cancelled")
+            default:
+                w.WriteHeader(http.StatusTooManyRequests)
+                fmt.Fprintf(w, "Rate limit exceeded")
+            }
+        })
+    }
+}
+
+// Chain multiple middlewares
+func ChainMiddleware(middlewares ...Middleware) Middleware {
+    return func(next http.Handler) http.Handler {
+        for i := len(middlewares) - 1; i >= 0; i-- {
+            next = middlewares[i](next)
+        }
+        return next
+    }
+}
+
+// Sample handlers
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    requestID := r.Context().Value("requestID")
+    fmt.Fprintf(w, "OK (Request ID: %v)", requestID)
+}
+
+func slowHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    requestID := ctx.Value("requestID")
+    userID := ctx.Value("userID")
+    
+    // Simulate slow operation
+    select {
+    case <-time.After(2 * time.Second):
+        fmt.Fprintf(w, "Slow operation completed (Request ID: %v, User: %v)", requestID, userID)
+    case <-ctx.Done():
+        // This won't be reached due to timeout middleware handling
+        fmt.Fprintf(w, "Operation cancelled")
+    }
+}
+
+func userHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    userID := ctx.Value("userID")
+    requestID := ctx.Value("requestID")
+    
+    if userID == nil {
+        w.WriteHeader(http.StatusUnauthorized)
+        fmt.Fprintf(w, "User not authenticated")
+        return
+    }
+    
+    fmt.Fprintf(w, "User profile for %v (Request ID: %v)", userID, requestID)
+}
+
+func main() {
+    // Create middleware chain
+    middleware := ChainMiddleware(
+        RequestIDMiddleware,
+        LoggingMiddleware,
+        TimeoutMiddleware(1*time.Second),
+        RateLimitMiddleware(2), // 2 requests per second
+    )
+    
+    // Protected routes with authentication
+    protectedMiddleware := ChainMiddleware(
+        RequestIDMiddleware,
+        LoggingMiddleware,
+        AuthMiddleware,
+        TimeoutMiddleware(3*time.Second),
+    )
+    
+    // Set up routes
+    http.Handle("/health", middleware(http.HandlerFunc(healthHandler)))
+    http.Handle("/slow", middleware(http.HandlerFunc(slowHandler)))
+    http.Handle("/user", protectedMiddleware(http.HandlerFunc(userHandler)))
+    
+    fmt.Println("Server starting on :8080")
+    fmt.Println("Try these endpoints:")
+    fmt.Println("  curl http://localhost:8080/health")
+    fmt.Println("  curl http://localhost:8080/slow")
+    fmt.Println("  curl -H 'Authorization: Bearer valid-token' http://localhost:8080/user")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Context middleware patterns enable composable request processing with  
+consistent timeout handling, logging, authentication, and cancellation  
+behavior across all HTTP endpoints.  
+
+## Testing with context
+
+Context makes testing asynchronous and long-running operations more  
+deterministic by enabling controlled cancellation and timeouts.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "testing"
+    "time"
+)
+
+// Service to test
+type UserService struct {
+    delay time.Duration
+}
+
+func (s *UserService) GetUser(ctx context.Context, userID string) (*User, error) {
+    select {
+    case <-time.After(s.delay):
+        if userID == "notfound" {
+            return nil, fmt.Errorf("user not found: %s", userID)
+        }
+        return &User{ID: userID, Name: "User " + userID}, nil
+    case <-ctx.Done():
+        return nil, ctx.Err()
+    }
+}
+
+func (s *UserService) CreateUser(ctx context.Context, user *User) error {
+    select {
+    case <-time.After(s.delay):
+        if user.Name == "invalid" {
+            return fmt.Errorf("invalid user name")
+        }
+        fmt.Printf("Created user: %s\n", user.Name)
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+type User struct {
+    ID   string
+    Name string
+}
+
+// Test helper functions
+func TestUserService_GetUser_Success(t *testing.T) {
+    service := &UserService{delay: 100 * time.Millisecond}
+    ctx := context.Background()
+    
+    user, err := service.GetUser(ctx, "123")
+    if err != nil {
+        t.Fatalf("Expected no error, got %v", err)
+    }
+    
+    if user.ID != "123" {
+        t.Errorf("Expected user ID '123', got '%s'", user.ID)
+    }
+    
+    if user.Name != "User 123" {
+        t.Errorf("Expected user name 'User 123', got '%s'", user.Name)
+    }
+}
+
+func TestUserService_GetUser_NotFound(t *testing.T) {
+    service := &UserService{delay: 50 * time.Millisecond}
+    ctx := context.Background()
+    
+    user, err := service.GetUser(ctx, "notfound")
+    if err == nil {
+        t.Fatal("Expected error for non-existent user")
+    }
+    
+    if user != nil {
+        t.Error("Expected nil user for non-existent user")
+    }
+}
+
+func TestUserService_GetUser_Timeout(t *testing.T) {
+    service := &UserService{delay: 500 * time.Millisecond}
+    ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+    defer cancel()
+    
+    user, err := service.GetUser(ctx, "123")
+    if err != context.DeadlineExceeded {
+        t.Fatalf("Expected context.DeadlineExceeded, got %v", err)
+    }
+    
+    if user != nil {
+        t.Error("Expected nil user on timeout")
+    }
+}
+
+func TestUserService_GetUser_Cancellation(t *testing.T) {
+    service := &UserService{delay: 500 * time.Millisecond}
+    ctx, cancel := context.WithCancel(context.Background())
+    
+    // Cancel after 100ms
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        cancel()
+    }()
+    
+    user, err := service.GetUser(ctx, "123")
+    if err != context.Canceled {
+        t.Fatalf("Expected context.Canceled, got %v", err)
+    }
+    
+    if user != nil {
+        t.Error("Expected nil user on cancellation")
+    }
+}
+
+func TestUserService_CreateUser_WithValues(t *testing.T) {
+    service := &UserService{delay: 50 * time.Millisecond}
+    
+    // Create context with test values
+    ctx := context.WithValue(context.Background(), "testID", "test123")
+    ctx = context.WithValue(ctx, "requestID", "req456")
+    
+    user := &User{ID: "789", Name: "Test User"}
+    err := service.CreateUser(ctx, user)
+    if err != nil {
+        t.Fatalf("Expected no error, got %v", err)
+    }
+    
+    // Verify context values are accessible
+    testID := ctx.Value("testID")
+    if testID != "test123" {
+        t.Errorf("Expected testID 'test123', got '%v'", testID)
+    }
+}
+
+// Benchmark with context
+func BenchmarkUserService_GetUser(b *testing.B) {
+    service := &UserService{delay: 10 * time.Millisecond}
+    ctx := context.Background()
+    
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        _, err := service.GetUser(ctx, "benchmark")
+        if err != nil {
+            b.Fatalf("Unexpected error: %v", err)
+        }
+    }
+}
+
+func BenchmarkUserService_GetUser_WithTimeout(b *testing.B) {
+    service := &UserService{delay: 5 * time.Millisecond}
+    
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+        _, err := service.GetUser(ctx, "benchmark")
+        cancel()
+        
+        if err != nil {
+            b.Fatalf("Unexpected error: %v", err)
+        }
+    }
+}
+
+// Table-driven tests with context
+func TestUserService_GetUser_TableDriven(t *testing.T) {
+    tests := []struct {
+        name        string
+        userID      string
+        timeout     time.Duration
+        serviceDelay time.Duration
+        expectError bool
+        errorType   error
+    }{
+        {
+            name:        "success",
+            userID:      "123",
+            timeout:     200 * time.Millisecond,
+            serviceDelay: 50 * time.Millisecond,
+            expectError: false,
+        },
+        {
+            name:        "timeout",
+            userID:      "123",
+            timeout:     50 * time.Millisecond,
+            serviceDelay: 200 * time.Millisecond,
+            expectError: true,
+            errorType:   context.DeadlineExceeded,
+        },
+        {
+            name:        "not found",
+            userID:      "notfound",
+            timeout:     200 * time.Millisecond,
+            serviceDelay: 50 * time.Millisecond,
+            expectError: true,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            service := &UserService{delay: tt.serviceDelay}
+            ctx, cancel := context.WithTimeout(context.Background(), tt.timeout)
+            defer cancel()
+            
+            user, err := service.GetUser(ctx, tt.userID)
+            
+            if tt.expectError {
+                if err == nil {
+                    t.Error("Expected error but got none")
+                }
+                if tt.errorType != nil && err != tt.errorType {
+                    t.Errorf("Expected error %v, got %v", tt.errorType, err)
+                }
+            } else {
+                if err != nil {
+                    t.Errorf("Expected no error but got %v", err)
+                }
+                if user == nil {
+                    t.Error("Expected user but got nil")
+                }
+            }
+        })
+    }
+}
+
+// Mock implementation for testing
+type MockUserService struct {
+    getUserFunc    func(context.Context, string) (*User, error)
+    createUserFunc func(context.Context, *User) error
+}
+
+func (m *MockUserService) GetUser(ctx context.Context, userID string) (*User, error) {
+    if m.getUserFunc != nil {
+        return m.getUserFunc(ctx, userID)
+    }
+    return nil, fmt.Errorf("mock not implemented")
+}
+
+func (m *MockUserService) CreateUser(ctx context.Context, user *User) error {
+    if m.createUserFunc != nil {
+        return m.createUserFunc(ctx, user)
+    }
+    return fmt.Errorf("mock not implemented")
+}
+
+func TestWithMock(t *testing.T) {
+    mock := &MockUserService{
+        getUserFunc: func(ctx context.Context, userID string) (*User, error) {
+            // Check context cancellation
+            select {
+            case <-ctx.Done():
+                return nil, ctx.Err()
+            default:
+            }
+            
+            return &User{ID: userID, Name: "Mock User"}, nil
+        },
+    }
+    
+    ctx := context.Background()
+    user, err := mock.GetUser(ctx, "test")
+    if err != nil {
+        t.Fatalf("Mock test failed: %v", err)
+    }
+    
+    if user.Name != "Mock User" {
+        t.Errorf("Expected 'Mock User', got '%s'", user.Name)
+    }
+}
+
+func main() {
+    // Run a simple test demonstration
+    fmt.Println("Running context testing examples...")
+    
+    // Simulate test runner
+    t := &testing.T{}
+    
+    fmt.Println("Running TestUserService_GetUser_Success...")
+    TestUserService_GetUser_Success(t)
+    
+    fmt.Println("Running TestUserService_GetUser_Timeout...")
+    TestUserService_GetUser_Timeout(t)
+    
+    fmt.Println("Running TestWithMock...")
+    TestWithMock(t)
+    
+    fmt.Println("All tests completed!")
+}
+```
+
+Testing with context enables deterministic testing of asynchronous  
+operations, timeout scenarios, and cancellation behavior, making tests  
+more reliable and comprehensive.  
+
+## Context with channels
+
+Combining context with channels creates powerful patterns for coordinated  
+cancellation and synchronization in concurrent systems.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Producer with context and channels
+func producer(ctx context.Context, name string, out chan<- int) {
+    defer close(out)
+    
+    for i := 1; ; i++ {
+        select {
+        case out <- i:
+            fmt.Printf("Producer %s: sent %d\n", name, i)
+            time.Sleep(200 * time.Millisecond)
+        case <-ctx.Done():
+            fmt.Printf("Producer %s: stopped (%v)\n", name, ctx.Err())
+            return
+        }
+    }
+}
+
+// Consumer with context
+func consumer(ctx context.Context, name string, in <-chan int, results chan<- string) {
+    defer close(results)
+    
+    for {
+        select {
+        case value, ok := <-in:
+            if !ok {
+                fmt.Printf("Consumer %s: input channel closed\n", name)
+                return
+            }
+            
+            result := fmt.Sprintf("%s processed %d", name, value)
+            
+            select {
+            case results <- result:
+                fmt.Printf("Consumer %s: processed %d\n", name, value)
+            case <-ctx.Done():
+                fmt.Printf("Consumer %s: cancelled while sending result\n", name)
+                return
+            }
+            
+        case <-ctx.Done():
+            fmt.Printf("Consumer %s: cancelled (%v)\n", name, ctx.Err())
+            return
+        }
+    }
+}
+
+// Fan-out pattern with context
+func fanOut(ctx context.Context, input <-chan int, workerCount int) []<-chan string {
+    outputs := make([]<-chan string, workerCount)
+    
+    for i := 0; i < workerCount; i++ {
+        output := make(chan string, 10)
+        outputs[i] = output
+        
+        go func(workerID int, out chan<- string) {
+            defer close(out)
+            
+            for {
+                select {
+                case value, ok := <-input:
+                    if !ok {
+                        fmt.Printf("Worker %d: input closed\n", workerID)
+                        return
+                    }
+                    
+                    // Simulate processing
+                    time.Sleep(100 * time.Millisecond)
+                    result := fmt.Sprintf("worker-%d: %d^2 = %d", workerID, value, value*value)
+                    
+                    select {
+                    case out <- result:
+                    case <-ctx.Done():
+                        fmt.Printf("Worker %d: cancelled\n", workerID)
+                        return
+                    }
+                    
+                case <-ctx.Done():
+                    fmt.Printf("Worker %d: cancelled\n", workerID)
+                    return
+                }
+            }
+        }(i, output)
+    }
+    
+    return outputs
+}
+
+// Fan-in pattern with context
+func fanIn(ctx context.Context, inputs ...<-chan string) <-chan string {
+    output := make(chan string)
+    var wg sync.WaitGroup
+    
+    // Start a goroutine for each input channel
+    wg.Add(len(inputs))
+    for i, input := range inputs {
+        go func(id int, in <-chan string) {
+            defer wg.Done()
+            
+            for {
+                select {
+                case value, ok := <-in:
+                    if !ok {
+                        fmt.Printf("FanIn input %d: channel closed\n", id)
+                        return
+                    }
+                    
+                    select {
+                    case output <- value:
+                    case <-ctx.Done():
+                        fmt.Printf("FanIn input %d: cancelled\n", id)
+                        return
+                    }
+                    
+                case <-ctx.Done():
+                    fmt.Printf("FanIn input %d: cancelled\n", id)
+                    return
+                }
+            }
+        }(i, input)
+    }
+    
+    // Close output when all inputs are done
+    go func() {
+        wg.Wait()
+        close(output)
+        fmt.Println("FanIn: all inputs completed")
+    }()
+    
+    return output
+}
+
+// Select with context for multiple operations
+func selectWithContext(ctx context.Context) {
+    // Create multiple channels with different timing
+    fastChan := make(chan string, 1)
+    slowChan := make(chan string, 1)
+    timeoutChan := make(chan string, 1)
+    
+    // Start producers
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        fastChan <- "fast result"
+    }()
+    
+    go func() {
+        time.Sleep(500 * time.Millisecond)
+        slowChan <- "slow result"
+    }()
+    
+    go func() {
+        time.Sleep(2 * time.Second)
+        timeoutChan <- "timeout result"
+    }()
+    
+    // Select with context timeout
+    for i := 0; i < 3; i++ {
+        select {
+        case result := <-fastChan:
+            fmt.Printf("Received: %s\n", result)
+        case result := <-slowChan:
+            fmt.Printf("Received: %s\n", result)
+        case result := <-timeoutChan:
+            fmt.Printf("Received: %s\n", result)
+        case <-ctx.Done():
+            fmt.Printf("Select cancelled: %v\n", ctx.Err())
+            return
+        }
+    }
+}
+
+func main() {
+    fmt.Println("=== Producer-Consumer with Context ===")
+    
+    ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel1()
+    
+    // Simple producer-consumer
+    dataChannel := make(chan int, 5)
+    resultChannel := make(chan string, 5)
+    
+    go producer(ctx1, "P1", dataChannel)
+    go consumer(ctx1, "C1", dataChannel, resultChannel)
+    
+    // Collect results
+    go func() {
+        for result := range resultChannel {
+            fmt.Printf("Result: %s\n", result)
+        }
+    }()
+    
+    time.Sleep(3 * time.Second)
+    
+    fmt.Println("\n=== Fan-Out/Fan-In Pattern ===")
+    
+    ctx2, cancel2 := context.WithTimeout(context.Background(), 4*time.Second)
+    defer cancel2()
+    
+    // Create input channel
+    numbers := make(chan int, 10)
+    
+    // Start number producer
+    go func() {
+        defer close(numbers)
+        for i := 1; i <= 10; i++ {
+            select {
+            case numbers <- i:
+                time.Sleep(50 * time.Millisecond)
+            case <-ctx2.Done():
+                return
+            }
+        }
+    }()
+    
+    // Fan-out to multiple workers
+    workerOutputs := fanOut(ctx2, numbers, 3)
+    
+    // Fan-in results
+    finalOutput := fanIn(ctx2, workerOutputs...)
+    
+    // Collect final results
+    results := make([]string, 0)
+    for result := range finalOutput {
+        results = append(results, result)
+        fmt.Printf("Final result: %s\n", result)
+    }
+    
+    fmt.Printf("Processed %d results\n", len(results))
+    
+    fmt.Println("\n=== Select with Context ===")
+    
+    ctx3, cancel3 := context.WithTimeout(context.Background(), 1*time.Second)
+    defer cancel3()
+    
+    selectWithContext(ctx3)
+}
+```
+
+Context with channels enables sophisticated coordination patterns like  
+fan-out/fan-in, graceful shutdown of channel pipelines, and timeout-aware  
+select operations for robust concurrent systems.  
+
+## Context propagation patterns
+
+Understanding how context flows through application layers and service  
+boundaries is crucial for building robust distributed systems.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+// Domain layer
+type Order struct {
+    ID       string
+    UserID   string
+    Amount   float64
+    Status   string
+    Items    []OrderItem
+}
+
+type OrderItem struct {
+    ProductID string
+    Quantity  int
+    Price     float64
+}
+
+// Repository layer
+type OrderRepository struct {
+    orders map[string]*Order
+}
+
+func NewOrderRepository() *OrderRepository {
+    return &OrderRepository{
+        orders: make(map[string]*Order),
+    }
+}
+
+func (r *OrderRepository) GetByID(ctx context.Context, orderID string) (*Order, error) {
+    // Simulate database query latency
+    select {
+    case <-time.After(100 * time.Millisecond):
+    case <-ctx.Done():
+        return nil, fmt.Errorf("repository query cancelled: %w", ctx.Err())
+    }
+    
+    if order, exists := r.orders[orderID]; exists {
+        fmt.Printf("Repository: found order %s\n", orderID)
+        return order, nil
+    }
+    
+    return nil, fmt.Errorf("order not found: %s", orderID)
+}
+
+func (r *OrderRepository) Save(ctx context.Context, order *Order) error {
+    select {
+    case <-time.After(150 * time.Millisecond):
+    case <-ctx.Done():
+        return fmt.Errorf("repository save cancelled: %w", ctx.Err())
+    }
+    
+    r.orders[order.ID] = order
+    fmt.Printf("Repository: saved order %s\n", order.ID)
+    return nil
+}
+
+// Service layer
+type PaymentService struct {
+    processingTime time.Duration
+}
+
+func (p *PaymentService) ProcessPayment(ctx context.Context, orderID string, amount float64) error {
+    // Extract context values for logging/tracing
+    if requestID := ctx.Value("requestID"); requestID != nil {
+        fmt.Printf("Payment service processing (request: %v)\n", requestID)
+    }
+    
+    // Create child context with payment-specific timeout
+    paymentCtx, cancel := context.WithTimeout(ctx, p.processingTime)
+    defer cancel()
+    
+    select {
+    case <-time.After(p.processingTime):
+        fmt.Printf("Payment processed for order %s: $%.2f\n", orderID, amount)
+        return nil
+    case <-paymentCtx.Done():
+        return fmt.Errorf("payment timeout for order %s: %w", orderID, paymentCtx.Err())
+    }
+}
+
+type NotificationService struct{}
+
+func (n *NotificationService) SendOrderConfirmation(ctx context.Context, userID, orderID string) error {
+    // Notification doesn't block main flow, but respects cancellation
+    select {
+    case <-time.After(50 * time.Millisecond):
+        fmt.Printf("Notification sent to user %s for order %s\n", userID, orderID)
+        return nil
+    case <-ctx.Done():
+        fmt.Printf("Notification cancelled for order %s\n", orderID)
+        return ctx.Err()
+    }
+}
+
+// Application service (orchestrates business logic)
+type OrderService struct {
+    repository        *OrderRepository
+    paymentService    *PaymentService
+    notificationService *NotificationService
+}
+
+func NewOrderService(repo *OrderRepository, payment *PaymentService, notification *NotificationService) *OrderService {
+    return &OrderService{
+        repository:        repo,
+        paymentService:    payment,
+        notificationService: notification,
+    }
+}
+
+func (s *OrderService) ProcessOrder(ctx context.Context, orderID string) error {
+    // Add operation context
+    ctx = context.WithValue(ctx, "operation", "process_order")
+    
+    // Step 1: Get order from repository
+    order, err := s.repository.GetByID(ctx, orderID)
+    if err != nil {
+        return fmt.Errorf("failed to get order: %w", err)
+    }
+    
+    // Step 2: Process payment with child context
+    err = s.paymentService.ProcessPayment(ctx, order.ID, order.Amount)
+    if err != nil {
+        return fmt.Errorf("payment failed: %w", err)
+    }
+    
+    // Step 3: Update order status
+    order.Status = "paid"
+    err = s.repository.Save(ctx, order)
+    if err != nil {
+        return fmt.Errorf("failed to update order: %w", err)
+    }
+    
+    // Step 4: Send notification (non-blocking)
+    go func() {
+        // Create detached context for notification
+        notificationCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        
+        // Propagate important values to detached context
+        if requestID := ctx.Value("requestID"); requestID != nil {
+            notificationCtx = context.WithValue(notificationCtx, "requestID", requestID)
+        }
+        
+        s.notificationService.SendOrderConfirmation(notificationCtx, order.UserID, order.ID)
+    }()
+    
+    fmt.Printf("Order %s processed successfully\n", orderID)
+    return nil
+}
+
+// HTTP layer simulation
+func handleOrderRequest(ctx context.Context, orderService *OrderService, orderID string) {
+    // Add request-specific context values
+    requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+    ctx = context.WithValue(ctx, "requestID", requestID)
+    ctx = context.WithValue(ctx, "userAgent", "OrderApp/1.0")
+    
+    fmt.Printf("Handling request %s for order %s\n", requestID, orderID)
+    
+    // Create request timeout
+    requestCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+    defer cancel()
+    
+    err := orderService.ProcessOrder(requestCtx, orderID)
+    if err != nil {
+        fmt.Printf("Request %s failed: %v\n", requestID, err)
+    } else {
+        fmt.Printf("Request %s completed successfully\n", requestID)
+    }
+}
+
+// Background job processing
+func backgroundOrderProcessor(ctx context.Context, orderService *OrderService, orders []string) {
+    for _, orderID := range orders {
+        select {
+        case <-ctx.Done():
+            fmt.Printf("Background processing cancelled\n")
+            return
+        default:
+        }
+        
+        // Create job-specific context
+        jobCtx := context.WithValue(ctx, "jobType", "background_order_processing")
+        jobCtx = context.WithValue(jobCtx, "orderID", orderID)
+        
+        // Process with timeout
+        jobCtx, cancel := context.WithTimeout(jobCtx, 2*time.Second)
+        
+        fmt.Printf("Background processing order %s\n", orderID)
+        err := orderService.ProcessOrder(jobCtx, orderID)
+        if err != nil {
+            fmt.Printf("Background job failed for order %s: %v\n", orderID, err)
+        }
+        
+        cancel()
+        time.Sleep(100 * time.Millisecond) // Small delay between jobs
+    }
+}
+
+func main() {
+    // Set up services
+    repo := NewOrderRepository()
+    payment := &PaymentService{processingTime: 200 * time.Millisecond}
+    notification := &NotificationService{}
+    orderService := NewOrderService(repo, payment, notification)
+    
+    // Pre-populate some orders
+    testOrders := []*Order{
+        {ID: "order1", UserID: "user123", Amount: 99.99, Status: "pending"},
+        {ID: "order2", UserID: "user456", Amount: 149.50, Status: "pending"},
+        {ID: "order3", UserID: "user789", Amount: 75.25, Status: "pending"},
+    }
+    
+    for _, order := range testOrders {
+        repo.orders[order.ID] = order
+    }
+    
+    fmt.Println("=== HTTP Request Processing ===")
+    
+    // Simulate HTTP requests
+    rootCtx := context.Background()
+    handleOrderRequest(rootCtx, orderService, "order1")
+    handleOrderRequest(rootCtx, orderService, "order2")
+    
+    fmt.Println("\n=== Background Job Processing ===")
+    
+    // Simulate background job processing
+    bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer bgCancel()
+    
+    backgroundOrderProcessor(bgCtx, orderService, []string{"order3", "order1"})
+    
+    fmt.Println("\n=== Cancelled Request ===")
+    
+    // Simulate cancelled request
+    cancelledCtx, cancel := context.WithCancel(context.Background())
+    
+    go func() {
+        time.Sleep(500 * time.Millisecond)
+        fmt.Println("Cancelling request...")
+        cancel()
+    }()
+    
+    handleOrderRequest(cancelledCtx, orderService, "order2")
+    
+    // Wait for any remaining notifications
+    time.Sleep(500 * time.Millisecond)
+}
+```
+
+Context propagation enables request tracing, timeout coordination, and  
+value passing across application layers while maintaining clean separation  
+of concerns and proper cancellation semantics.  
+
+## Custom context implementations
+
+Creating custom context implementations enables specialized behavior for  
+specific use cases while maintaining compatibility with the standard interface.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Custom context that tracks operation metrics
+type MetricContext struct {
+    context.Context
+    mu         sync.RWMutex
+    startTime  time.Time
+    operations map[string]int
+    errors     map[string]int
+}
+
+func NewMetricContext(parent context.Context) *MetricContext {
+    return &MetricContext{
+        Context:    parent,
+        startTime:  time.Now(),
+        operations: make(map[string]int),
+        errors:     make(map[string]int),
+    }
+}
+
+func (mc *MetricContext) RecordOperation(operation string) {
+    mc.mu.Lock()
+    defer mc.mu.Unlock()
+    mc.operations[operation]++
+}
+
+func (mc *MetricContext) RecordError(operation string) {
+    mc.mu.Lock()
+    defer mc.mu.Unlock()
+    mc.errors[operation]++
+}
+
+func (mc *MetricContext) GetMetrics() (map[string]int, map[string]int, time.Duration) {
+    mc.mu.RLock()
+    defer mc.mu.RUnlock()
+    
+    ops := make(map[string]int)
+    errs := make(map[string]int)
+    
+    for k, v := range mc.operations {
+        ops[k] = v
+    }
+    for k, v := range mc.errors {
+        errs[k] = v
+    }
+    
+    return ops, errs, time.Since(mc.startTime)
+}
+
+// Context with priority levels
+type PriorityContext struct {
+    context.Context
+    priority int
+}
+
+func WithPriority(parent context.Context, priority int) *PriorityContext {
+    return &PriorityContext{
+        Context:  parent,
+        priority: priority,
+    }
+}
+
+func (pc *PriorityContext) Priority() int {
+    return pc.priority
+}
+
+func GetPriority(ctx context.Context) int {
+    if pc, ok := ctx.(*PriorityContext); ok {
+        return pc.Priority()
+    }
+    return 0 // Default priority
+}
+
+// Context with retry configuration
+type RetryContext struct {
+    context.Context
+    maxRetries    int
+    currentRetry  int
+    backoffFunc   func(int) time.Duration
+}
+
+func WithRetry(parent context.Context, maxRetries int, backoffFunc func(int) time.Duration) *RetryContext {
+    return &RetryContext{
+        Context:     parent,
+        maxRetries:  maxRetries,
+        currentRetry: 0,
+        backoffFunc: backoffFunc,
+    }
+}
+
+func (rc *RetryContext) CanRetry() bool {
+    return rc.currentRetry < rc.maxRetries
+}
+
+func (rc *RetryContext) NextRetry() *RetryContext {
+    return &RetryContext{
+        Context:      rc.Context,
+        maxRetries:   rc.maxRetries,
+        currentRetry: rc.currentRetry + 1,
+        backoffFunc:  rc.backoffFunc,
+    }
+}
+
+func (rc *RetryContext) BackoffDuration() time.Duration {
+    if rc.backoffFunc != nil {
+        return rc.backoffFunc(rc.currentRetry)
+    }
+    return time.Duration(rc.currentRetry) * 100 * time.Millisecond
+}
+
+func (rc *RetryContext) RetryInfo() (int, int) {
+    return rc.currentRetry, rc.maxRetries
+}
+
+// Context that aggregates multiple parent contexts
+type MultiContext struct {
+    contexts []context.Context
+    done     chan struct{}
+    err      error
+    mu       sync.RWMutex
+}
+
+func WithMultiple(contexts ...context.Context) *MultiContext {
+    mc := &MultiContext{
+        contexts: contexts,
+        done:     make(chan struct{}),
+    }
+    
+    // Monitor all parent contexts
+    for i, ctx := range contexts {
+        go func(index int, c context.Context) {
+            select {
+            case <-c.Done():
+                mc.mu.Lock()
+                if mc.err == nil {
+                    mc.err = fmt.Errorf("context %d cancelled: %w", index, c.Err())
+                    close(mc.done)
+                }
+                mc.mu.Unlock()
+            case <-mc.done:
+                return
+            }
+        }(i, ctx)
+    }
+    
+    return mc
+}
+
+func (mc *MultiContext) Deadline() (deadline time.Time, ok bool) {
+    var earliest time.Time
+    hasDeadline := false
+    
+    for _, ctx := range mc.contexts {
+        if deadline, ok := ctx.Deadline(); ok {
+            if !hasDeadline || deadline.Before(earliest) {
+                earliest = deadline
+                hasDeadline = true
+            }
+        }
+    }
+    
+    return earliest, hasDeadline
+}
+
+func (mc *MultiContext) Done() <-chan struct{} {
+    return mc.done
+}
+
+func (mc *MultiContext) Err() error {
+    mc.mu.RLock()
+    defer mc.mu.RUnlock()
+    return mc.err
+}
+
+func (mc *MultiContext) Value(key interface{}) interface{} {
+    // Check all parent contexts for the value
+    for _, ctx := range mc.contexts {
+        if value := ctx.Value(key); value != nil {
+            return value
+        }
+    }
+    return nil
+}
+
+// Operation functions using custom contexts
+func simulateDataProcessing(ctx context.Context, dataSize int) error {
+    // Record operation if using MetricContext
+    if mc, ok := ctx.(*MetricContext); ok {
+        mc.RecordOperation("data_processing")
+        defer func() {
+            if r := recover(); r != nil {
+                mc.RecordError("data_processing")
+            }
+        }()
+    }
+    
+    // Check priority
+    priority := GetPriority(ctx)
+    processingTime := time.Duration(dataSize) * time.Millisecond
+    if priority > 5 {
+        processingTime = processingTime / 2 // High priority processes faster
+    }
+    
+    fmt.Printf("Processing %d units of data (priority: %d, time: %v)\n", 
+              dataSize, priority, processingTime)
+    
+    select {
+    case <-time.After(processingTime):
+        fmt.Printf("Data processing completed\n")
+        return nil
+    case <-ctx.Done():
+        fmt.Printf("Data processing cancelled: %v\n", ctx.Err())
+        return ctx.Err()
+    }
+}
+
+func reliableNetworkCall(ctx context.Context, url string) error {
+    if rc, ok := ctx.(*RetryContext); ok {
+        current, max := rc.RetryInfo()
+        fmt.Printf("Network call attempt %d/%d to %s\n", current+1, max+1, url)
+        
+        // Simulate network call
+        select {
+        case <-time.After(200 * time.Millisecond):
+            // Simulate failure for demonstration
+            if current < 2 {
+                if rc.CanRetry() {
+                    time.Sleep(rc.BackoffDuration())
+                    return reliableNetworkCall(rc.NextRetry(), url)
+                }
+                return fmt.Errorf("network call failed after %d retries", max)
+            }
+            fmt.Printf("Network call succeeded on attempt %d\n", current+1)
+            return nil
+        case <-ctx.Done():
+            return ctx.Err()
+        }
+    }
+    
+    // Fallback to simple call without retry
+    select {
+    case <-time.After(200 * time.Millisecond):
+        fmt.Printf("Simple network call to %s completed\n", url)
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+func main() {
+    fmt.Println("=== Custom Context Examples ===")
+    
+    // Example 1: MetricContext
+    fmt.Println("\n--- MetricContext ---")
+    metricCtx := NewMetricContext(context.Background())
+    
+    // Perform operations
+    simulateDataProcessing(metricCtx, 100)
+    simulateDataProcessing(metricCtx, 200)
+    
+    // Get metrics
+    ops, errs, duration := metricCtx.GetMetrics()
+    fmt.Printf("Operations: %v\n", ops)
+    fmt.Printf("Errors: %v\n", errs)
+    fmt.Printf("Total duration: %v\n", duration)
+    
+    // Example 2: PriorityContext
+    fmt.Println("\n--- PriorityContext ---")
+    lowPriorityCtx := WithPriority(context.Background(), 3)
+    highPriorityCtx := WithPriority(context.Background(), 8)
+    
+    simulateDataProcessing(lowPriorityCtx, 300)
+    simulateDataProcessing(highPriorityCtx, 300)
+    
+    // Example 3: RetryContext
+    fmt.Println("\n--- RetryContext ---")
+    exponentialBackoff := func(attempt int) time.Duration {
+        return time.Duration(1<<uint(attempt)) * 100 * time.Millisecond
+    }
+    
+    retryCtx := WithRetry(context.Background(), 3, exponentialBackoff)
+    err := reliableNetworkCall(retryCtx, "https://api.example.com")
+    if err != nil {
+        fmt.Printf("Network call failed: %v\n", err)
+    }
+    
+    // Example 4: MultiContext
+    fmt.Println("\n--- MultiContext ---")
+    ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+    ctx2, cancel2 := context.WithCancel(context.Background())
+    ctx3 := context.WithValue(context.Background(), "source", "multi-context")
+    
+    defer cancel1()
+    defer cancel2()
+    
+    multiCtx := WithMultiple(ctx1, ctx2, ctx3)
+    
+    // Cancel one of the parent contexts after a delay
+    go func() {
+        time.Sleep(500 * time.Millisecond)
+        fmt.Println("Cancelling parent context...")
+        cancel2()
+    }()
+    
+    // This operation will be cancelled when ctx2 is cancelled
+    select {
+    case <-time.After(1 * time.Second):
+        fmt.Println("MultiContext operation completed")
+    case <-multiCtx.Done():
+        fmt.Printf("MultiContext cancelled: %v\n", multiCtx.Err())
+    }
+    
+    // Check value propagation
+    source := multiCtx.Value("source")
+    fmt.Printf("Value from MultiContext: %v\n", source)
+    
+    // Example 5: Combining custom contexts
+    fmt.Println("\n--- Combined Custom Contexts ---")
+    combinedCtx := NewMetricContext(WithPriority(context.Background(), 7))
+    
+    // This will use both metric tracking and priority
+    simulateDataProcessing(combinedCtx, 150)
+    
+    ops, errs, duration = combinedCtx.GetMetrics()
+    fmt.Printf("Combined context - Operations: %v, Duration: %v\n", ops, duration)
+}
+```
+
+Custom context implementations enable specialized behaviors like metrics  
+collection, priority handling, retry logic, and multi-parent coordination  
+while maintaining standard context interface compatibility.  
+
+## Context cancellation patterns
+
+Advanced cancellation patterns enable sophisticated control over concurrent  
+operations with graceful degradation and resource cleanup.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Cancellation coordinator for managing multiple operations
+type CancellationCoordinator struct {
+    mu        sync.RWMutex
+    contexts  map[string]context.CancelFunc
+    groups    map[string][]string
+}
+
+func NewCancellationCoordinator() *CancellationCoordinator {
+    return &CancellationCoordinator{
+        contexts: make(map[string]context.CancelFunc),
+        groups:   make(map[string][]string),
+    }
+}
+
+func (cc *CancellationCoordinator) Register(id string, cancel context.CancelFunc) {
+    cc.mu.Lock()
+    defer cc.mu.Unlock()
+    cc.contexts[id] = cancel
+}
+
+func (cc *CancellationCoordinator) AddToGroup(groupName, id string) {
+    cc.mu.Lock()
+    defer cc.mu.Unlock()
+    cc.groups[groupName] = append(cc.groups[groupName], id)
+}
+
+func (cc *CancellationCoordinator) Cancel(id string) bool {
+    cc.mu.RLock()
+    cancel, exists := cc.contexts[id]
+    cc.mu.RUnlock()
+    
+    if exists {
+        cancel()
+        return true
+    }
+    return false
+}
+
+func (cc *CancellationCoordinator) CancelGroup(groupName string) int {
+    cc.mu.RLock()
+    ids := cc.groups[groupName]
+    cc.mu.RUnlock()
+    
+    cancelled := 0
+    for _, id := range ids {
+        if cc.Cancel(id) {
+            cancelled++
+        }
+    }
+    return cancelled
+}
+
+func (cc *CancellationCoordinator) CancelAll() int {
+    cc.mu.RLock()
+    allCancels := make([]context.CancelFunc, 0, len(cc.contexts))
+    for _, cancel := range cc.contexts {
+        allCancels = append(allCancels, cancel)
+    }
+    cc.mu.RUnlock()
+    
+    for _, cancel := range allCancels {
+        cancel()
+    }
+    return len(allCancels)
+}
+
+// Graceful shutdown pattern
+type GracefulShutdown struct {
+    ctx        context.Context
+    cancel     context.CancelFunc
+    operations sync.WaitGroup
+    shutdownCh chan struct{}
+    once       sync.Once
+}
+
+func NewGracefulShutdown() *GracefulShutdown {
+    ctx, cancel := context.WithCancel(context.Background())
+    return &GracefulShutdown{
+        ctx:        ctx,
+        cancel:     cancel,
+        shutdownCh: make(chan struct{}),
+    }
+}
+
+func (gs *GracefulShutdown) Context() context.Context {
+    return gs.ctx
+}
+
+func (gs *GracefulShutdown) AddOperation() context.Context {
+    gs.operations.Add(1)
+    return gs.ctx
+}
+
+func (gs *GracefulShutdown) OperationDone() {
+    gs.operations.Done()
+}
+
+func (gs *GracefulShutdown) Shutdown() <-chan struct{} {
+    gs.once.Do(func() {
+        fmt.Println("Initiating graceful shutdown...")
+        gs.cancel()
+        
+        go func() {
+            gs.operations.Wait()
+            close(gs.shutdownCh)
+            fmt.Println("Graceful shutdown completed")
+        }()
+    })
+    
+    return gs.shutdownCh
+}
+
+// Timeout cascade pattern
+func timeoutCascade(ctx context.Context, operations []func(context.Context) error, timeouts []time.Duration) error {
+    if len(operations) != len(timeouts) {
+        return fmt.Errorf("operations and timeouts length mismatch")
+    }
+    
+    currentCtx := ctx
+    
+    for i, op := range operations {
+        // Create context with specific timeout for this operation
+        opCtx, cancel := context.WithTimeout(currentCtx, timeouts[i])
+        
+        fmt.Printf("Executing operation %d with timeout %v\n", i+1, timeouts[i])
+        
+        err := op(opCtx)
+        cancel()
+        
+        if err != nil {
+            return fmt.Errorf("operation %d failed: %w", i+1, err)
+        }
+        
+        // Check if parent context is still valid
+        if ctx.Err() != nil {
+            return fmt.Errorf("parent context cancelled")
+        }
+    }
+    
+    return nil
+}
+
+// Circuit breaker with context
+type CircuitBreaker struct {
+    mu          sync.RWMutex
+    failures    int
+    threshold   int
+    timeout     time.Duration
+    lastFailure time.Time
+    state       string // "closed", "open", "half-open"
+}
+
+func NewCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
+    return &CircuitBreaker{
+        threshold: threshold,
+        timeout:   timeout,
+        state:     "closed",
+    }
+}
+
+func (cb *CircuitBreaker) Execute(ctx context.Context, operation func(context.Context) error) error {
+    cb.mu.RLock()
+    state := cb.state
+    cb.mu.RUnlock()
+    
+    switch state {
+    case "open":
+        cb.mu.RLock()
+        canTry := time.Since(cb.lastFailure) > cb.timeout
+        cb.mu.RUnlock()
+        
+        if !canTry {
+            return fmt.Errorf("circuit breaker open")
+        }
+        
+        cb.mu.Lock()
+        cb.state = "half-open"
+        cb.mu.Unlock()
+        fallthrough
+        
+    case "half-open":
+        err := operation(ctx)
+        if err != nil {
+            cb.recordFailure()
+            return err
+        }
+        cb.recordSuccess()
+        return nil
+        
+    case "closed":
+        err := operation(ctx)
+        if err != nil {
+            cb.recordFailure()
+            return err
+        }
+        return nil
+    }
+    
+    return fmt.Errorf("unknown circuit breaker state")
+}
+
+func (cb *CircuitBreaker) recordFailure() {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+    
+    cb.failures++
+    cb.lastFailure = time.Now()
+    
+    if cb.failures >= cb.threshold {
+        cb.state = "open"
+        fmt.Printf("Circuit breaker opened after %d failures\n", cb.failures)
+    }
+}
+
+func (cb *CircuitBreaker) recordSuccess() {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+    
+    cb.failures = 0
+    cb.state = "closed"
+    fmt.Println("Circuit breaker closed - operation successful")
+}
+
+// Example operations
+func simulateOperation(ctx context.Context, id string, duration time.Duration, shouldFail bool) error {
+    fmt.Printf("Operation %s: starting (duration: %v)\n", id, duration)
+    
+    select {
+    case <-time.After(duration):
+        if shouldFail {
+            fmt.Printf("Operation %s: failed\n", id)
+            return fmt.Errorf("operation %s failed", id)
+        }
+        fmt.Printf("Operation %s: completed successfully\n", id)
+        return nil
+    case <-ctx.Done():
+        fmt.Printf("Operation %s: cancelled (%v)\n", id, ctx.Err())
+        return ctx.Err()
+    }
+}
+
+func longRunningWorker(ctx context.Context, gs *GracefulShutdown, workerID int) {
+    opCtx := gs.AddOperation()
+    defer gs.OperationDone()
+    
+    fmt.Printf("Worker %d: started\n", workerID)
+    
+    for i := 1; ; i++ {
+        select {
+        case <-opCtx.Done():
+            fmt.Printf("Worker %d: shutting down gracefully after %d iterations\n", workerID, i-1)
+            return
+        default:
+            fmt.Printf("Worker %d: iteration %d\n", workerID, i)
+            time.Sleep(500 * time.Millisecond)
+        }
+    }
+}
+
+func main() {
+    fmt.Println("=== Advanced Cancellation Patterns ===")
+    
+    // Example 1: Cancellation Coordinator
+    fmt.Println("\n--- Cancellation Coordinator ---")
+    coordinator := NewCancellationCoordinator()
+    
+    // Create multiple operations
+    for i := 1; i <= 5; i++ {
+        ctx, cancel := context.WithCancel(context.Background())
+        id := fmt.Sprintf("op%d", i)
+        coordinator.Register(id, cancel)
+        
+        if i <= 2 {
+            coordinator.AddToGroup("batch1", id)
+        } else {
+            coordinator.AddToGroup("batch2", id)
+        }
+        
+        go func(opID string, c context.Context) {
+            select {
+            case <-time.After(5 * time.Second):
+                fmt.Printf("Operation %s: completed\n", opID)
+            case <-c.Done():
+                fmt.Printf("Operation %s: cancelled\n", opID)
+            }
+        }(id, ctx)
+    }
+    
+    // Cancel operations in groups
+    time.Sleep(1 * time.Second)
+    cancelled := coordinator.CancelGroup("batch1")
+    fmt.Printf("Cancelled %d operations in batch1\n", cancelled)
+    
+    time.Sleep(1 * time.Second)
+    cancelled = coordinator.CancelAll()
+    fmt.Printf("Cancelled %d remaining operations\n", cancelled)
+    
+    // Example 2: Graceful Shutdown
+    fmt.Println("\n--- Graceful Shutdown ---")
+    gs := NewGracefulShutdown()
+    
+    // Start workers
+    for i := 1; i <= 3; i++ {
+        go longRunningWorker(gs.Context(), gs, i)
+    }
+    
+    // Let workers run
+    time.Sleep(2 * time.Second)
+    
+    // Initiate shutdown
+    shutdownComplete := gs.Shutdown()
+    
+    // Wait for graceful shutdown
+    <-shutdownComplete
+    
+    // Example 3: Timeout Cascade
+    fmt.Println("\n--- Timeout Cascade ---")
+    operations := []func(context.Context) error{
+        func(ctx context.Context) error {
+            return simulateOperation(ctx, "fast", 200*time.Millisecond, false)
+        },
+        func(ctx context.Context) error {
+            return simulateOperation(ctx, "medium", 500*time.Millisecond, false)
+        },
+        func(ctx context.Context) error {
+            return simulateOperation(ctx, "slow", 800*time.Millisecond, false)
+        },
+    }
+    
+    timeouts := []time.Duration{
+        500 * time.Millisecond,
+        1 * time.Second,
+        1200 * time.Millisecond,
+    }
+    
+    ctx := context.Background()
+    err := timeoutCascade(ctx, operations, timeouts)
+    if err != nil {
+        fmt.Printf("Cascade failed: %v\n", err)
+    } else {
+        fmt.Println("Cascade completed successfully")
+    }
+    
+    // Example 4: Circuit Breaker
+    fmt.Println("\n--- Circuit Breaker ---")
+    cb := NewCircuitBreaker(3, 2*time.Second)
+    
+    // Simulate operations with some failures
+    for i := 1; i <= 8; i++ {
+        ctx := context.Background()
+        shouldFail := i >= 2 && i <= 4 // Fail operations 2, 3, 4
+        
+        err := cb.Execute(ctx, func(ctx context.Context) error {
+            return simulateOperation(ctx, fmt.Sprintf("cb-op-%d", i), 100*time.Millisecond, shouldFail)
+        })
+        
+        if err != nil {
+            fmt.Printf("Circuit breaker execution %d failed: %v\n", i, err)
+        }
+        
+        time.Sleep(300 * time.Millisecond)
+    }
+}
+```
+
+Advanced cancellation patterns provide sophisticated control over operation  
+lifecycles, enabling graceful shutdowns, coordinated cancellation, timeout  
+cascades, and circuit breaker patterns for robust system design.  
+
