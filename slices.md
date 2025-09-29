@@ -1299,3 +1299,399 @@ func main() {
 Pre-allocating slices with known or estimated sizes significantly improves  
 performance by avoiding multiple reallocations. Understanding these patterns  
 helps write efficient Go code for performance-critical applications.  
+
+## Filtering slices
+
+Creating new slices containing only elements that meet specific criteria.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "slices"
+)
+
+func main() {
+
+    numbers := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    fmt.Println("Original numbers:", numbers)
+    
+    // Filter even numbers
+    evens := []int{}
+    for _, num := range numbers {
+        if num%2 == 0 {
+            evens = append(evens, num)
+        }
+    }
+    fmt.Println("Even numbers:", evens)
+    
+    // Filter using DeleteFunc (removes elements that match)
+    odds := slices.Clone(numbers)
+    odds = slices.DeleteFunc(odds, func(n int) bool {
+        return n%2 == 0 // Remove even numbers
+    })
+    fmt.Println("Odd numbers:", odds)
+    
+    // Filter strings by length
+    words := []string{"go", "programming", "is", "awesome", "and", "fun"}
+    
+    longWords := []string{}
+    for _, word := range words {
+        if len(word) > 3 {
+            longWords = append(longWords, word)
+        }
+    }
+    fmt.Println("Long words (>3 chars):", longWords)
+    
+    // Remove short words using DeleteFunc
+    filtered := slices.Clone(words)
+    filtered = slices.DeleteFunc(filtered, func(s string) bool {
+        return len(s) <= 3
+    })
+    fmt.Println("Filtered words:", filtered)
+}
+```
+
+Filtering creates new slices with elements meeting specific criteria.  
+`slices.DeleteFunc()` provides an efficient way to remove unwanted elements  
+based on custom predicates, which is equivalent to keeping desired elements.  
+
+## Slice concatenation
+
+Joining multiple slices into a single slice using various approaches.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "slices"
+)
+
+func main() {
+
+    slice1 := []int{1, 2, 3}
+    slice2 := []int{4, 5, 6}
+    slice3 := []int{7, 8, 9}
+    
+    fmt.Println("Slice1:", slice1)
+    fmt.Println("Slice2:", slice2)
+    fmt.Println("Slice3:", slice3)
+    
+    // Concatenate using append
+    combined := append(slice1, slice2...)
+    combined = append(combined, slice3...)
+    fmt.Println("Combined using append:", combined)
+    
+    // Concatenate using Concat (Go 1.22+)
+    concatenated := slices.Concat(slice1, slice2, slice3)
+    fmt.Println("Combined using Concat:", concatenated)
+    
+    // String slice concatenation
+    fruits := []string{"apple", "banana"}
+    vegetables := []string{"carrot", "broccoli"}
+    grains := []string{"rice", "wheat"}
+    
+    food := slices.Concat(fruits, vegetables, grains)
+    fmt.Println("All food:", food)
+    
+    // Build slice progressively
+    var result []string
+    sources := [][]string{fruits, vegetables, grains}
+    
+    for _, source := range sources {
+        result = append(result, source...)
+    }
+    fmt.Println("Progressive build:", result)
+}
+```
+
+Slice concatenation joins multiple slices into one. The `append()` function  
+works for two slices, while `slices.Concat()` efficiently handles multiple  
+slices in a single operation without intermediate allocations.  
+
+## Unique elements
+
+Removing duplicate elements from slices to create unique collections.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "slices"
+)
+
+func main() {
+
+    numbers := []int{1, 2, 2, 3, 3, 3, 4, 4, 5}
+    fmt.Println("Original numbers:", numbers)
+    
+    // Sort first, then compact for unique elements
+    unique := slices.Clone(numbers)
+    slices.Sort(unique)
+    unique = slices.Compact(unique)
+    fmt.Println("Unique numbers:", unique)
+    
+    // Manual unique using map
+    seen := make(map[int]bool)
+    manual := []int{}
+    
+    for _, num := range numbers {
+        if !seen[num] {
+            seen[num] = true
+            manual = append(manual, num)
+        }
+    }
+    fmt.Println("Manual unique (preserves order):", manual)
+    
+    // Unique strings
+    words := []string{"apple", "banana", "apple", "cherry", "banana", "date"}
+    fmt.Println("Original words:", words)
+    
+    wordSet := make(map[string]bool)
+    uniqueWords := []string{}
+    
+    for _, word := range words {
+        if !wordSet[word] {
+            wordSet[word] = true
+            uniqueWords = append(uniqueWords, word)
+        }
+    }
+    fmt.Println("Unique words:", uniqueWords)
+    
+    // Using sort + compact for strings
+    sortedWords := slices.Clone(words)
+    slices.Sort(sortedWords)
+    uniqueSorted := slices.Compact(sortedWords)
+    fmt.Println("Unique sorted words:", uniqueSorted)
+}
+```
+
+Creating unique slices removes duplicate elements. The sort-and-compact approach  
+is efficient but changes order, while the map-based approach preserves original  
+order but uses more memory. Choose based on your requirements.  
+
+## Shuffling slices
+
+Randomizing slice element order using different shuffling algorithms.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "math/rand"
+    "time"
+)
+
+func main() {
+
+    // Initialize random seed
+    rand.Seed(time.Now().UnixNano())
+    
+    cards := []string{"A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3", "2"}
+    fmt.Println("Original cards:", cards)
+    
+    // Fisher-Yates shuffle
+    shuffled := make([]string, len(cards))
+    copy(shuffled, cards)
+    
+    for i := len(shuffled) - 1; i > 0; i-- {
+        j := rand.Intn(i + 1)
+        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+    }
+    fmt.Println("Shuffled cards:", shuffled)
+    
+    // Shuffle numbers
+    numbers := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    fmt.Println("Original numbers:", numbers)
+    
+    // Simple shuffle
+    for i := range numbers {
+        j := rand.Intn(len(numbers))
+        numbers[i], numbers[j] = numbers[j], numbers[i]
+    }
+    fmt.Println("Shuffled numbers:", numbers)
+    
+    // Multiple shuffles
+    colors := []string{"red", "green", "blue", "yellow", "purple"}
+    fmt.Println("Original colors:", colors)
+    
+    for round := 1; round <= 3; round++ {
+        // Create copy for each shuffle
+        shuffledColors := make([]string, len(colors))
+        copy(shuffledColors, colors)
+        
+        // Fisher-Yates shuffle
+        for i := len(shuffledColors) - 1; i > 0; i-- {
+            j := rand.Intn(i + 1)
+            shuffledColors[i], shuffledColors[j] = shuffledColors[j], shuffledColors[i]
+        }
+        fmt.Printf("Shuffle %d: %v\n", round, shuffledColors)
+    }
+}
+```
+
+The Fisher-Yates shuffle algorithm ensures each permutation has equal probability.  
+Shuffling is useful for randomizing data, creating test scenarios, or implementing  
+games and simulations where random order is required.  
+
+## Partitioning slices
+
+Dividing slices into multiple groups based on specific criteria.  
+
+```go
+package main
+
+import (
+    "fmt"
+)
+
+func main() {
+
+    numbers := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+    fmt.Println("Original numbers:", numbers)
+    
+    // Partition into even and odd
+    evens := []int{}
+    odds := []int{}
+    
+    for _, num := range numbers {
+        if num%2 == 0 {
+            evens = append(evens, num)
+        } else {
+            odds = append(odds, num)
+        }
+    }
+    fmt.Println("Even numbers:", evens)
+    fmt.Println("Odd numbers:", odds)
+    
+    // Partition strings by length
+    words := []string{"cat", "elephant", "dog", "hippopotamus", "ant", "bird"}
+    fmt.Println("Original words:", words)
+    
+    short := []string{}   // <= 3 characters
+    medium := []string{}  // 4-6 characters  
+    long := []string{}    // > 6 characters
+    
+    for _, word := range words {
+        switch {
+        case len(word) <= 3:
+            short = append(short, word)
+        case len(word) <= 6:
+            medium = append(medium, word)
+        default:
+            long = append(long, word)
+        }
+    }
+    
+    fmt.Println("Short words:", short)
+    fmt.Println("Medium words:", medium)
+    fmt.Println("Long words:", long)
+    
+    // Partition numbers into ranges
+    scores := []int{45, 78, 92, 56, 89, 34, 67, 83, 91, 72}
+    fmt.Println("Scores:", scores)
+    
+    failing := []int{}    // < 60
+    passing := []int{}    // 60-79
+    excellent := []int{}  // >= 80
+    
+    for _, score := range scores {
+        switch {
+        case score < 60:
+            failing = append(failing, score)
+        case score < 80:
+            passing = append(passing, score)
+        default:
+            excellent = append(excellent, score)
+        }
+    }
+    
+    fmt.Printf("Failing (<%d): %v\n", 60, failing)
+    fmt.Printf("Passing (60-79): %v\n", passing)
+    fmt.Printf("Excellent (>=80): %v\n", excellent)
+}
+```
+
+Partitioning divides slices into multiple groups based on conditions. This  
+pattern is useful for categorizing data, implementing bucket sort algorithms,  
+or organizing information for further processing based on different criteria.  
+
+## Slice transformation
+
+Converting slice elements to different types or applying functions to all elements.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "strconv"
+    "strings"
+)
+
+func main() {
+
+    // Transform numbers to strings
+    numbers := []int{1, 2, 3, 4, 5}
+    fmt.Println("Original numbers:", numbers)
+    
+    strings_from_nums := make([]string, len(numbers))
+    for i, num := range numbers {
+        strings_from_nums[i] = strconv.Itoa(num)
+    }
+    fmt.Println("Numbers as strings:", strings_from_nums)
+    
+    // Transform strings to uppercase
+    words := []string{"hello", "world", "golang", "programming"}
+    fmt.Println("Original words:", words)
+    
+    uppercase := make([]string, len(words))
+    for i, word := range words {
+        uppercase[i] = strings.ToUpper(word)
+    }
+    fmt.Println("Uppercase words:", uppercase)
+    
+    // Mathematical transformations
+    values := []float64{1.0, 2.0, 3.0, 4.0, 5.0}
+    fmt.Println("Original values:", values)
+    
+    // Square each value
+    squared := make([]float64, len(values))
+    for i, val := range values {
+        squared[i] = val * val
+    }
+    fmt.Println("Squared values:", squared)
+    
+    // Parse strings to integers
+    stringNumbers := []string{"10", "20", "30", "40", "50"}
+    fmt.Println("String numbers:", stringNumbers)
+    
+    parsed := []int{}
+    for _, str := range stringNumbers {
+        if num, err := strconv.Atoi(str); err == nil {
+            parsed = append(parsed, num)
+        } else {
+            fmt.Printf("Error parsing %s: %v\n", str, err)
+        }
+    }
+    fmt.Println("Parsed integers:", parsed)
+    
+    // Complex transformation: words to lengths
+    sentences := []string{"Go is fast", "Python is readable", "Rust is safe"}
+    fmt.Println("Sentences:", sentences)
+    
+    wordCounts := make([]int, len(sentences))
+    for i, sentence := range sentences {
+        wordCounts[i] = len(strings.Fields(sentence))
+    }
+    fmt.Println("Word counts:", wordCounts)
+}
+```
+
+Slice transformation applies operations to all elements, creating new slices  
+with converted values. This functional programming pattern is essential for  
+data processing, format conversion, and applying business logic to collections.
