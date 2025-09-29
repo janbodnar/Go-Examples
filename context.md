@@ -3402,3 +3402,2115 @@ Advanced cancellation patterns provide sophisticated control over operation
 lifecycles, enabling graceful shutdowns, coordinated cancellation, timeout  
 cascades, and circuit breaker patterns for robust system design.  
 
+## Context performance optimization
+
+Optimizing context usage for performance-critical applications requires  
+understanding context overhead and implementing efficient patterns.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "runtime"
+    "sync"
+    "time"
+)
+
+// Optimized context pool
+type ContextPool struct {
+    pool sync.Pool
+}
+
+func NewContextPool() *ContextPool {
+    return &ContextPool{
+        pool: sync.Pool{
+            New: func() interface{} {
+                return &pooledContext{
+                    Context: context.Background(),
+                    values:  make(map[interface{}]interface{}),
+                }
+            },
+        },
+    }
+}
+
+type pooledContext struct {
+    context.Context
+    values map[interface{}]interface{}
+    mu     sync.RWMutex
+}
+
+func (pc *pooledContext) Value(key interface{}) interface{} {
+    pc.mu.RLock()
+    defer pc.mu.RUnlock()
+    
+    if value, exists := pc.values[key]; exists {
+        return value
+    }
+    return pc.Context.Value(key)
+}
+
+func (pc *pooledContext) SetValue(key, value interface{}) {
+    pc.mu.Lock()
+    defer pc.mu.Unlock()
+    pc.values[key] = value
+}
+
+func (pc *pooledContext) Reset() {
+    pc.mu.Lock()
+    defer pc.mu.Unlock()
+    
+    // Clear values map
+    for k := range pc.values {
+        delete(pc.values, k)
+    }
+    pc.Context = context.Background()
+}
+
+func (cp *ContextPool) Get() *pooledContext {
+    return cp.pool.Get().(*pooledContext)
+}
+
+func (cp *ContextPool) Put(ctx *pooledContext) {
+    ctx.Reset()
+    cp.pool.Put(ctx)
+}
+
+// Batch context operations
+type BatchContext struct {
+    contexts []context.Context
+    mu       sync.RWMutex
+}
+
+func NewBatchContext() *BatchContext {
+    return &BatchContext{
+        contexts: make([]context.Context, 0, 10),
+    }
+}
+
+func (bc *BatchContext) Add(ctx context.Context) {
+    bc.mu.Lock()
+    defer bc.mu.Unlock()
+    bc.contexts = append(bc.contexts, ctx)
+}
+
+func (bc *BatchContext) ProcessBatch(operation func(context.Context) error) []error {
+    bc.mu.RLock()
+    contexts := make([]context.Context, len(bc.contexts))
+    copy(contexts, bc.contexts)
+    bc.mu.RUnlock()
+    
+    errors := make([]error, len(contexts))
+    var wg sync.WaitGroup
+    
+    wg.Add(len(contexts))
+    for i, ctx := range contexts {
+        go func(index int, c context.Context) {
+            defer wg.Done()
+            errors[index] = operation(c)
+        }(i, ctx)
+    }
+    
+    wg.Wait()
+    return errors
+}
+
+// Lightweight context for high-frequency operations
+type LightContext struct {
+    deadline time.Time
+    done     chan struct{}
+    err      error
+    values   map[interface{}]interface{}
+    once     sync.Once
+}
+
+func NewLightContext(timeout time.Duration) *LightContext {
+    ctx := &LightContext{
+        deadline: time.Now().Add(timeout),
+        done:     make(chan struct{}),
+        values:   make(map[interface{}]interface{}),
+    }
+    
+    // Start timeout timer
+    go func() {
+        time.Sleep(timeout)
+        ctx.once.Do(func() {
+            ctx.err = context.DeadlineExceeded
+            close(ctx.done)
+        })
+    }()
+    
+    return ctx
+}
+
+func (lc *LightContext) Deadline() (deadline time.Time, ok bool) {
+    return lc.deadline, true
+}
+
+func (lc *LightContext) Done() <-chan struct{} {
+    return lc.done
+}
+
+func (lc *LightContext) Err() error {
+    return lc.err
+}
+
+func (lc *LightContext) Value(key interface{}) interface{} {
+    return lc.values[key]
+}
+
+func (lc *LightContext) SetValue(key, value interface{}) {
+    lc.values[key] = value
+}
+
+// Performance benchmarking
+func benchmarkContextCreation(iterations int) time.Duration {
+    start := time.Now()
+    
+    for i := 0; i < iterations; i++ {
+        ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+        _ = ctx
+        cancel()
+    }
+    
+    return time.Since(start)
+}
+
+func benchmarkPooledContext(pool *ContextPool, iterations int) time.Duration {
+    start := time.Now()
+    
+    for i := 0; i < iterations; i++ {
+        ctx := pool.Get()
+        ctx.SetValue("iteration", i)
+        _ = ctx.Value("iteration")
+        pool.Put(ctx)
+    }
+    
+    return time.Since(start)
+}
+
+func benchmarkLightContext(iterations int) time.Duration {
+    start := time.Now()
+    
+    for i := 0; i < iterations; i++ {
+        ctx := NewLightContext(time.Second)
+        ctx.SetValue("iteration", i)
+        _ = ctx.Value("iteration")
+    }
+    
+    return time.Since(start)
+}
+
+// Memory-efficient context value storage
+type CompactContext struct {
+    context.Context
+    keys   []interface{}
+    values []interface{}
+}
+
+func WithCompactValue(parent context.Context, key, value interface{}) *CompactContext {
+    if cc, ok := parent.(*CompactContext); ok {
+        return &CompactContext{
+            Context: cc.Context,
+            keys:    append(cc.keys, key),
+            values:  append(cc.values, value),
+        }
+    }
+    
+    return &CompactContext{
+        Context: parent,
+        keys:    []interface{}{key},
+        values:  []interface{}{value},
+    }
+}
+
+func (cc *CompactContext) Value(key interface{}) interface{} {
+    for i, k := range cc.keys {
+        if k == key {
+            return cc.values[i]
+        }
+    }
+    return cc.Context.Value(key)
+}
+
+func main() {
+    fmt.Println("=== Context Performance Optimization ===")
+    
+    const iterations = 100000
+    
+    // Benchmark standard context creation
+    fmt.Println("\n--- Standard Context Benchmark ---")
+    standardTime := benchmarkContextCreation(iterations)
+    fmt.Printf("Standard context creation (%d iterations): %v\n", iterations, standardTime)
+    fmt.Printf("Average per operation: %v\n", standardTime/time.Duration(iterations))
+    
+    // Benchmark pooled context
+    fmt.Println("\n--- Pooled Context Benchmark ---")
+    pool := NewContextPool()
+    pooledTime := benchmarkPooledContext(pool, iterations)
+    fmt.Printf("Pooled context (%d iterations): %v\n", iterations, pooledTime)
+    fmt.Printf("Average per operation: %v\n", pooledTime/time.Duration(iterations))
+    
+    // Benchmark lightweight context
+    fmt.Println("\n--- Lightweight Context Benchmark ---")
+    lightTime := benchmarkLightContext(iterations)
+    fmt.Printf("Lightweight context (%d iterations): %v\n", iterations, lightTime)
+    fmt.Printf("Average per operation: %v\n", lightTime/time.Duration(iterations))
+    
+    // Memory usage comparison
+    fmt.Println("\n--- Memory Usage Comparison ---")
+    var m1, m2 runtime.MemStats
+    
+    // Standard context memory usage
+    runtime.GC()
+    runtime.ReadMemStats(&m1)
+    
+    contexts := make([]context.Context, 1000)
+    for i := range contexts {
+        ctx := context.WithValue(context.Background(), "key"+fmt.Sprint(i), "value"+fmt.Sprint(i))
+        contexts[i] = ctx
+    }
+    
+    runtime.ReadMemStats(&m2)
+    standardMem := m2.HeapAlloc - m1.HeapAlloc
+    fmt.Printf("Standard contexts (1000): %d bytes\n", standardMem)
+    
+    // Compact context memory usage
+    runtime.GC()
+    runtime.ReadMemStats(&m1)
+    
+    compactContexts := make([]*CompactContext, 1000)
+    base := context.Background()
+    for i := range compactContexts {
+        ctx := WithCompactValue(base, "key"+fmt.Sprint(i), "value"+fmt.Sprint(i))
+        compactContexts[i] = ctx
+    }
+    
+    runtime.ReadMemStats(&m2)
+    compactMem := m2.HeapAlloc - m1.HeapAlloc
+    fmt.Printf("Compact contexts (1000): %d bytes\n", compactMem)
+    
+    if standardMem > 0 {
+        fmt.Printf("Memory savings: %.1f%%\n", float64(standardMem-compactMem)/float64(standardMem)*100)
+    }
+    
+    // Batch processing demonstration
+    fmt.Println("\n--- Batch Processing ---")
+    batch := NewBatchContext()
+    
+    // Add contexts to batch
+    for i := 0; i < 5; i++ {
+        ctx, cancel := context.WithTimeout(context.Background(), time.Duration(i+1)*100*time.Millisecond)
+        defer cancel()
+        batch.Add(ctx)
+    }
+    
+    // Process batch
+    start := time.Now()
+    errors := batch.ProcessBatch(func(ctx context.Context) error {
+        select {
+        case <-time.After(150 * time.Millisecond):
+            return nil
+        case <-ctx.Done():
+            return ctx.Err()
+        }
+    })
+    
+    fmt.Printf("Batch processing completed in: %v\n", time.Since(start))
+    for i, err := range errors {
+        if err != nil {
+            fmt.Printf("Context %d error: %v\n", i, err)
+        } else {
+            fmt.Printf("Context %d: success\n", i)
+        }
+    }
+    
+    // Performance comparison summary
+    fmt.Println("\n--- Performance Summary ---")
+    fmt.Printf("Standard context: %v per operation\n", standardTime/time.Duration(iterations))
+    fmt.Printf("Pooled context:   %v per operation (%.1fx faster)\n", 
+              pooledTime/time.Duration(iterations),
+              float64(standardTime)/float64(pooledTime))
+    fmt.Printf("Light context:    %v per operation (%.1fx faster)\n", 
+              lightTime/time.Duration(iterations),
+              float64(standardTime)/float64(lightTime))
+}
+```
+
+Performance optimization techniques include context pooling, lightweight  
+implementations, batch processing, and memory-efficient value storage  
+for high-throughput applications.  
+
+## Context debugging and monitoring
+
+Debugging and monitoring context usage helps identify performance issues,  
+cancellation problems, and resource leaks in complex applications.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "runtime"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+// Context monitor for tracking usage statistics
+type ContextMonitor struct {
+    mu              sync.RWMutex
+    activeContexts  int64
+    totalCreated    int64
+    totalCancelled  int64
+    timeouts        int64
+    deadlines       int64
+    values          int64
+    contexts        map[string]*ContextInfo
+}
+
+type ContextInfo struct {
+    ID        string
+    CreatedAt time.Time
+    Type      string
+    Parent    string
+    Stack     string
+    Active    bool
+}
+
+func NewContextMonitor() *ContextMonitor {
+    return &ContextMonitor{
+        contexts: make(map[string]*ContextInfo),
+    }
+}
+
+func (cm *ContextMonitor) RegisterContext(id, contextType, parentID string) {
+    atomic.AddInt64(&cm.totalCreated, 1)
+    atomic.AddInt64(&cm.activeContexts, 1)
+    
+    cm.mu.Lock()
+    defer cm.mu.Unlock()
+    
+    // Capture stack trace
+    buf := make([]byte, 1024)
+    n := runtime.Stack(buf, false)
+    stack := string(buf[:n])
+    
+    cm.contexts[id] = &ContextInfo{
+        ID:        id,
+        CreatedAt: time.Now(),
+        Type:      contextType,
+        Parent:    parentID,
+        Stack:     stack,
+        Active:    true,
+    }
+    
+    switch contextType {
+    case "timeout":
+        atomic.AddInt64(&cm.timeouts, 1)
+    case "deadline":
+        atomic.AddInt64(&cm.deadlines, 1)
+    case "value":
+        atomic.AddInt64(&cm.values, 1)
+    }
+}
+
+func (cm *ContextMonitor) UnregisterContext(id string) {
+    atomic.AddInt64(&cm.totalCancelled, 1)
+    atomic.AddInt64(&cm.activeContexts, -1)
+    
+    cm.mu.Lock()
+    defer cm.mu.Unlock()
+    
+    if info, exists := cm.contexts[id]; exists {
+        info.Active = false
+    }
+}
+
+func (cm *ContextMonitor) GetStats() map[string]int64 {
+    return map[string]int64{
+        "active":     atomic.LoadInt64(&cm.activeContexts),
+        "created":    atomic.LoadInt64(&cm.totalCreated),
+        "cancelled":  atomic.LoadInt64(&cm.totalCancelled),
+        "timeouts":   atomic.LoadInt64(&cm.timeouts),
+        "deadlines":  atomic.LoadInt64(&cm.deadlines),
+        "values":     atomic.LoadInt64(&cm.values),
+    }
+}
+
+func (cm *ContextMonitor) PrintReport() {
+    stats := cm.GetStats()
+    fmt.Println("\n=== Context Monitor Report ===")
+    fmt.Printf("Active contexts:    %d\n", stats["active"])
+    fmt.Printf("Total created:      %d\n", stats["created"])
+    fmt.Printf("Total cancelled:    %d\n", stats["cancelled"])
+    fmt.Printf("Timeout contexts:   %d\n", stats["timeouts"])
+    fmt.Printf("Deadline contexts:  %d\n", stats["deadlines"])
+    fmt.Printf("Value contexts:     %d\n", stats["values"])
+    
+    cm.mu.RLock()
+    defer cm.mu.RUnlock()
+    
+    fmt.Println("\nLong-running contexts:")
+    threshold := time.Now().Add(-5 * time.Second)
+    for _, info := range cm.contexts {
+        if info.Active && info.CreatedAt.Before(threshold) {
+            fmt.Printf("  %s (%s) - Age: %v\n", 
+                      info.ID, info.Type, time.Since(info.CreatedAt))
+        }
+    }
+}
+
+// Traced context for debugging
+type TracedContext struct {
+    context.Context
+    id       string
+    monitor  *ContextMonitor
+    parentID string
+    logger   *ContextLogger
+}
+
+type ContextLogger struct {
+    mu   sync.Mutex
+    logs []LogEntry
+}
+
+type LogEntry struct {
+    Timestamp time.Time
+    ContextID string
+    Event     string
+    Message   string
+}
+
+func NewContextLogger() *ContextLogger {
+    return &ContextLogger{
+        logs: make([]LogEntry, 0),
+    }
+}
+
+func (cl *ContextLogger) Log(contextID, event, message string) {
+    cl.mu.Lock()
+    defer cl.mu.Unlock()
+    
+    cl.logs = append(cl.logs, LogEntry{
+        Timestamp: time.Now(),
+        ContextID: contextID,
+        Event:     event,
+        Message:   message,
+    })
+    
+    fmt.Printf("[%s] Context %s: %s - %s\n", 
+              time.Now().Format("15:04:05.000"), contextID, event, message)
+}
+
+func (cl *ContextLogger) GetLogs(contextID string) []LogEntry {
+    cl.mu.Lock()
+    defer cl.mu.Unlock()
+    
+    var logs []LogEntry
+    for _, log := range cl.logs {
+        if log.ContextID == contextID {
+            logs = append(logs, log)
+        }
+    }
+    return logs
+}
+
+func NewTracedContext(parent context.Context, id string, monitor *ContextMonitor, logger *ContextLogger) *TracedContext {
+    parentID := ""
+    if tc, ok := parent.(*TracedContext); ok {
+        parentID = tc.id
+    }
+    
+    monitor.RegisterContext(id, "traced", parentID)
+    logger.Log(id, "CREATED", fmt.Sprintf("Parent: %s", parentID))
+    
+    return &TracedContext{
+        Context:  parent,
+        id:       id,
+        monitor:  monitor,
+        parentID: parentID,
+        logger:   logger,
+    }
+}
+
+func (tc *TracedContext) WithTimeout(timeout time.Duration) (*TracedContext, context.CancelFunc) {
+    childID := tc.id + "-timeout"
+    ctx, cancel := context.WithTimeout(tc.Context, timeout)
+    
+    traced := &TracedContext{
+        Context:  ctx,
+        id:       childID,
+        monitor:  tc.monitor,
+        parentID: tc.id,
+        logger:   tc.logger,
+    }
+    
+    tc.monitor.RegisterContext(childID, "timeout", tc.id)
+    tc.logger.Log(childID, "TIMEOUT_SET", fmt.Sprintf("Duration: %v", timeout))
+    
+    return traced, func() {
+        tc.logger.Log(childID, "CANCELLED", "Timeout context cancelled")
+        tc.monitor.UnregisterContext(childID)
+        cancel()
+    }
+}
+
+func (tc *TracedContext) WithValue(key, value interface{}) *TracedContext {
+    childID := tc.id + "-value"
+    ctx := context.WithValue(tc.Context, key, value)
+    
+    traced := &TracedContext{
+        Context:  ctx,
+        id:       childID,
+        monitor:  tc.monitor,
+        parentID: tc.id,
+        logger:   tc.logger,
+    }
+    
+    tc.monitor.RegisterContext(childID, "value", tc.id)
+    tc.logger.Log(childID, "VALUE_SET", fmt.Sprintf("Key: %v, Value: %v", key, value))
+    
+    return traced
+}
+
+func (tc *TracedContext) Done() <-chan struct{} {
+    tc.logger.Log(tc.id, "DONE_ACCESSED", "Done channel accessed")
+    return tc.Context.Done()
+}
+
+func (tc *TracedContext) Err() error {
+    err := tc.Context.Err()
+    if err != nil {
+        tc.logger.Log(tc.id, "ERROR", fmt.Sprintf("Context error: %v", err))
+    }
+    return err
+}
+
+// Context leak detector
+type LeakDetector struct {
+    mu        sync.RWMutex
+    contexts  map[string]time.Time
+    threshold time.Duration
+}
+
+func NewLeakDetector(threshold time.Duration) *LeakDetector {
+    return &LeakDetector{
+        contexts:  make(map[string]time.Time),
+        threshold: threshold,
+    }
+}
+
+func (ld *LeakDetector) Register(id string) {
+    ld.mu.Lock()
+    defer ld.mu.Unlock()
+    ld.contexts[id] = time.Now()
+}
+
+func (ld *LeakDetector) Unregister(id string) {
+    ld.mu.Lock()
+    defer ld.mu.Unlock()
+    delete(ld.contexts, id)
+}
+
+func (ld *LeakDetector) CheckLeaks() []string {
+    ld.mu.RLock()
+    defer ld.mu.RUnlock()
+    
+    var leaks []string
+    threshold := time.Now().Add(-ld.threshold)
+    
+    for id, created := range ld.contexts {
+        if created.Before(threshold) {
+            leaks = append(leaks, id)
+        }
+    }
+    
+    return leaks
+}
+
+// Context hierarchy visualizer
+func visualizeContextHierarchy(monitor *ContextMonitor) {
+    monitor.mu.RLock()
+    defer monitor.mu.RUnlock()
+    
+    fmt.Println("\n=== Context Hierarchy ===")
+    
+    // Find root contexts (no parent)
+    roots := make([]*ContextInfo, 0)
+    children := make(map[string][]*ContextInfo)
+    
+    for _, info := range monitor.contexts {
+        if info.Parent == "" {
+            roots = append(roots, info)
+        } else {
+            children[info.Parent] = append(children[info.Parent], info)
+        }
+    }
+    
+    // Print hierarchy
+    for _, root := range roots {
+        printContextTree(root, children, 0)
+    }
+}
+
+func printContextTree(info *ContextInfo, children map[string][]*ContextInfo, depth int) {
+    indent := ""
+    for i := 0; i < depth; i++ {
+        indent += "  "
+    }
+    
+    status := "ACTIVE"
+    if !info.Active {
+        status = "CANCELLED"
+    }
+    
+    age := time.Since(info.CreatedAt)
+    fmt.Printf("%s├─ %s [%s] (%s) Age: %v\n", 
+              indent, info.ID, info.Type, status, age)
+    
+    for _, child := range children[info.ID] {
+        printContextTree(child, children, depth+1)
+    }
+}
+
+func main() {
+    fmt.Println("=== Context Debugging and Monitoring ===")
+    
+    // Set up monitoring
+    monitor := NewContextMonitor()
+    logger := NewContextLogger()
+    leakDetector := NewLeakDetector(3 * time.Second)
+    
+    // Create traced context hierarchy
+    root := NewTracedContext(context.Background(), "root", monitor, logger)
+    
+    // Add timeout context
+    timeoutCtx, cancel1 := root.WithTimeout(2 * time.Second)
+    defer cancel1()
+    
+    // Add value context
+    valueCtx := timeoutCtx.WithValue("userID", "user123")
+    
+    // Register with leak detector
+    leakDetector.Register("root")
+    leakDetector.Register("timeout")
+    leakDetector.Register("value")
+    
+    // Simulate operations
+    go func() {
+        select {
+        case <-timeoutCtx.Done():
+            logger.Log(timeoutCtx.id, "TIMEOUT", "Context timed out")
+        case <-time.After(1 * time.Second):
+            logger.Log(timeoutCtx.id, "COMPLETED", "Operation completed before timeout")
+        }
+    }()
+    
+    // Create more contexts for demonstration
+    for i := 0; i < 5; i++ {
+        ctx, cancel := context.WithTimeout(context.Background(), time.Duration(i+1)*500*time.Millisecond)
+        id := fmt.Sprintf("worker-%d", i)
+        monitor.RegisterContext(id, "timeout", "")
+        leakDetector.Register(id)
+        
+        go func(contextID string, c context.Context, cancelFunc context.CancelFunc) {
+            defer func() {
+                monitor.UnregisterContext(contextID)
+                leakDetector.Unregister(contextID)
+                cancelFunc()
+            }()
+            
+            select {
+            case <-time.After(2 * time.Second):
+                logger.Log(contextID, "COMPLETED", "Work finished")
+            case <-c.Done():
+                logger.Log(contextID, "CANCELLED", "Work cancelled")
+            }
+        }(id, ctx, cancel)
+    }
+    
+    // Monitoring loop
+    for i := 0; i < 3; i++ {
+        time.Sleep(1 * time.Second)
+        
+        // Print monitoring report
+        monitor.PrintReport()
+        
+        // Check for leaks
+        leaks := leakDetector.CheckLeaks()
+        if len(leaks) > 0 {
+            fmt.Printf("\nPotential context leaks detected: %v\n", leaks)
+        } else {
+            fmt.Println("\nNo context leaks detected")
+        }
+        
+        // Visualize hierarchy
+        if i == 1 {
+            visualizeContextHierarchy(monitor)
+        }
+    }
+    
+    // Print final logs for root context
+    fmt.Println("\n=== Root Context Log History ===")
+    logs := logger.GetLogs("root")
+    for _, log := range logs {
+        fmt.Printf("%s: %s - %s\n", 
+                  log.Timestamp.Format("15:04:05.000"), log.Event, log.Message)
+    }
+    
+    // Final cleanup
+    leakDetector.Unregister("root")
+    leakDetector.Unregister("timeout")
+    leakDetector.Unregister("value")
+    monitor.UnregisterContext("root")
+    
+    // Final report
+    fmt.Println("\n=== Final Statistics ===")
+    monitor.PrintReport()
+}
+```
+
+Context debugging and monitoring tools provide visibility into context  
+usage patterns, help identify leaks and performance issues, and enable  
+effective troubleshooting of complex concurrent applications.  
+
+## Context best practices
+
+Following established best practices ensures effective context usage and  
+helps avoid common pitfalls in concurrent Go applications.  
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "net/http"
+    "time"
+)
+
+// ✅ GOOD: Context as first parameter
+func processUserRequest(ctx context.Context, userID string, action string) error {
+    // Always accept context as the first parameter
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    default:
+    }
+    
+    fmt.Printf("Processing %s for user %s\n", action, userID)
+    return nil
+}
+
+// ❌ BAD: Context not as first parameter
+func badProcessUserRequest(userID string, ctx context.Context, action string) error {
+    // Context should always be the first parameter
+    return nil
+}
+
+// ✅ GOOD: Don't store context in structs
+type UserService struct {
+    // Don't store context in struct fields
+    database Database
+    cache    Cache
+}
+
+func (us *UserService) GetUser(ctx context.Context, userID string) (*User, error) {
+    // Pass context through method parameters
+    return us.database.FindUser(ctx, userID)
+}
+
+// ❌ BAD: Storing context in struct
+type BadUserService struct {
+    ctx      context.Context // Don't do this
+    database Database
+}
+
+// ✅ GOOD: Use context.WithValue sparingly and with typed keys
+type contextKey string
+
+const (
+    userIDContextKey    contextKey = "userID"
+    requestIDContextKey contextKey = "requestID"
+    traceIDContextKey   contextKey = "traceID"
+)
+
+func withUserID(ctx context.Context, userID string) context.Context {
+    return context.WithValue(ctx, userIDContextKey, userID)
+}
+
+func getUserID(ctx context.Context) (string, bool) {
+    userID, ok := ctx.Value(userIDContextKey).(string)
+    return userID, ok
+}
+
+// ❌ BAD: Using string keys directly
+func badWithUserID(ctx context.Context, userID string) context.Context {
+    return context.WithValue(ctx, "userID", userID) // Prone to collisions
+}
+
+// ✅ GOOD: Check for cancellation regularly in loops
+func processLargeDataset(ctx context.Context, data []int) error {
+    for i, item := range data {
+        // Check for cancellation every iteration or periodically
+        select {
+        case <-ctx.Done():
+            return fmt.Errorf("processing cancelled at item %d: %w", i, ctx.Err())
+        default:
+        }
+        
+        // Simulate processing
+        time.Sleep(10 * time.Millisecond)
+        fmt.Printf("Processed item %d: %d\n", i, item)
+    }
+    return nil
+}
+
+// ❌ BAD: Not checking for cancellation
+func badProcessLargeDataset(ctx context.Context, data []int) error {
+    for _, item := range data {
+        // This could run forever even if context is cancelled
+        time.Sleep(10 * time.Millisecond)
+        fmt.Printf("Processed item: %d\n", item)
+    }
+    return nil
+}
+
+// ✅ GOOD: Always call cancel to free resources
+func goodResourceManagement(ctx context.Context) error {
+    // Create child context with timeout
+    childCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel() // Always call cancel to free resources
+    
+    return doWork(childCtx)
+}
+
+// ❌ BAD: Not calling cancel
+func badResourceManagement(ctx context.Context) error {
+    childCtx, _ := context.WithTimeout(ctx, 5*time.Second)
+    // Missing defer cancel() - resource leak!
+    
+    return doWork(childCtx)
+}
+
+// ✅ GOOD: Use Background() only for top-level contexts
+func main() {
+    // Background context for main function
+    ctx := context.Background()
+    
+    // Add request ID for tracing
+    ctx = context.WithValue(ctx, requestIDContextKey, "req-123")
+    
+    handleRequest(ctx)
+}
+
+func handleRequest(ctx context.Context) {
+    // Don't create new Background context, use the passed one
+    processUserRequest(ctx, "user123", "update_profile")
+}
+
+// ❌ BAD: Creating Background in the middle of call chain
+func badHandleRequest(ctx context.Context) {
+    newCtx := context.Background() // Don't do this
+    processUserRequest(newCtx, "user123", "update_profile")
+}
+
+// ✅ GOOD: Proper timeout handling
+func httpClientExample(ctx context.Context, url string) (*http.Response, error) {
+    // Create request with context
+    req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    client := &http.Client{
+        Timeout: 10 * time.Second, // Client-level timeout
+    }
+    
+    return client.Do(req)
+}
+
+// ✅ GOOD: Context value validation
+func getRequiredUserID(ctx context.Context) (string, error) {
+    userID, ok := getUserID(ctx)
+    if !ok {
+        return "", errors.New("user ID not found in context")
+    }
+    
+    if userID == "" {
+        return "", errors.New("user ID is empty")
+    }
+    
+    return userID, nil
+}
+
+// ✅ GOOD: Graceful degradation
+func getCachedData(ctx context.Context, key string) ([]byte, error) {
+    // Try cache first with shorter timeout
+    cacheCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+    defer cancel()
+    
+    data, err := cache.Get(cacheCtx, key)
+    if err == nil {
+        return data, nil
+    }
+    
+    // If cache fails or times out, fall back to database
+    fmt.Printf("Cache miss for %s, falling back to database\n", key)
+    return database.Get(ctx, key)
+}
+
+// ✅ GOOD: Error wrapping with context
+func fetchUserProfile(ctx context.Context, userID string) (*UserProfile, error) {
+    profile, err := database.GetProfile(ctx, userID)
+    if err != nil {
+        // Wrap errors with context for better debugging
+        return nil, fmt.Errorf("failed to fetch profile for user %s: %w", userID, err)
+    }
+    
+    return profile, nil
+}
+
+// ✅ GOOD: Proper context propagation in HTTP handlers
+func userHandler(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    
+    // Add request-specific values
+    requestID := generateRequestID()
+    ctx = context.WithValue(ctx, requestIDContextKey, requestID)
+    
+    // Set response header
+    w.Header().Set("X-Request-ID", requestID)
+    
+    // Add timeout for this request
+    ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    defer cancel()
+    
+    // Process request
+    user, err := fetchUser(ctx, "user123")
+    if err != nil {
+        if errors.Is(err, context.DeadlineExceeded) {
+            http.Error(w, "Request timeout", http.StatusRequestTimeout)
+        } else {
+            http.Error(w, "Internal error", http.StatusInternalServerError)
+        }
+        return
+    }
+    
+    // Return user data
+    fmt.Fprintf(w, "User: %v", user)
+}
+
+// ✅ GOOD: Testing with context
+func TestUserService_GetUser(t *testing.T) {
+    // Use context in tests
+    ctx := context.Background()
+    
+    service := &UserService{}
+    
+    // Test normal case
+    user, err := service.GetUser(ctx, "test-user")
+    if err != nil {
+        t.Fatalf("Expected no error, got %v", err)
+    }
+    
+    // Test timeout case
+    timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+    defer cancel()
+    
+    _, err = service.GetUser(timeoutCtx, "test-user")
+    if !errors.Is(err, context.DeadlineExceeded) {
+        t.Errorf("Expected timeout error, got %v", err)
+    }
+}
+
+// Supporting types and functions
+type User struct{ ID, Name string }
+type UserProfile struct{ UserID, Bio string }
+type Database interface{ 
+    FindUser(context.Context, string) (*User, error) 
+    GetProfile(context.Context, string) (*UserProfile, error)
+    Get(context.Context, string) ([]byte, error)
+}
+type Cache interface{ Get(context.Context, string) ([]byte, error) }
+
+var (
+    database Database
+    cache    Cache
+)
+
+func doWork(ctx context.Context) error { return nil }
+func fetchUser(ctx context.Context, userID string) (*User, error) { 
+    return &User{ID: userID, Name: "Test User"}, nil 
+}
+func generateRequestID() string { return "req-123" }
+
+// Testing framework mock
+type T struct{}
+func (t *T) Fatalf(format string, args ...interface{}) { fmt.Printf("FAIL: "+format+"\n", args...) }
+func (t *T) Errorf(format string, args ...interface{}) { fmt.Printf("ERROR: "+format+"\n", args...) }
+
+func main() {
+    fmt.Println("=== Context Best Practices ===")
+    
+    // Demonstrate good practices
+    ctx := context.Background()
+    ctx = context.WithValue(ctx, requestIDContextKey, "demo-request")
+    
+    // Good resource management
+    err := goodResourceManagement(ctx)
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+    }
+    
+    // Good cancellation checking
+    data := []int{1, 2, 3, 4, 5}
+    err = processLargeDataset(ctx, data)
+    if err != nil {
+        fmt.Printf("Processing error: %v\n", err)
+    }
+    
+    // Good value access
+    if requestID, ok := ctx.Value(requestIDContextKey).(string); ok {
+        fmt.Printf("Request ID: %s\n", requestID)
+    }
+    
+    // Demonstrate timeout with proper cleanup
+    timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+    defer cancel()
+    
+    select {
+    case <-time.After(200 * time.Millisecond):
+        fmt.Println("Operation completed")
+    case <-timeoutCtx.Done():
+        fmt.Printf("Operation timed out: %v\n", timeoutCtx.Err())
+    }
+    
+    fmt.Println("\nBest practices demonstrated:")
+    fmt.Println("✅ Context as first parameter")
+    fmt.Println("✅ Typed context keys")
+    fmt.Println("✅ Regular cancellation checks")
+    fmt.Println("✅ Proper resource cleanup")
+    fmt.Println("✅ Error wrapping")
+    fmt.Println("✅ Value validation")
+}
+```
+
+Context best practices ensure proper resource management, effective  
+cancellation handling, and maintainable code structure in concurrent  
+Go applications.  
+
+## Context anti-patterns
+
+Understanding common context anti-patterns helps avoid mistakes that can  
+lead to bugs, resource leaks, and poor application performance.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// ❌ ANTI-PATTERN 1: Storing context in structs
+type BadService struct {
+    ctx context.Context // DON'T DO THIS
+    mu  sync.Mutex
+}
+
+func (bs *BadService) DoWork() error {
+    // Using stored context is problematic
+    return someOperation(bs.ctx)
+}
+
+// ✅ CORRECT: Pass context as parameter
+type GoodService struct {
+    mu sync.Mutex
+}
+
+func (gs *GoodService) DoWork(ctx context.Context) error {
+    return someOperation(ctx)
+}
+
+// ❌ ANTI-PATTERN 2: Ignoring context cancellation
+func badLongRunningOperation(ctx context.Context) error {
+    // This ignores context cancellation
+    for i := 0; i < 1000000; i++ {
+        // Expensive operation without checking ctx.Done()
+        time.Sleep(1 * time.Millisecond)
+    }
+    return nil
+}
+
+// ✅ CORRECT: Check context regularly
+func goodLongRunningOperation(ctx context.Context) error {
+    for i := 0; i < 1000000; i++ {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+        }
+        
+        // Expensive operation
+        time.Sleep(1 * time.Millisecond)
+        
+        // Check every 100 iterations for performance
+        if i%100 == 0 {
+            select {
+            case <-ctx.Done():
+                return ctx.Err()
+            default:
+            }
+        }
+    }
+    return nil
+}
+
+// ❌ ANTI-PATTERN 3: Creating background context in chain
+func badMiddlewarePattern(ctx context.Context) error {
+    // DON'T create new background context
+    newCtx := context.Background()
+    return processRequest(newCtx)
+}
+
+// ✅ CORRECT: Propagate existing context
+func goodMiddlewarePattern(ctx context.Context) error {
+    // Use the existing context
+    return processRequest(ctx)
+}
+
+// ❌ ANTI-PATTERN 4: Using context for optional parameters
+func badFunctionWithOptions(ctx context.Context, required string) error {
+    // DON'T use context for regular function parameters
+    optional := ctx.Value("optional").(string)
+    return fmt.Errorf("processing %s with %s", required, optional)
+}
+
+// ✅ CORRECT: Use proper function parameters or options pattern
+type Options struct {
+    Optional string
+    Timeout  time.Duration
+}
+
+func goodFunctionWithOptions(ctx context.Context, required string, opts Options) error {
+    return fmt.Errorf("processing %s with %s", required, opts.Optional)
+}
+
+// ❌ ANTI-PATTERN 5: Not calling cancel function
+func badResourceLeak() {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    // Missing defer cancel() - RESOURCE LEAK!
+    
+    go someOperation(ctx)
+    // cancel is never called
+}
+
+// ✅ CORRECT: Always call cancel
+func goodResourceManagement() {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel() // Always call cancel
+    
+    go someOperation(ctx)
+}
+
+// ❌ ANTI-PATTERN 6: Nil context
+func badNilContext() {
+    // DON'T pass nil context
+    processRequest(nil)
+}
+
+// ✅ CORRECT: Use context.TODO() if you don't have a context
+func goodContextUsage() {
+    // Use TODO when you don't have a context yet
+    processRequest(context.TODO())
+}
+
+// ❌ ANTI-PATTERN 7: Context in wrong parameter position
+func badParameterOrder(userID string, ctx context.Context, action string) error {
+    // Context should be first parameter
+    return nil
+}
+
+// ✅ CORRECT: Context as first parameter
+func goodParameterOrder(ctx context.Context, userID string, action string) error {
+    return nil
+}
+
+// ❌ ANTI-PATTERN 8: Overusing context values
+func badContextValues(ctx context.Context) error {
+    // DON'T overload context with too many values
+    ctx = context.WithValue(ctx, "param1", "value1")
+    ctx = context.WithValue(ctx, "param2", "value2")
+    ctx = context.WithValue(ctx, "param3", "value3")
+    ctx = context.WithValue(ctx, "param4", "value4")
+    ctx = context.WithValue(ctx, "param5", "value5")
+    
+    return someOperation(ctx)
+}
+
+// ✅ CORRECT: Use context values sparingly
+func goodContextValues(ctx context.Context, params ProcessParams) error {
+    // Use a struct for multiple parameters
+    // Only use context for request-scoped data like trace IDs
+    ctx = context.WithValue(ctx, "traceID", "trace-123")
+    return someOperationWithParams(ctx, params)
+}
+
+type ProcessParams struct {
+    Param1, Param2, Param3, Param4, Param5 string
+}
+
+// ❌ ANTI-PATTERN 9: Context timeout too long/short
+func badTimeoutUsage() {
+    // Too long - ties up resources
+    ctx1, cancel1 := context.WithTimeout(context.Background(), 24*time.Hour)
+    defer cancel1()
+    quickOperation(ctx1) // Should use much shorter timeout
+    
+    // Too short - operation will likely fail
+    ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+    defer cancel2()
+    databaseQuery(ctx2) // Unrealistic timeout
+}
+
+// ✅ CORRECT: Appropriate timeouts
+func goodTimeoutUsage() {
+    // Reasonable timeout for quick operation
+    ctx1, cancel1 := context.WithTimeout(context.Background(), 100*time.Millisecond)
+    defer cancel1()
+    quickOperation(ctx1)
+    
+    // Appropriate timeout for database query
+    ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel2()
+    databaseQuery(ctx2)
+}
+
+// ❌ ANTI-PATTERN 10: Modifying parent context
+func badContextModification(ctx context.Context) context.Context {
+    // DON'T try to "modify" the parent context
+    // This doesn't actually modify anything
+    context.WithValue(ctx, "key", "value")
+    return ctx // Returns original context, not modified one
+}
+
+// ✅ CORRECT: Create child context
+func goodContextModification(ctx context.Context) context.Context {
+    // Create and return child context
+    return context.WithValue(ctx, "key", "value")
+}
+
+// ❌ ANTI-PATTERN 11: Catching all errors as context errors
+func badErrorHandling(ctx context.Context) error {
+    err := someFailingOperation(ctx)
+    if err != nil {
+        // DON'T assume all errors are context errors
+        if err == context.Canceled {
+            return fmt.Errorf("operation was cancelled")
+        }
+        return err
+    }
+    return nil
+}
+
+// ✅ CORRECT: Proper error type checking
+func goodErrorHandling(ctx context.Context) error {
+    err := someFailingOperation(ctx)
+    if err != nil {
+        // Check specific error types
+        switch {
+        case ctx.Err() == context.Canceled:
+            return fmt.Errorf("operation cancelled by user")
+        case ctx.Err() == context.DeadlineExceeded:
+            return fmt.Errorf("operation timed out")
+        default:
+            return fmt.Errorf("operation failed: %w", err)
+        }
+    }
+    return nil
+}
+
+// ❌ ANTI-PATTERN 12: Context leak in goroutines
+func badGoroutinePattern(ctx context.Context) {
+    // This can leak goroutines
+    for i := 0; i < 100; i++ {
+        go func(id int) {
+            // No context checking - goroutine may run forever
+            for {
+                time.Sleep(1 * time.Second)
+                fmt.Printf("Worker %d working...\n", id)
+            }
+        }(i)
+    }
+}
+
+// ✅ CORRECT: Goroutines that respect context
+func goodGoroutinePattern(ctx context.Context) {
+    var wg sync.WaitGroup
+    
+    for i := 0; i < 100; i++ {
+        wg.Add(1)
+        go func(id int) {
+            defer wg.Done()
+            
+            for {
+                select {
+                case <-ctx.Done():
+                    fmt.Printf("Worker %d stopping\n", id)
+                    return
+                default:
+                    time.Sleep(1 * time.Second)
+                    fmt.Printf("Worker %d working...\n", id)
+                }
+            }
+        }(i)
+    }
+    
+    wg.Wait()
+}
+
+// Supporting functions
+func someOperation(ctx context.Context) error { return nil }
+func someOperationWithParams(ctx context.Context, params ProcessParams) error { return nil }
+func processRequest(ctx context.Context) error { return nil }
+func quickOperation(ctx context.Context) error { 
+    time.Sleep(10 * time.Millisecond)
+    return nil 
+}
+func databaseQuery(ctx context.Context) error { 
+    time.Sleep(100 * time.Millisecond)
+    return nil 
+}
+func someFailingOperation(ctx context.Context) error { 
+    return fmt.Errorf("simulated failure")
+}
+
+func demonstrateAntiPattern(name string, badFunc, goodFunc func()) {
+    fmt.Printf("\n=== %s ===\n", name)
+    
+    fmt.Println("❌ BAD:")
+    badFunc()
+    
+    fmt.Println("✅ GOOD:")
+    goodFunc()
+}
+
+func main() {
+    fmt.Println("=== Context Anti-Patterns ===")
+    
+    demonstrateAntiPattern("Resource Management", 
+        func() {
+            fmt.Println("Creating context without calling cancel - RESOURCE LEAK!")
+            badResourceLeak()
+        },
+        func() {
+            fmt.Println("Creating context with proper cleanup")
+            goodResourceManagement()
+        })
+    
+    demonstrateAntiPattern("Context Parameters", 
+        func() {
+            fmt.Println("Using nil context")
+            badNilContext()
+        },
+        func() {
+            fmt.Println("Using context.TODO() when no context available")
+            goodContextUsage()
+        })
+    
+    demonstrateAntiPattern("Timeout Usage", 
+        func() {
+            fmt.Println("Using inappropriate timeouts")
+            badTimeoutUsage()
+        },
+        func() {
+            fmt.Println("Using appropriate timeouts")
+            goodTimeoutUsage()
+        })
+    
+    demonstrateAntiPattern("Goroutine Management", 
+        func() {
+            fmt.Println("Starting goroutines without context checking (would leak)")
+            // badGoroutinePattern() - commented out to avoid actual leak
+        },
+        func() {
+            fmt.Println("Starting goroutines with proper context handling")
+            ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+            defer cancel()
+            goodGoroutinePattern(ctx)
+        })
+    
+    fmt.Println("\n=== Summary of Anti-Patterns to Avoid ===")
+    fmt.Println("❌ Don't store context in structs")
+    fmt.Println("❌ Don't ignore context cancellation in loops")
+    fmt.Println("❌ Don't create background context mid-chain")
+    fmt.Println("❌ Don't use context for optional parameters")
+    fmt.Println("❌ Don't forget to call cancel functions")
+    fmt.Println("❌ Don't pass nil context")
+    fmt.Println("❌ Don't put context in wrong parameter position")
+    fmt.Println("❌ Don't overuse context values")
+    fmt.Println("❌ Don't use inappropriate timeouts")
+    fmt.Println("❌ Don't ignore proper error handling")
+    fmt.Println("❌ Don't leak goroutines without context checking")
+}
+```
+
+Context anti-patterns demonstrate common mistakes to avoid, helping  
+developers write more robust and maintainable concurrent Go applications  
+with proper context usage.  
+
+## Cross-service context propagation
+
+Context propagation across service boundaries enables distributed tracing,  
+timeout coordination, and request correlation in microservices architectures.  
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "strconv"
+    "time"
+)
+
+// Context metadata for cross-service propagation
+type ContextMetadata struct {
+    TraceID    string            `json:"trace_id"`
+    SpanID     string            `json:"span_id"`
+    ParentID   string            `json:"parent_id,omitempty"`
+    Baggage    map[string]string `json:"baggage,omitempty"`
+    Deadline   *time.Time        `json:"deadline,omitempty"`
+    TimeoutMS  int64             `json:"timeout_ms,omitempty"`
+}
+
+// Context propagator handles context marshaling/unmarshaling
+type ContextPropagator struct {
+    traceHeader   string
+    timeoutHeader string
+    baggageHeader string
+}
+
+func NewContextPropagator() *ContextPropagator {
+    return &ContextPropagator{
+        traceHeader:   "X-Trace-Context",
+        timeoutHeader: "X-Timeout-MS",
+        baggageHeader: "X-Context-Baggage",
+    }
+}
+
+func (cp *ContextPropagator) InjectHTTP(ctx context.Context, req *http.Request) error {
+    metadata := cp.extractMetadata(ctx)
+    
+    // Inject trace context
+    if metadata.TraceID != "" {
+        traceData, err := json.Marshal(metadata)
+        if err != nil {
+            return fmt.Errorf("failed to marshal trace context: %w", err)
+        }
+        req.Header.Set(cp.traceHeader, string(traceData))
+    }
+    
+    // Inject timeout
+    if deadline, ok := ctx.Deadline(); ok {
+        remaining := time.Until(deadline)
+        if remaining > 0 {
+            req.Header.Set(cp.timeoutHeader, strconv.FormatInt(remaining.Milliseconds(), 10))
+        }
+    }
+    
+    // Inject baggage
+    if len(metadata.Baggage) > 0 {
+        baggageData, err := json.Marshal(metadata.Baggage)
+        if err != nil {
+            return fmt.Errorf("failed to marshal baggage: %w", err)
+        }
+        req.Header.Set(cp.baggageHeader, string(baggageData))
+    }
+    
+    return nil
+}
+
+func (cp *ContextPropagator) ExtractHTTP(ctx context.Context, req *http.Request) (context.Context, error) {
+    // Extract trace context
+    if traceData := req.Header.Get(cp.traceHeader); traceData != "" {
+        var metadata ContextMetadata
+        if err := json.Unmarshal([]byte(traceData), &metadata); err != nil {
+            return ctx, fmt.Errorf("failed to unmarshal trace context: %w", err)
+        }
+        
+        ctx = cp.injectMetadata(ctx, metadata)
+    }
+    
+    // Extract timeout
+    if timeoutStr := req.Header.Get(cp.timeoutHeader); timeoutStr != "" {
+        timeoutMS, err := strconv.ParseInt(timeoutStr, 10, 64)
+        if err == nil && timeoutMS > 0 {
+            timeout := time.Duration(timeoutMS) * time.Millisecond
+            ctx, _ = context.WithTimeout(ctx, timeout)
+        }
+    }
+    
+    // Extract baggage
+    if baggageData := req.Header.Get(cp.baggageHeader); baggageData != "" {
+        var baggage map[string]string
+        if err := json.Unmarshal([]byte(baggageData), &baggage); err == nil {
+            for key, value := range baggage {
+                ctx = context.WithValue(ctx, key, value)
+            }
+        }
+    }
+    
+    return ctx, nil
+}
+
+func (cp *ContextPropagator) extractMetadata(ctx context.Context) ContextMetadata {
+    metadata := ContextMetadata{
+        Baggage: make(map[string]string),
+    }
+    
+    // Extract trace information
+    if traceID, ok := ctx.Value("traceID").(string); ok {
+        metadata.TraceID = traceID
+    }
+    if spanID, ok := ctx.Value("spanID").(string); ok {
+        metadata.SpanID = spanID
+    }
+    if parentID, ok := ctx.Value("parentID").(string); ok {
+        metadata.ParentID = parentID
+    }
+    
+    // Extract deadline
+    if deadline, ok := ctx.Deadline(); ok {
+        metadata.Deadline = &deadline
+    }
+    
+    // Extract baggage (common context values)
+    baggageKeys := []string{"userID", "sessionID", "clientIP", "userAgent"}
+    for _, key := range baggageKeys {
+        if value, ok := ctx.Value(key).(string); ok {
+            metadata.Baggage[key] = value
+        }
+    }
+    
+    return metadata
+}
+
+func (cp *ContextPropagator) injectMetadata(ctx context.Context, metadata ContextMetadata) context.Context {
+    if metadata.TraceID != "" {
+        ctx = context.WithValue(ctx, "traceID", metadata.TraceID)
+    }
+    if metadata.SpanID != "" {
+        ctx = context.WithValue(ctx, "spanID", metadata.SpanID)
+    }
+    if metadata.ParentID != "" {
+        ctx = context.WithValue(ctx, "parentID", metadata.ParentID)
+    }
+    
+    for key, value := range metadata.Baggage {
+        ctx = context.WithValue(ctx, key, value)
+    }
+    
+    return ctx
+}
+
+// Service client with context propagation
+type ServiceClient struct {
+    baseURL    string
+    httpClient *http.Client
+    propagator *ContextPropagator
+}
+
+func NewServiceClient(baseURL string) *ServiceClient {
+    return &ServiceClient{
+        baseURL: baseURL,
+        httpClient: &http.Client{
+            Timeout: 30 * time.Second,
+        },
+        propagator: NewContextPropagator(),
+    }
+}
+
+func (sc *ServiceClient) CallService(ctx context.Context, endpoint string, data interface{}) (map[string]interface{}, error) {
+    // Create request
+    req, err := http.NewRequestWithContext(ctx, "POST", sc.baseURL+endpoint, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Inject context into request headers
+    if err := sc.propagator.InjectHTTP(ctx, req); err != nil {
+        return nil, fmt.Errorf("failed to inject context: %w", err)
+    }
+    
+    fmt.Printf("Making request to %s with trace ID: %v\n", 
+              endpoint, ctx.Value("traceID"))
+    
+    // Simulate HTTP call
+    time.Sleep(100 * time.Millisecond)
+    
+    // Simulate response
+    response := map[string]interface{}{
+        "status": "success",
+        "data":   data,
+        "trace_id": ctx.Value("traceID"),
+    }
+    
+    return response, nil
+}
+
+// HTTP handler with context extraction
+func serviceHandler(propagator *ContextPropagator) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // Extract context from incoming request
+        ctx, err := propagator.ExtractHTTP(r.Context(), r)
+        if err != nil {
+            http.Error(w, fmt.Sprintf("Failed to extract context: %v", err), 
+                      http.StatusBadRequest)
+            return
+        }
+        
+        // Log received context
+        fmt.Printf("Service received request with trace ID: %v\n", 
+                  ctx.Value("traceID"))
+        
+        // Process request with propagated context
+        result := processServiceRequest(ctx, r.URL.Path)
+        
+        // Return response
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(result)
+    }
+}
+
+func processServiceRequest(ctx context.Context, path string) map[string]interface{} {
+    // Simulate processing time
+    select {
+    case <-time.After(50 * time.Millisecond):
+        return map[string]interface{}{
+            "path":     path,
+            "trace_id": ctx.Value("traceID"),
+            "user_id":  ctx.Value("userID"),
+            "processed_at": time.Now().Format(time.RFC3339),
+        }
+    case <-ctx.Done():
+        return map[string]interface{}{
+            "error":    "request cancelled",
+            "trace_id": ctx.Value("traceID"),
+        }
+    }
+}
+
+// Distributed trace context
+type DistributedTrace struct {
+    TraceID  string
+    Services []ServiceCall
+}
+
+type ServiceCall struct {
+    Service   string
+    StartTime time.Time
+    EndTime   time.Time
+    Duration  time.Duration
+    Error     error
+}
+
+func (dt *DistributedTrace) AddServiceCall(service string, start, end time.Time, err error) {
+    call := ServiceCall{
+        Service:   service,
+        StartTime: start,
+        EndTime:   end,
+        Duration:  end.Sub(start),
+        Error:     err,
+    }
+    dt.Services = append(dt.Services, call)
+}
+
+func (dt *DistributedTrace) PrintTrace() {
+    fmt.Printf("\n=== Distributed Trace: %s ===\n", dt.TraceID)
+    for i, call := range dt.Services {
+        status := "SUCCESS"
+        if call.Error != nil {
+            status = fmt.Sprintf("ERROR: %v", call.Error)
+        }
+        fmt.Printf("%d. %s: %v (%s)\n", 
+                  i+1, call.Service, call.Duration, status)
+    }
+    
+    total := dt.Services[len(dt.Services)-1].EndTime.Sub(dt.Services[0].StartTime)
+    fmt.Printf("Total duration: %v\n", total)
+}
+
+// Orchestrator service that calls multiple services
+func orchestrateRequest(ctx context.Context, client *ServiceClient) (*DistributedTrace, error) {
+    traceID := ctx.Value("traceID").(string)
+    trace := &DistributedTrace{TraceID: traceID}
+    
+    services := []string{"/auth", "/user", "/billing", "/notification"}
+    
+    for _, service := range services {
+        start := time.Now()
+        
+        // Create child span for this service call
+        serviceCtx := context.WithValue(ctx, "spanID", fmt.Sprintf("span-%d", len(trace.Services)))
+        serviceCtx = context.WithValue(serviceCtx, "parentID", ctx.Value("spanID"))
+        
+        _, err := client.CallService(serviceCtx, service, map[string]string{
+            "request_id": fmt.Sprintf("req-%d", len(trace.Services)),
+        })
+        
+        end := time.Now()
+        trace.AddServiceCall(service, start, end, err)
+        
+        if err != nil {
+            return trace, fmt.Errorf("service %s failed: %w", service, err)
+        }
+        
+        // Check for cancellation between service calls
+        select {
+        case <-ctx.Done():
+            return trace, ctx.Err()
+        default:
+        }
+    }
+    
+    return trace, nil
+}
+
+func main() {
+    fmt.Println("=== Cross-Service Context Propagation ===")
+    
+    // Create root context with trace information
+    ctx := context.Background()
+    ctx = context.WithValue(ctx, "traceID", "trace-12345")
+    ctx = context.WithValue(ctx, "spanID", "span-root")
+    ctx = context.WithValue(ctx, "userID", "user-999")
+    ctx = context.WithValue(ctx, "sessionID", "session-abc")
+    
+    // Add timeout for the entire operation
+    ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+    
+    // Create service client
+    client := NewServiceClient("https://api.example.com")
+    
+    fmt.Println("Starting distributed request...")
+    
+    // Orchestrate cross-service call
+    trace, err := orchestrateRequest(ctx, client)
+    if err != nil {
+        fmt.Printf("Orchestration failed: %v\n", err)
+    }
+    
+    // Print distributed trace
+    trace.PrintTrace()
+    
+    // Demonstrate context extraction/injection
+    fmt.Println("\n=== Context Propagation Demo ===")
+    
+    propagator := NewContextPropagator()
+    
+    // Create mock HTTP request
+    req, _ := http.NewRequest("GET", "/test", nil)
+    
+    // Inject context into request
+    err = propagator.InjectHTTP(ctx, req)
+    if err != nil {
+        fmt.Printf("Injection error: %v\n", err)
+    } else {
+        fmt.Println("Context injected into HTTP headers:")
+        for name, values := range req.Header {
+            fmt.Printf("  %s: %s\n", name, values[0])
+        }
+    }
+    
+    // Extract context from request
+    extractedCtx, err := propagator.ExtractHTTP(context.Background(), req)
+    if err != nil {
+        fmt.Printf("Extraction error: %v\n", err)
+    } else {
+        fmt.Println("\nExtracted context values:")
+        fmt.Printf("  TraceID: %v\n", extractedCtx.Value("traceID"))
+        fmt.Printf("  UserID: %v\n", extractedCtx.Value("userID"))
+        fmt.Printf("  SessionID: %v\n", extractedCtx.Value("sessionID"))
+    }
+    
+    fmt.Println("\nCross-service context propagation completed successfully!")
+}
+```
+
+Cross-service context propagation enables distributed tracing, timeout  
+coordination, and metadata flow across microservices boundaries, providing  
+observability and consistency in distributed systems.  
+
+## Context conclusion
+
+The Context package represents one of Go's most powerful tools for building  
+robust, scalable, and maintainable concurrent applications.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+// Comprehensive example demonstrating key context principles
+func demonstrateContextPrinciples() {
+    fmt.Println("=== Context Package - Key Principles ===")
+    
+    // 1. Cancellation propagation
+    fmt.Println("\n1. Cancellation Propagation:")
+    parentCtx, parentCancel := context.WithCancel(context.Background())
+    childCtx, childCancel := context.WithTimeout(parentCtx, 2*time.Second)
+    defer parentCancel()
+    defer childCancel()
+    
+    go func() {
+        select {
+        case <-childCtx.Done():
+            fmt.Printf("   Child cancelled: %v\n", childCtx.Err())
+        case <-time.After(3*time.Second):
+            fmt.Println("   Child completed normally")
+        }
+    }()
+    
+    time.Sleep(500*time.Millisecond)
+    parentCancel() // This cancels child too
+    time.Sleep(100*time.Millisecond)
+    
+    // 2. Deadline management
+    fmt.Println("\n2. Deadline Management:")
+    deadline := time.Now().Add(1*time.Second)
+    deadlineCtx, cancel := context.WithDeadline(context.Background(), deadline)
+    defer cancel()
+    
+    if d, ok := deadlineCtx.Deadline(); ok {
+        fmt.Printf("   Deadline set for: %v\n", d.Format("15:04:05.000"))
+        fmt.Printf("   Time remaining: %v\n", time.Until(d))
+    }
+    
+    // 3. Value propagation
+    fmt.Println("\n3. Value Propagation:")
+    valueCtx := context.WithValue(context.Background(), "requestID", "req-123")
+    valueCtx = context.WithValue(valueCtx, "userID", "user-456")
+    
+    if reqID := valueCtx.Value("requestID"); reqID != nil {
+        fmt.Printf("   Request ID: %v\n", reqID)
+    }
+    if userID := valueCtx.Value("userID"); userID != nil {
+        fmt.Printf("   User ID: %v\n", userID)
+    }
+}
+
+// Best practices summary
+func contextBestPracticesSummary() {
+    fmt.Println("\n=== Context Best Practices Summary ===")
+    
+    practices := []string{
+        "✅ Always pass context as the first parameter",
+        "✅ Use context.Background() for main/top-level functions",
+        "✅ Use context.TODO() when unsure which context to use",
+        "✅ Call cancel() functions to free resources",
+        "✅ Check ctx.Done() regularly in loops",
+        "✅ Use typed keys for context values",
+        "✅ Keep context values minimal and request-scoped",
+        "✅ Propagate context through call chains",
+        "✅ Set appropriate timeouts for operations",
+        "✅ Handle context errors appropriately",
+    }
+    
+    for _, practice := range practices {
+        fmt.Printf("   %s\n", practice)
+    }
+}
+
+// Common use cases
+func contextUseCases() {
+    fmt.Println("\n=== Common Context Use Cases ===")
+    
+    useCases := map[string]string{
+        "HTTP Servers": "Request lifecycle, client disconnection handling",
+        "Database Operations": "Query timeouts, transaction cancellation",
+        "gRPC Services": "Request deadlines, metadata propagation",
+        "Background Jobs": "Graceful shutdown, job cancellation",
+        "Caching": "Cache operation timeouts, background refresh",
+        "Microservices": "Distributed tracing, cross-service timeouts",
+        "Worker Pools": "Worker lifecycle management, load balancing",
+        "File Operations": "I/O timeouts, operation cancellation",
+        "API Clients": "Request timeouts, retry logic",
+        "Testing": "Test timeouts, resource cleanup",
+    }
+    
+    for useCase, description := range useCases {
+        fmt.Printf("   %-18s: %s\n", useCase, description)
+    }
+}
+
+// Performance considerations
+func contextPerformanceConsiderations() {
+    fmt.Println("\n=== Performance Considerations ===")
+    
+    considerations := []string{
+        "• Context creation has minimal overhead for most applications",
+        "• Avoid excessive context value nesting",
+        "• Use context pools for high-frequency operations if needed",
+        "• Check cancellation appropriately (not too often, not too rarely)",
+        "• Prefer struct parameters over many context values",
+        "• Be mindful of goroutine lifecycle and context propagation",
+        "• Use appropriate timeout values for different operations",
+        "• Consider batch operations for high-throughput scenarios",
+    }
+    
+    for _, consideration := range considerations {
+        fmt.Printf("   %s\n", consideration)
+    }
+}
+
+// Advanced patterns recap
+func contextAdvancedPatterns() {
+    fmt.Println("\n=== Advanced Context Patterns ===")
+    
+    patterns := map[string]string{
+        "Custom Contexts": "Specialized context implementations",
+        "Context Pools": "Reusable contexts for performance",
+        "Circuit Breakers": "Failure handling with context",
+        "Fan-out/Fan-in": "Concurrent processing coordination",
+        "Pipeline Processing": "Multi-stage data processing",
+        "Graceful Shutdown": "Coordinated service shutdown",
+        "Distributed Tracing": "Cross-service request tracking",
+        "Middleware Chains": "Request processing pipelines",
+        "Retry Logic": "Robust operation patterns",
+        "Resource Management": "Lifecycle and cleanup coordination",
+    }
+    
+    for pattern, description := range patterns {
+        fmt.Printf("   %-20s: %s\n", pattern, description)
+    }
+}
+
+// Future of context
+func contextFuture() {
+    fmt.Println("\n=== Context Package Evolution ===")
+    
+    fmt.Println("   The Context package continues to be central to Go's")
+    fmt.Println("   concurrency model and ecosystem:")
+    fmt.Println()
+    fmt.Println("   • Standard library integration continues to expand")
+    fmt.Println("   • Third-party libraries increasingly adopt context patterns")
+    fmt.Println("   • Observability tools leverage context for tracing")
+    fmt.Println("   • Cloud-native applications rely on context for coordination")
+    fmt.Println("   • Performance optimizations continue to be refined")
+    fmt.Println("   • Best practices evolve with real-world usage")
+}
+
+// Final example combining multiple concepts
+func comprehensiveContextExample() {
+    fmt.Println("\n=== Comprehensive Context Example ===")
+    
+    // Create root context with request information
+    ctx := context.Background()
+    ctx = context.WithValue(ctx, "requestID", "final-demo")
+    ctx = context.WithValue(ctx, "userID", "demo-user")
+    
+    // Add timeout for the entire operation
+    ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+    defer cancel()
+    
+    // Simulate multi-stage operation
+    operations := []struct {
+        name     string
+        duration time.Duration
+    }{
+        {"Authentication", 200 * time.Millisecond},
+        {"Authorization", 150 * time.Millisecond},
+        {"Data Processing", 800 * time.Millisecond},
+        {"Response Generation", 100 * time.Millisecond},
+    }
+    
+    fmt.Printf("   Starting request: %v\n", ctx.Value("requestID"))
+    
+    for i, op := range operations {
+        // Create operation-specific context
+        opCtx, opCancel := context.WithTimeout(ctx, op.duration+100*time.Millisecond)
+        
+        select {
+        case <-time.After(op.duration):
+            fmt.Printf("   %d. %s: completed (%v)\n", i+1, op.name, op.duration)
+        case <-opCtx.Done():
+            fmt.Printf("   %d. %s: failed (%v)\n", i+1, op.name, opCtx.Err())
+            opCancel()
+            return
+        }
+        
+        opCancel()
+        
+        // Check parent context between operations
+        select {
+        case <-ctx.Done():
+            fmt.Printf("   Request cancelled after %s\n", op.name)
+            return
+        default:
+        }
+    }
+    
+    fmt.Printf("   Request completed successfully: %v\n", ctx.Value("requestID"))
+}
+
+func main() {
+    fmt.Println("# Context Package - Comprehensive Overview")
+    fmt.Println()
+    fmt.Println("The Context package in Go provides a powerful and elegant solution")
+    fmt.Println("for managing cancellation, timeouts, and request-scoped values in")
+    fmt.Println("concurrent applications. Through 30 comprehensive examples, we've")
+    fmt.Println("explored its capabilities from basic usage to advanced patterns.")
+    
+    demonstrateContextPrinciples()
+    contextBestPracticesSummary()
+    contextUseCases()
+    contextPerformanceConsiderations()
+    contextAdvancedPatterns()
+    contextFuture()
+    comprehensiveContextExample()
+    
+    fmt.Println("\n=== Final Thoughts ===")
+    fmt.Println()
+    fmt.Println("   Context is more than just a cancellation mechanism - it's a")
+    fmt.Println("   fundamental building block for robust concurrent applications.")
+    fmt.Println("   Mastering context patterns enables developers to build:")
+    fmt.Println()
+    fmt.Println("   • Responsive applications that handle timeouts gracefully")
+    fmt.Println("   • Scalable services with proper resource management")
+    fmt.Println("   • Observable systems with distributed tracing")
+    fmt.Println("   • Resilient architectures with coordinated cancellation")
+    fmt.Println("   • Maintainable codebases with clear separation of concerns")
+    fmt.Println()
+    fmt.Println("   The journey through these 30 examples demonstrates that context")
+    fmt.Println("   is essential for any serious Go application. From simple HTTP")
+    fmt.Println("   servers to complex distributed systems, context provides the")
+    fmt.Println("   foundation for building software that can handle the challenges")
+    fmt.Println("   of modern concurrent and distributed computing.")
+    fmt.Println()
+    fmt.Println("   Continue exploring, experimenting, and applying these patterns")
+    fmt.Println("   in your own applications. The Context package will serve you")
+    fmt.Println("   well in building the next generation of Go applications.")
+}
+```
+
+The Context package conclusion demonstrates the comprehensive nature of  
+context in Go, summarizing key principles, best practices, use cases, and  
+advanced patterns covered in these 30 examples for building robust  
+concurrent applications.  
+
