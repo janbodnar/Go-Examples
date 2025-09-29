@@ -1,4 +1,4 @@
-# For loop
+# For loops
 
 The `for` loop is Go's fundamental control structure for iteration and one of the most  
 versatile constructs in the language. Unlike many other programming languages that  
