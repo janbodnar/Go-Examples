@@ -14557,3 +14557,8507 @@ This performance monitoring example demonstrates comprehensive metrics
 collection including request counting, response time percentiles, error  
 tracking, and memory monitoring. Performance monitoring is essential for  
 maintaining application health and identifying optimization opportunities.
+
+## HTTP request tracing and debugging
+
+Request tracing provides detailed insights into request processing flow  
+and helps debug complex issues. This example demonstrates comprehensive  
+tracing, logging, and debugging capabilities.
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "runtime"
+    "strconv"
+    "strings"
+    "sync"
+    "time"
+)
+
+type TraceID string
+type SpanID string
+
+type Span struct {
+    TraceID   TraceID                `json:"trace_id"`
+    SpanID    SpanID                 `json:"span_id"`
+    ParentID  SpanID                 `json:"parent_id,omitempty"`
+    Operation string                 `json:"operation"`
+    StartTime time.Time              `json:"start_time"`
+    EndTime   time.Time              `json:"end_time,omitempty"`
+    Duration  time.Duration          `json:"duration"`
+    Tags      map[string]interface{} `json:"tags"`
+    Logs      []LogEntry             `json:"logs"`
+    Status    string                 `json:"status"`
+    Error     string                 `json:"error,omitempty"`
+}
+
+type LogEntry struct {
+    Timestamp time.Time              `json:"timestamp"`
+    Level     string                 `json:"level"`
+    Message   string                 `json:"message"`
+    Fields    map[string]interface{} `json:"fields"`
+}
+
+type Tracer struct {
+    spans map[TraceID][]*Span
+    mu    sync.RWMutex
+}
+
+func NewTracer() *Tracer {
+    return &Tracer{
+        spans: make(map[TraceID][]*Span),
+    }
+}
+
+func (t *Tracer) StartSpan(ctx context.Context, operation string) (*Span, context.Context) {
+    traceID := TraceID(fmt.Sprintf("trace_%d", time.Now().UnixNano()))
+    spanID := SpanID(fmt.Sprintf("span_%d", time.Now().UnixNano()))
+    
+    // Check for parent span in context
+    if parentSpan := SpanFromContext(ctx); parentSpan != nil {
+        traceID = parentSpan.TraceID
+    }
+    
+    span := &Span{
+        TraceID:   traceID,
+        SpanID:    spanID,
+        Operation: operation,
+        StartTime: time.Now(),
+        Tags:      make(map[string]interface{}),
+        Logs:      make([]LogEntry, 0),
+        Status:    "started",
+    }
+    
+    t.mu.Lock()
+    t.spans[traceID] = append(t.spans[traceID], span)
+    t.mu.Unlock()
+    
+    ctx = context.WithValue(ctx, "current_span", span)
+    return span, ctx
+}
+
+func (t *Tracer) FinishSpan(span *Span) {
+    span.EndTime = time.Now()
+    span.Duration = span.EndTime.Sub(span.StartTime)
+    if span.Status == "started" {
+        span.Status = "finished"
+    }
+}
+
+func (t *Tracer) GetTrace(traceID TraceID) []*Span {
+    t.mu.RLock()
+    defer t.mu.RUnlock()
+    
+    spans := make([]*Span, len(t.spans[traceID]))
+    copy(spans, t.spans[traceID])
+    return spans
+}
+
+func (t *Tracer) GetAllTraces() map[TraceID][]*Span {
+    t.mu.RLock()
+    defer t.mu.RUnlock()
+    
+    result := make(map[TraceID][]*Span)
+    for traceID, spans := range t.spans {
+        result[traceID] = make([]*Span, len(spans))
+        copy(result[traceID], spans)
+    }
+    return result
+}
+
+func SpanFromContext(ctx context.Context) *Span {
+    if span, ok := ctx.Value("current_span").(*Span); ok {
+        return span
+    }
+    return nil
+}
+
+func (s *Span) SetTag(key string, value interface{}) {
+    s.Tags[key] = value
+}
+
+func (s *Span) SetError(err error) {
+    s.Status = "error"
+    s.Error = err.Error()
+    s.SetTag("error", true)
+}
+
+func (s *Span) LogInfo(message string, fields map[string]interface{}) {
+    s.Logs = append(s.Logs, LogEntry{
+        Timestamp: time.Now(),
+        Level:     "info",
+        Message:   message,
+        Fields:    fields,
+    })
+}
+
+func (s *Span) LogError(message string, err error) {
+    fields := map[string]interface{}{"error": err.Error()}
+    s.Logs = append(s.Logs, LogEntry{
+        Timestamp: time.Now(),
+        Level:     "error",
+        Message:   message,
+        Fields:    fields,
+    })
+}
+
+var globalTracer = NewTracer()
+
+func TracingMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        span, ctx := globalTracer.StartSpan(r.Context(), 
+                                          fmt.Sprintf("%s %s", r.Method, r.URL.Path))
+        defer globalTracer.FinishSpan(span)
+        
+        // Add request information to span
+        span.SetTag("http.method", r.Method)
+        span.SetTag("http.url", r.URL.String())
+        span.SetTag("http.user_agent", r.Header.Get("User-Agent"))
+        span.SetTag("http.remote_addr", r.RemoteAddr)
+        
+        // Add trace ID to response headers
+        w.Header().Set("X-Trace-ID", string(span.TraceID))
+        w.Header().Set("X-Span-ID", string(span.SpanID))
+        
+        span.LogInfo("Request started", map[string]interface{}{
+            "method": r.Method,
+            "path":   r.URL.Path,
+            "query":  r.URL.RawQuery,
+        })
+        
+        // Wrap response writer to capture status code
+        rw := &responseWriterWithStatus{ResponseWriter: w, statusCode: 200}
+        
+        // Execute handler with tracing context
+        next.ServeHTTP(rw, r.WithContext(ctx))
+        
+        // Add response information
+        span.SetTag("http.status_code", rw.statusCode)
+        
+        if rw.statusCode >= 400 {
+            span.SetTag("error", true)
+            span.Status = "error"
+        }
+        
+        span.LogInfo("Request completed", map[string]interface{}{
+            "status_code": rw.statusCode,
+            "duration_ms": span.Duration.Seconds() * 1000,
+        })
+    })
+}
+
+type responseWriterWithStatus struct {
+    http.ResponseWriter
+    statusCode int
+}
+
+func (rw *responseWriterWithStatus) WriteHeader(statusCode int) {
+    rw.statusCode = statusCode
+    rw.ResponseWriter.WriteHeader(statusCode)
+}
+
+// Debug middleware that adds detailed logging
+func DebugMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if strings.Contains(r.Header.Get("X-Debug"), "true") {
+            span := SpanFromContext(r.Context())
+            if span != nil {
+                // Log all headers
+                headerMap := make(map[string]interface{})
+                for name, values := range r.Header {
+                    headerMap[name] = strings.Join(values, ", ")
+                }
+                span.LogInfo("Request headers", headerMap)
+                
+                // Log goroutine info
+                span.LogInfo("Runtime info", map[string]interface{}{
+                    "goroutines": runtime.NumGoroutine(),
+                    "memory_mb":  getMemoryUsage(),
+                })
+            }
+        }
+        
+        next.ServeHTTP(w, r)
+    })
+}
+
+func getMemoryUsage() float64 {
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+    return float64(m.Alloc) / 1024 / 1024
+}
+
+// Sample handlers with tracing
+func tracedDataHandler(w http.ResponseWriter, r *http.Request) {
+    span := SpanFromContext(r.Context())
+    if span != nil {
+        span.LogInfo("Processing data request", nil)
+    }
+    
+    // Simulate database operation
+    dbSpan, ctx := globalTracer.StartSpan(r.Context(), "database.query")
+    defer globalTracer.FinishSpan(dbSpan)
+    
+    dbSpan.SetTag("db.table", "users")
+    dbSpan.SetTag("db.operation", "SELECT")
+    
+    time.Sleep(50 * time.Millisecond) // Simulate DB query
+    
+    dbSpan.LogInfo("Database query executed", map[string]interface{}{
+        "query": "SELECT * FROM users",
+        "rows":  3,
+    })
+    
+    // Simulate cache operation
+    cacheSpan, _ := globalTracer.StartSpan(ctx, "cache.get")
+    defer globalTracer.FinishSpan(cacheSpan)
+    
+    cacheSpan.SetTag("cache.key", "user_data")
+    cacheSpan.SetTag("cache.hit", false)
+    
+    time.Sleep(10 * time.Millisecond) // Simulate cache operation
+    
+    response := map[string]interface{}{
+        "message": "Hello there! Traced data response",
+        "data": []map[string]interface{}{
+            {"id": 1, "name": "Alice"},
+            {"id": 2, "name": "Bob"},
+            {"id": 3, "name": "Charlie"},
+        },
+        "trace_id": string(span.TraceID),
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    if span != nil {
+        span.LogInfo("Response prepared", map[string]interface{}{
+            "item_count": 3,
+        })
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func errorHandler(w http.ResponseWriter, r *http.Request) {
+    span := SpanFromContext(r.Context())
+    
+    // Simulate error condition
+    if r.URL.Query().Get("force_error") == "true" {
+        err := fmt.Errorf("simulated error condition")
+        
+        if span != nil {
+            span.SetError(err)
+            span.LogError("Error occurred", err)
+        }
+        
+        http.Error(w, "Internal server error", http.StatusInternalServerError)
+        return
+    }
+    
+    response := map[string]interface{}{
+        "message": "Hello there! Error handler success",
+        "status":  "ok",
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func traceHandler(w http.ResponseWriter, r *http.Request) {
+    traceIDParam := r.URL.Query().Get("trace_id")
+    if traceIDParam == "" {
+        http.Error(w, "trace_id parameter required", http.StatusBadRequest)
+        return
+    }
+    
+    traceID := TraceID(traceIDParam)
+    spans := globalTracer.GetTrace(traceID)
+    
+    if len(spans) == 0 {
+        http.Error(w, "Trace not found", http.StatusNotFound)
+        return
+    }
+    
+    response := map[string]interface{}{
+        "trace_id":   traceID,
+        "span_count": len(spans),
+        "spans":      spans,
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func allTracesHandler(w http.ResponseWriter, r *http.Request) {
+    allTraces := globalTracer.GetAllTraces()
+    
+    summary := make([]map[string]interface{}, 0)
+    for traceID, spans := range allTraces {
+        if len(spans) == 0 {
+            continue
+        }
+        
+        firstSpan := spans[0]
+        var totalDuration time.Duration
+        errorCount := 0
+        
+        for _, span := range spans {
+            if span.Duration > 0 {
+                totalDuration += span.Duration
+            }
+            if span.Status == "error" {
+                errorCount++
+            }
+        }
+        
+        summary = append(summary, map[string]interface{}{
+            "trace_id":      traceID,
+            "span_count":    len(spans),
+            "start_time":    firstSpan.StartTime.Format(time.RFC3339),
+            "total_duration_ms": totalDuration.Seconds() * 1000,
+            "error_count":   errorCount,
+            "root_operation": firstSpan.Operation,
+        })
+    }
+    
+    response := map[string]interface{}{
+        "message":     "All traces summary",
+        "trace_count": len(allTraces),
+        "traces":      summary,
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func tracingDashboardHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Tracing Dashboard</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .trace-card { background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #007cba; }
+            .span-item { background: #fff; margin: 5px 0; padding: 10px; border-radius: 3px; border-left: 2px solid #28a745; }
+            .span-error { border-left-color: #dc3545; }
+            .trace-id { font-family: monospace; background: #e9ecef; padding: 2px 6px; border-radius: 3px; }
+            button { margin: 5px; padding: 10px 15px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
+            .debug-info { background: #fff3cd; padding: 10px; border-radius: 3px; margin: 10px 0; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Tracing Dashboard</h1>
+        <p>Hello there! Real-time request tracing and debugging.</p>
+        
+        <div class="debug-info">
+            <h3>Test Endpoints</h3>
+            <button onclick="makeTracedRequest()">Make Traced Request</button>
+            <button onclick="makeErrorRequest()">Trigger Error</button>
+            <button onclick="makeDebugRequest()">Debug Request</button>
+            <button onclick="refreshTraces()">Refresh Traces</button>
+        </div>
+        
+        <div id="current-trace" style="margin: 20px 0;">
+            <h3>Current Request Trace</h3>
+            <div id="trace-result">No trace data</div>
+        </div>
+        
+        <div id="all-traces">
+            <h3>All Traces</h3>
+            <div id="traces-list">Loading...</div>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h3>Test Commands</h3>
+            <pre>
+# Make traced request
+curl -H "X-Debug: true" http://localhost:8080/data
+
+# Trigger error
+curl "http://localhost:8080/error?force_error=true"
+
+# Get specific trace
+curl "http://localhost:8080/trace?trace_id=TRACE_ID"
+
+# Get all traces
+curl http://localhost:8080/traces
+            </pre>
+        </div>
+        
+        <script>
+        let currentTraceId = null;
+        
+        function makeTracedRequest() {
+            fetch('/data', {
+                headers: {
+                    'X-Debug': 'true'
+                }
+            })
+            .then(response => {
+                currentTraceId = response.headers.get('X-Trace-ID');
+                return response.json();
+            })
+            .then(data => {
+                document.getElementById('trace-result').innerHTML = 
+                    '<h4>Response Data</h4>' +
+                    '<p>Trace ID: <span class="trace-id">' + currentTraceId + '</span></p>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                
+                // Get detailed trace
+                return fetch('/trace?trace_id=' + currentTraceId);
+            })
+            .then(response => response.json())
+            .then(traceData => {
+                displayTraceDetails(traceData);
+                refreshTraces();
+            })
+            .catch(error => {
+                document.getElementById('trace-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function makeErrorRequest() {
+            fetch('/error?force_error=true')
+            .then(response => {
+                currentTraceId = response.headers.get('X-Trace-ID');
+                return response.text();
+            })
+            .then(data => {
+                if (currentTraceId) {
+                    return fetch('/trace?trace_id=' + currentTraceId);
+                }
+            })
+            .then(response => response ? response.json() : null)
+            .then(traceData => {
+                if (traceData) {
+                    displayTraceDetails(traceData);
+                    refreshTraces();
+                }
+            })
+            .catch(error => {
+                console.error('Error request failed:', error);
+                refreshTraces();
+            });
+        }
+        
+        function makeDebugRequest() {
+            fetch('/data', {
+                headers: {
+                    'X-Debug': 'true',
+                    'User-Agent': 'TracingDashboard/1.0'
+                }
+            })
+            .then(response => {
+                currentTraceId = response.headers.get('X-Trace-ID');
+                return response.json();
+            })
+            .then(data => {
+                return fetch('/trace?trace_id=' + currentTraceId);
+            })
+            .then(response => response.json())
+            .then(traceData => {
+                displayTraceDetails(traceData);
+                refreshTraces();
+            });
+        }
+        
+        function displayTraceDetails(traceData) {
+            let html = '<h4>Trace Details</h4>';
+            html += '<p>Trace ID: <span class="trace-id">' + traceData.trace_id + '</span></p>';
+            html += '<p>Spans: ' + traceData.span_count + '</p>';
+            
+            traceData.spans.forEach(span => {
+                const spanClass = span.status === 'error' ? 'span-item span-error' : 'span-item';
+                html += '<div class="' + spanClass + '">';
+                html += '<strong>' + span.operation + '</strong> (' + span.duration.toFixed(2) + 'ms)';
+                html += '<br>Status: ' + span.status;
+                
+                if (span.error) {
+                    html += '<br><span style="color: red;">Error: ' + span.error + '</span>';
+                }
+                
+                if (span.tags && Object.keys(span.tags).length > 0) {
+                    html += '<br>Tags: ' + JSON.stringify(span.tags);
+                }
+                
+                if (span.logs && span.logs.length > 0) {
+                    html += '<br>Logs:';
+                    span.logs.forEach(log => {
+                        html += '<br>&nbsp;&nbsp;' + log.level.toUpperCase() + ': ' + log.message;
+                    });
+                }
+                
+                html += '</div>';
+            });
+            
+            document.getElementById('trace-result').innerHTML = html;
+        }
+        
+        function refreshTraces() {
+            fetch('/traces')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Recent Traces (' + data.trace_count + ')</h4>';
+                
+                data.traces.forEach(trace => {
+                    html += '<div class="trace-card">';
+                    html += '<strong>' + trace.root_operation + '</strong>';
+                    html += '<br>Trace ID: <span class="trace-id">' + trace.trace_id + '</span>';
+                    html += '<br>Spans: ' + trace.span_count + ', Duration: ' + trace.total_duration_ms.toFixed(2) + 'ms';
+                    html += '<br>Started: ' + new Date(trace.start_time).toLocaleString();
+                    
+                    if (trace.error_count > 0) {
+                        html += '<br><span style="color: red;">Errors: ' + trace.error_count + '</span>';
+                    }
+                    
+                    html += '<br><button onclick="loadTrace(\'' + trace.trace_id + '\')">View Details</button>';
+                    html += '</div>';
+                });
+                
+                document.getElementById('traces-list').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('traces-list').innerHTML = 
+                    '<p style="color: red;">Error loading traces: ' + error + '</p>';
+            });
+        }
+        
+        function loadTrace(traceId) {
+            fetch('/trace?trace_id=' + traceId)
+            .then(response => response.json())
+            .then(traceData => {
+                displayTraceDetails(traceData);
+            })
+            .catch(error => {
+                document.getElementById('trace-result').innerHTML = 
+                    '<p style="color: red;">Error loading trace: ' + error + '</p>';
+            });
+        }
+        
+        // Auto-refresh traces every 10 seconds
+        setInterval(refreshTraces, 10000);
+        
+        // Initial load
+        refreshTraces();
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    mux := http.NewServeMux()
+    
+    // Apply tracing and debug middleware
+    tracedMux := TracingMiddleware(DebugMiddleware(mux))
+    
+    // Dashboard
+    mux.HandleFunc("/", tracingDashboardHandler)
+    
+    // Application endpoints
+    mux.HandleFunc("/data", tracedDataHandler)
+    mux.HandleFunc("/error", errorHandler)
+    
+    // Tracing endpoints (not traced to avoid recursion)
+    http.HandleFunc("/trace", traceHandler)
+    http.HandleFunc("/traces", allTracesHandler)
+    
+    // Main handler with tracing
+    http.Handle("/", tracedMux)
+    
+    fmt.Println("=== HTTP Tracing and Debugging Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Distributed tracing with spans")
+    fmt.Println("• Request/response correlation")
+    fmt.Println("• Error tracking and debugging")
+    fmt.Println("• Performance monitoring")
+    fmt.Println("• Debug middleware")
+    fmt.Println("• Interactive tracing dashboard")
+    fmt.Println()
+    fmt.Println("Tracing endpoints:")
+    fmt.Println("  GET / - Tracing dashboard")
+    fmt.Println("  GET /trace?trace_id=ID - Get specific trace")
+    fmt.Println("  GET /traces - Get all traces")
+    fmt.Println()
+    fmt.Println("Test endpoints:")
+    fmt.Println("  GET /data - Data endpoint with DB/cache tracing")
+    fmt.Println("  GET /error?force_error=true - Error simulation")
+    fmt.Println()
+    fmt.Println("Use X-Debug: true header for detailed logging")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This tracing example demonstrates comprehensive request tracing and debugging  
+capabilities including distributed tracing, span creation, error tracking,  
+and performance monitoring. Tracing is essential for understanding request  
+flow and debugging issues in complex distributed systems.
+
+## HTTP load balancing and health checks
+
+Load balancing distributes requests across multiple backend servers while  
+health checks ensure traffic only goes to healthy instances. This example  
+demonstrates various load balancing strategies and health monitoring.
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "net/http/httputil"
+    "net/url"
+    "strconv"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type Backend struct {
+    URL          *url.URL
+    Proxy        *httputil.ReverseProxy
+    Healthy      int32  // atomic boolean (1 = healthy, 0 = unhealthy)
+    Connections  int32  // current active connections
+    RequestCount int64  // total requests served
+    ErrorCount   int64  // total errors
+    LastCheck    time.Time
+    ResponseTime time.Duration
+}
+
+func (b *Backend) IsHealthy() bool {
+    return atomic.LoadInt32(&b.Healthy) == 1
+}
+
+func (b *Backend) SetHealthy(healthy bool) {
+    if healthy {
+        atomic.StoreInt32(&b.Healthy, 1)
+    } else {
+        atomic.StoreInt32(&b.Healthy, 0)
+    }
+}
+
+func (b *Backend) AddConnection() {
+    atomic.AddInt32(&b.Connections, 1)
+}
+
+func (b *Backend) RemoveConnection() {
+    atomic.AddInt32(&b.Connections, -1)
+}
+
+func (b *Backend) IncrementRequests() {
+    atomic.AddInt64(&b.RequestCount, 1)
+}
+
+func (b *Backend) IncrementErrors() {
+    atomic.AddInt64(&b.ErrorCount, 1)
+}
+
+func (b *Backend) GetStats() map[string]interface{} {
+    return map[string]interface{}{
+        "url":           b.URL.String(),
+        "healthy":       b.IsHealthy(),
+        "connections":   atomic.LoadInt32(&b.Connections),
+        "requests":      atomic.LoadInt64(&b.RequestCount),
+        "errors":        atomic.LoadInt64(&b.ErrorCount),
+        "last_check":    b.LastCheck.Format(time.RFC3339),
+        "response_time": b.ResponseTime.Milliseconds(),
+    }
+}
+
+type LoadBalancer struct {
+    backends       []*Backend
+    current        int32 // for round-robin
+    strategy       string
+    healthChecker  *HealthChecker
+    mu             sync.RWMutex
+}
+
+type HealthChecker struct {
+    interval     time.Duration
+    timeout      time.Duration
+    endpoint     string
+    lb           *LoadBalancer
+    stopCh       chan struct{}
+}
+
+func NewLoadBalancer(strategy string) *LoadBalancer {
+    lb := &LoadBalancer{
+        backends: make([]*Backend, 0),
+        strategy: strategy,
+    }
+    
+    lb.healthChecker = &HealthChecker{
+        interval: 30 * time.Second,
+        timeout:  5 * time.Second,
+        endpoint: "/health",
+        lb:       lb,
+        stopCh:   make(chan struct{}),
+    }
+    
+    return lb
+}
+
+func (lb *LoadBalancer) AddBackend(urlStr string) error {
+    parsedURL, err := url.Parse(urlStr)
+    if err != nil {
+        return err
+    }
+    
+    proxy := httputil.NewSingleHostReverseProxy(parsedURL)
+    
+    // Customize proxy behavior
+    originalDirector := proxy.Director
+    proxy.Director = func(req *http.Request) {
+        originalDirector(req)
+        req.Header.Set("X-Forwarded-Host", req.Header.Get("Host"))
+        req.Header.Set("X-Proxy", "Go-LoadBalancer/1.0")
+    }
+    
+    backend := &Backend{
+        URL:       parsedURL,
+        Proxy:     proxy,
+        Healthy:   1, // Start as healthy
+        LastCheck: time.Now(),
+    }
+    
+    lb.mu.Lock()
+    lb.backends = append(lb.backends, backend)
+    lb.mu.Unlock()
+    
+    return nil
+}
+
+func (lb *LoadBalancer) GetBackend(r *http.Request) *Backend {
+    lb.mu.RLock()
+    defer lb.mu.RUnlock()
+    
+    healthyBackends := make([]*Backend, 0)
+    for _, backend := range lb.backends {
+        if backend.IsHealthy() {
+            healthyBackends = append(healthyBackends, backend)
+        }
+    }
+    
+    if len(healthyBackends) == 0 {
+        return nil
+    }
+    
+    switch lb.strategy {
+    case "round-robin":
+        return lb.roundRobin(healthyBackends)
+    case "least-connections":
+        return lb.leastConnections(healthyBackends)
+    case "weighted-round-robin":
+        return lb.weightedRoundRobin(healthyBackends)
+    case "ip-hash":
+        return lb.ipHash(healthyBackends, r)
+    default:
+        return lb.roundRobin(healthyBackends)
+    }
+}
+
+func (lb *LoadBalancer) roundRobin(backends []*Backend) *Backend {
+    if len(backends) == 0 {
+        return nil
+    }
+    
+    next := atomic.AddInt32(&lb.current, 1)
+    return backends[(next-1)%int32(len(backends))]
+}
+
+func (lb *LoadBalancer) leastConnections(backends []*Backend) *Backend {
+    if len(backends) == 0 {
+        return nil
+    }
+    
+    var selected *Backend
+    minConnections := int32(^uint32(0) >> 1) // Max int32
+    
+    for _, backend := range backends {
+        connections := atomic.LoadInt32(&backend.Connections)
+        if connections < minConnections {
+            minConnections = connections
+            selected = backend
+        }
+    }
+    
+    return selected
+}
+
+func (lb *LoadBalancer) weightedRoundRobin(backends []*Backend) *Backend {
+    // Simple weight based on inverse error rate
+    if len(backends) == 0 {
+        return nil
+    }
+    
+    var selected *Backend
+    bestScore := float64(-1)
+    
+    for _, backend := range backends {
+        requests := atomic.LoadInt64(&backend.RequestCount)
+        errors := atomic.LoadInt64(&backend.ErrorCount)
+        
+        // Calculate score (lower error rate = higher score)
+        errorRate := float64(0)
+        if requests > 0 {
+            errorRate = float64(errors) / float64(requests)
+        }
+        
+        score := 1.0 - errorRate
+        
+        if score > bestScore {
+            bestScore = score
+            selected = backend
+        }
+    }
+    
+    return selected
+}
+
+func (lb *LoadBalancer) ipHash(backends []*Backend, r *http.Request) *Backend {
+    if len(backends) == 0 {
+        return nil
+    }
+    
+    // Simple hash of client IP
+    clientIP := r.RemoteAddr
+    hash := 0
+    for _, c := range clientIP {
+        hash = hash*31 + int(c)
+    }
+    
+    index := hash % len(backends)
+    if index < 0 {
+        index = -index
+    }
+    
+    return backends[index]
+}
+
+func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    backend := lb.GetBackend(r)
+    if backend == nil {
+        http.Error(w, "No healthy backends available", http.StatusServiceUnavailable)
+        return
+    }
+    
+    backend.AddConnection()
+    backend.IncrementRequests()
+    defer backend.RemoveConnection()
+    
+    // Add backend info to response headers
+    w.Header().Set("X-Backend-Server", backend.URL.Host)
+    w.Header().Set("X-Load-Balancer", "Go-LB/1.0")
+    
+    // Custom response writer to track errors
+    rw := &responseWriterWithTracking{
+        ResponseWriter: w,
+        backend:       backend,
+    }
+    
+    backend.Proxy.ServeHTTP(rw, r)
+}
+
+type responseWriterWithTracking struct {
+    http.ResponseWriter
+    backend    *Backend
+    statusCode int
+}
+
+func (rw *responseWriterWithTracking) WriteHeader(statusCode int) {
+    rw.statusCode = statusCode
+    if statusCode >= 500 {
+        rw.backend.IncrementErrors()
+    }
+    rw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (hc *HealthChecker) Start() {
+    ticker := time.NewTicker(hc.interval)
+    defer ticker.Stop()
+    
+    log.Printf("Health checker started (interval: %v)", hc.interval)
+    
+    // Initial health check
+    hc.checkAllBackends()
+    
+    for {
+        select {
+        case <-ticker.C:
+            hc.checkAllBackends()
+        case <-hc.stopCh:
+            log.Println("Health checker stopped")
+            return
+        }
+    }
+}
+
+func (hc *HealthChecker) Stop() {
+    close(hc.stopCh)
+}
+
+func (hc *HealthChecker) checkAllBackends() {
+    hc.lb.mu.RLock()
+    backends := make([]*Backend, len(hc.lb.backends))
+    copy(backends, hc.lb.backends)
+    hc.lb.mu.RUnlock()
+    
+    for _, backend := range backends {
+        go hc.checkBackend(backend)
+    }
+}
+
+func (hc *HealthChecker) checkBackend(backend *Backend) {
+    start := time.Now()
+    
+    ctx, cancel := context.WithTimeout(context.Background(), hc.timeout)
+    defer cancel()
+    
+    healthURL := backend.URL.String() + hc.endpoint
+    req, err := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
+    if err != nil {
+        backend.SetHealthy(false)
+        log.Printf("Health check failed for %s: %v", backend.URL.Host, err)
+        return
+    }
+    
+    client := &http.Client{Timeout: hc.timeout}
+    resp, err := client.Do(req)
+    
+    backend.ResponseTime = time.Since(start)
+    backend.LastCheck = time.Now()
+    
+    if err != nil {
+        backend.SetHealthy(false)
+        log.Printf("Health check failed for %s: %v", backend.URL.Host, err)
+        return
+    }
+    defer resp.Body.Close()
+    
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        if !backend.IsHealthy() {
+            log.Printf("Backend %s is now healthy", backend.URL.Host)
+        }
+        backend.SetHealthy(true)
+    } else {
+        if backend.IsHealthy() {
+            log.Printf("Backend %s is now unhealthy (status: %d)", 
+                      backend.URL.Host, resp.StatusCode)
+        }
+        backend.SetHealthy(false)
+    }
+}
+
+func (lb *LoadBalancer) GetStats() map[string]interface{} {
+    lb.mu.RLock()
+    defer lb.mu.RUnlock()
+    
+    backendStats := make([]map[string]interface{}, len(lb.backends))
+    totalRequests := int64(0)
+    totalErrors := int64(0)
+    healthyCount := 0
+    
+    for i, backend := range lb.backends {
+        stats := backend.GetStats()
+        backendStats[i] = stats
+        
+        totalRequests += atomic.LoadInt64(&backend.RequestCount)
+        totalErrors += atomic.LoadInt64(&backend.ErrorCount)
+        
+        if backend.IsHealthy() {
+            healthyCount++
+        }
+    }
+    
+    errorRate := float64(0)
+    if totalRequests > 0 {
+        errorRate = float64(totalErrors) / float64(totalRequests) * 100
+    }
+    
+    return map[string]interface{}{
+        "strategy":       lb.strategy,
+        "total_backends": len(lb.backends),
+        "healthy_backends": healthyCount,
+        "total_requests": totalRequests,
+        "total_errors":   totalErrors,
+        "error_rate":     errorRate,
+        "backends":       backendStats,
+    }
+}
+
+// Mock backend servers for testing
+func createMockBackend(port int, healthy bool, delay time.Duration) {
+    mux := http.NewServeMux()
+    
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        if delay > 0 {
+            time.Sleep(delay)
+        }
+        
+        response := map[string]interface{}{
+            "message":    "Hello there from backend!",
+            "server":     fmt.Sprintf("backend-%d", port),
+            "timestamp":  time.Now().Format(time.RFC3339),
+            "request_id": fmt.Sprintf("req_%d", time.Now().UnixNano()),
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        w.Header().Set("X-Backend-Port", strconv.Itoa(port))
+        
+        json.NewEncoder(w).Encode(response)
+    })
+    
+    mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        if !healthy {
+            w.WriteHeader(http.StatusServiceUnavailable)
+            fmt.Fprint(w, "Unhealthy")
+            return
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "status":    "healthy",
+            "server":    fmt.Sprintf("backend-%d", port),
+            "timestamp": time.Now().Format(time.RFC3339),
+        })
+    })
+    
+    mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+        time.Sleep(2 * time.Second)
+        fmt.Fprintf(w, "Slow response from backend-%d", port)
+    })
+    
+    server := &http.Server{
+        Addr:    fmt.Sprintf(":%d", port),
+        Handler: mux,
+    }
+    
+    log.Printf("Mock backend starting on port %d (healthy: %v)", port, healthy)
+    log.Fatal(server.ListenAndServe())
+}
+
+func statsHandler(lb *LoadBalancer) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        stats := lb.GetStats()
+        
+        w.Header().Set("Content-Type", "application/json")
+        w.Header().Set("Cache-Control", "no-cache")
+        
+        json.NewEncoder(w).Encode(stats)
+    }
+}
+
+func dashboardHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Load Balancer Dashboard</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+            .metric-card { background: #f8f9fa; padding: 20px; border-radius: 8px; border: 1px solid #ddd; }
+            .backend-card { background: #fff; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #28a745; }
+            .backend-unhealthy { border-left-color: #dc3545; }
+            .metric-value { font-size: 1.5em; font-weight: bold; color: #007cba; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background: #f8f9fa; }
+            button { margin: 5px; padding: 10px 15px; }
+            .status-healthy { color: #28a745; font-weight: bold; }
+            .status-unhealthy { color: #dc3545; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h1>Load Balancer Dashboard</h1>
+        <p>Hello there! Monitor load balancer performance and backend health.</p>
+        
+        <div class="dashboard">
+            <div class="metric-card">
+                <div>Strategy</div>
+                <div class="metric-value" id="strategy">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div>Healthy Backends</div>
+                <div class="metric-value" id="healthy-backends">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div>Total Requests</div>
+                <div class="metric-value" id="total-requests">-</div>
+            </div>
+            
+            <div class="metric-card">
+                <div>Error Rate</div>
+                <div class="metric-value" id="error-rate">-</div>
+            </div>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h2>Backend Status</h2>
+            <div id="backends-list"></div>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h2>Load Testing</h2>
+            <button onclick="sendRequests(10)">Send 10 Requests</button>
+            <button onclick="sendRequests(100)">Send 100 Requests</button>
+            <button onclick="loadTest()">Continuous Load Test</button>
+            <button onclick="stopLoadTest()">Stop Load Test</button>
+            <div id="test-result" style="margin-top: 10px;"></div>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h2>Test Different Strategies</h2>
+            <button onclick="testStrategy('round-robin')">Round Robin</button>
+            <button onclick="testStrategy('least-connections')">Least Connections</button>
+            <button onclick="testStrategy('weighted-round-robin')">Weighted RR</button>
+            <button onclick="testStrategy('ip-hash')">IP Hash</button>
+        </div>
+        
+        <script>
+        let loadTestInterval = null;
+        
+        function refreshStats() {
+            fetch('/stats')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('strategy').textContent = data.strategy;
+                document.getElementById('healthy-backends').textContent = 
+                    data.healthy_backends + '/' + data.total_backends;
+                document.getElementById('total-requests').textContent = 
+                    data.total_requests.toLocaleString();
+                document.getElementById('error-rate').textContent = 
+                    data.error_rate.toFixed(2) + '%';
+                
+                // Update backends list
+                let html = '';
+                data.backends.forEach(backend => {
+                    const healthyClass = backend.healthy ? 'backend-card' : 'backend-card backend-unhealthy';
+                    const statusClass = backend.healthy ? 'status-healthy' : 'status-unhealthy';
+                    const status = backend.healthy ? 'Healthy' : 'Unhealthy';
+                    
+                    html += '<div class="' + healthyClass + '">';
+                    html += '<h4>' + backend.url + ' <span class="' + statusClass + '">' + status + '</span></h4>';
+                    html += '<p>Requests: ' + backend.requests + ', Errors: ' + backend.errors + '</p>';
+                    html += '<p>Connections: ' + backend.connections + ', Response Time: ' + backend.response_time + 'ms</p>';
+                    html += '<p>Last Check: ' + new Date(backend.last_check).toLocaleString() + '</p>';
+                    html += '</div>';
+                });
+                
+                document.getElementById('backends-list').innerHTML = html;
+            })
+            .catch(error => {
+                console.error('Error fetching stats:', error);
+            });
+        }
+        
+        function sendRequests(count) {
+            document.getElementById('test-result').innerHTML = 'Sending ' + count + ' requests...';
+            
+            const promises = [];
+            for (let i = 0; i < count; i++) {
+                promises.push(
+                    fetch('/')
+                    .then(response => ({
+                        status: response.status,
+                        backend: response.headers.get('X-Backend-Server')
+                    }))
+                    .catch(error => ({ error: error.message }))
+                );
+            }
+            
+            Promise.all(promises).then(results => {
+                const successCount = results.filter(r => r.status === 200).length;
+                const errorCount = results.filter(r => r.error || r.status !== 200).length;
+                
+                // Count requests per backend
+                const backendCounts = {};
+                results.forEach(result => {
+                    if (result.backend) {
+                        backendCounts[result.backend] = (backendCounts[result.backend] || 0) + 1;
+                    }
+                });
+                
+                let resultHtml = '<h4>Test Results</h4>';
+                resultHtml += '<p>Successful: ' + successCount + ', Errors: ' + errorCount + '</p>';
+                resultHtml += '<h5>Distribution:</h5>';
+                for (const [backend, count] of Object.entries(backendCounts)) {
+                    resultHtml += '<p>' + backend + ': ' + count + ' requests</p>';
+                }
+                
+                document.getElementById('test-result').innerHTML = resultHtml;
+                refreshStats();
+            });
+        }
+        
+        function loadTest() {
+            if (loadTestInterval) return;
+            
+            document.getElementById('test-result').innerHTML = 'Running continuous load test...';
+            
+            loadTestInterval = setInterval(() => {
+                fetch('/').catch(() => {}); // Ignore errors
+            }, 100); // 10 requests per second
+        }
+        
+        function stopLoadTest() {
+            if (loadTestInterval) {
+                clearInterval(loadTestInterval);
+                loadTestInterval = null;
+                document.getElementById('test-result').innerHTML = 'Load test stopped';
+            }
+        }
+        
+        function testStrategy(strategy) {
+            // Note: This would require server restart with different strategy
+            // For demo purposes, just show which strategy would be tested
+            document.getElementById('test-result').innerHTML = 
+                'Testing strategy: ' + strategy + ' (requires server restart)';
+        }
+        
+        // Auto-refresh every 5 seconds
+        refreshStats();
+        setInterval(refreshStats, 5000);
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    strategy := "round-robin"
+    if len(os.Args) > 1 {
+        strategy = os.Args[1]
+    }
+    
+    // Create load balancer
+    lb := NewLoadBalancer(strategy)
+    
+    // Add backend servers (these would be real servers in production)
+    backends := []string{
+        "http://localhost:8081",
+        "http://localhost:8082", 
+        "http://localhost:8083",
+    }
+    
+    for _, backend := range backends {
+        if err := lb.AddBackend(backend); err != nil {
+            log.Printf("Error adding backend %s: %v", backend, err)
+        }
+    }
+    
+    // Start health checker
+    go lb.healthChecker.Start()
+    
+    // Start mock backends for testing
+    go createMockBackend(8081, true, 0)
+    go createMockBackend(8082, true, 100*time.Millisecond)
+    go createMockBackend(8083, false, 0) // Unhealthy backend
+    
+    // Setup routes
+    http.HandleFunc("/stats", statsHandler(lb))
+    http.HandleFunc("/dashboard", dashboardHandler)
+    http.Handle("/", lb) // All other requests go through load balancer
+    
+    fmt.Println("=== HTTP Load Balancer Demo ===")
+    fmt.Printf("Load balancer starting on :8080 (strategy: %s)\n", strategy)
+    fmt.Println()
+    fmt.Println("Backend servers:")
+    fmt.Println("• :8081 - Fast, healthy")
+    fmt.Println("• :8082 - Slow, healthy (100ms delay)")
+    fmt.Println("• :8083 - Unhealthy")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET /dashboard - Load balancer dashboard")
+    fmt.Println("  GET /stats - Statistics (JSON)")
+    fmt.Println("  GET / - Proxied requests to backends")
+    fmt.Println()
+    fmt.Println("Available strategies: round-robin, least-connections, weighted-round-robin, ip-hash")
+    fmt.Println("Health checks run every 30 seconds")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This load balancing example demonstrates comprehensive traffic distribution  
+with multiple strategies, health checking, and monitoring. Load balancing  
+is essential for building scalable and resilient distributed systems that  
+can handle high traffic and provide fault tolerance.
+
+## HTTP request batching and parallel processing
+
+Request batching and parallel processing improve performance when handling  
+multiple operations. This example demonstrates various concurrency patterns  
+for HTTP requests and response aggregation.
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strconv"
+    "sync"
+    "time"
+)
+
+type BatchRequest struct {
+    ID      string      `json:"id"`
+    Method  string      `json:"method"`
+    URL     string      `json:"url"`
+    Headers map[string]string `json:"headers,omitempty"`
+    Body    interface{} `json:"body,omitempty"`
+    Timeout int         `json:"timeout,omitempty"` // seconds
+}
+
+type BatchResponse struct {
+    ID         string                 `json:"id"`
+    StatusCode int                    `json:"status_code"`
+    Headers    map[string]string      `json:"headers"`
+    Body       interface{}            `json:"body"`
+    Error      string                 `json:"error,omitempty"`
+    Duration   int64                  `json:"duration_ms"`
+}
+
+type BatchProcessor struct {
+    maxConcurrency int
+    defaultTimeout time.Duration
+    client         *http.Client
+}
+
+func NewBatchProcessor(maxConcurrency int, defaultTimeout time.Duration) *BatchProcessor {
+    return &BatchProcessor{
+        maxConcurrency: maxConcurrency,
+        defaultTimeout: defaultTimeout,
+        client: &http.Client{
+            Timeout: defaultTimeout,
+        },
+    }
+}
+
+func (bp *BatchProcessor) ProcessBatch(ctx context.Context, requests []BatchRequest) []BatchResponse {
+    responses := make([]BatchResponse, len(requests))
+    
+    // Create semaphore for concurrency control
+    sem := make(chan struct{}, bp.maxConcurrency)
+    var wg sync.WaitGroup
+    
+    for i, req := range requests {
+        wg.Add(1)
+        go func(idx int, request BatchRequest) {
+            defer wg.Done()
+            
+            // Acquire semaphore
+            sem <- struct{}{}
+            defer func() { <-sem }()
+            
+            responses[idx] = bp.processRequest(ctx, request)
+        }(i, req)
+    }
+    
+    wg.Wait()
+    return responses
+}
+
+func (bp *BatchProcessor) processRequest(ctx context.Context, req BatchRequest) BatchResponse {
+    start := time.Now()
+    
+    response := BatchResponse{
+        ID:      req.ID,
+        Headers: make(map[string]string),
+    }
+    
+    // Create HTTP request
+    httpReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL, nil)
+    if err != nil {
+        response.Error = fmt.Sprintf("Failed to create request: %v", err)
+        response.Duration = time.Since(start).Milliseconds()
+        return response
+    }
+    
+    // Add headers
+    for key, value := range req.Headers {
+        httpReq.Header.Set(key, value)
+    }
+    
+    // Set timeout
+    timeout := bp.defaultTimeout
+    if req.Timeout > 0 {
+        timeout = time.Duration(req.Timeout) * time.Second
+    }
+    
+    client := &http.Client{Timeout: timeout}
+    
+    // Execute request
+    resp, err := client.Do(httpReq)
+    if err != nil {
+        response.Error = fmt.Sprintf("Request failed: %v", err)
+        response.Duration = time.Since(start).Milliseconds()
+        return response
+    }
+    defer resp.Body.Close()
+    
+    // Copy response headers
+    for key, values := range resp.Header {
+        if len(values) > 0 {
+            response.Headers[key] = values[0]
+        }
+    }
+    
+    response.StatusCode = resp.StatusCode
+    
+    // Read response body
+    var body interface{}
+    if resp.Header.Get("Content-Type") == "application/json" {
+        json.NewDecoder(resp.Body).Decode(&body)
+    } else {
+        // For non-JSON responses, return as string
+        bodyBytes := make([]byte, 1024)
+        n, _ := resp.Body.Read(bodyBytes)
+        body = string(bodyBytes[:n])
+    }
+    
+    response.Body = body
+    response.Duration = time.Since(start).Milliseconds()
+    
+    return response
+}
+
+func batchHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    var batchReq struct {
+        Requests        []BatchRequest `json:"requests"`
+        MaxConcurrency  int           `json:"max_concurrency,omitempty"`
+        DefaultTimeout  int           `json:"default_timeout,omitempty"`
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&batchReq); err != nil {
+        http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+        return
+    }
+    
+    // Set defaults
+    if batchReq.MaxConcurrency <= 0 {
+        batchReq.MaxConcurrency = 10
+    }
+    if batchReq.DefaultTimeout <= 0 {
+        batchReq.DefaultTimeout = 30
+    }
+    
+    processor := NewBatchProcessor(batchReq.MaxConcurrency, 
+                                 time.Duration(batchReq.DefaultTimeout)*time.Second)
+    
+    start := time.Now()
+    responses := processor.ProcessBatch(r.Context(), batchReq.Requests)
+    totalDuration := time.Since(start)
+    
+    result := map[string]interface{}{
+        "message":        "Hello there! Batch processing completed",
+        "total_requests": len(batchReq.Requests),
+        "responses":      responses,
+        "total_duration_ms": totalDuration.Milliseconds(),
+        "max_concurrency": batchReq.MaxConcurrency,
+        "timestamp":      time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
+// Parallel data aggregation
+type DataSource struct {
+    Name string `json:"name"`
+    URL  string `json:"url"`
+}
+
+type AggregatedData struct {
+    Source   string      `json:"source"`
+    Data     interface{} `json:"data"`
+    Error    string      `json:"error,omitempty"`
+    Duration int64       `json:"duration_ms"`
+}
+
+func aggregateHandler(w http.ResponseWriter, r *http.Request) {
+    sources := []DataSource{
+        {"users", "https://jsonplaceholder.typicode.com/users"},
+        {"posts", "https://jsonplaceholder.typicode.com/posts"},
+        {"todos", "https://jsonplaceholder.typicode.com/todos"},
+        {"albums", "https://jsonplaceholder.typicode.com/albums"},
+    }
+    
+    // Fetch data from all sources in parallel
+    results := make([]AggregatedData, len(sources))
+    var wg sync.WaitGroup
+    
+    start := time.Now()
+    
+    for i, source := range sources {
+        wg.Add(1)
+        go func(idx int, src DataSource) {
+            defer wg.Done()
+            
+            sourceStart := time.Now()
+            
+            resp, err := http.Get(src.URL)
+            if err != nil {
+                results[idx] = AggregatedData{
+                    Source:   src.Name,
+                    Error:    err.Error(),
+                    Duration: time.Since(sourceStart).Milliseconds(),
+                }
+                return
+            }
+            defer resp.Body.Close()
+            
+            var data interface{}
+            if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+                results[idx] = AggregatedData{
+                    Source:   src.Name,
+                    Error:    fmt.Sprintf("JSON decode error: %v", err),
+                    Duration: time.Since(sourceStart).Milliseconds(),
+                }
+                return
+            }
+            
+            results[idx] = AggregatedData{
+                Source:   src.Name,
+                Data:     data,
+                Duration: time.Since(sourceStart).Milliseconds(),
+            }
+        }(i, source)
+    }
+    
+    wg.Wait()
+    totalDuration := time.Since(start)
+    
+    response := map[string]interface{}{
+        "message":           "Hello there! Data aggregation completed",
+        "sources":           len(sources),
+        "results":           results,
+        "total_duration_ms": totalDuration.Milliseconds(),
+        "timestamp":         time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+// Worker pool pattern for request processing
+type WorkerPool struct {
+    workerCount int
+    jobQueue    chan Job
+    quit        chan bool
+    wg          sync.WaitGroup
+}
+
+type Job struct {
+    ID       string
+    URL      string
+    Response chan JobResult
+}
+
+type JobResult struct {
+    ID       string      `json:"id"`
+    Data     interface{} `json:"data"`
+    Error    string      `json:"error,omitempty"`
+    Duration int64       `json:"duration_ms"`
+}
+
+func NewWorkerPool(workerCount, queueSize int) *WorkerPool {
+    return &WorkerPool{
+        workerCount: workerCount,
+        jobQueue:    make(chan Job, queueSize),
+        quit:        make(chan bool),
+    }
+}
+
+func (wp *WorkerPool) Start() {
+    for i := 0; i < wp.workerCount; i++ {
+        wp.wg.Add(1)
+        go wp.worker(i)
+    }
+}
+
+func (wp *WorkerPool) Stop() {
+    close(wp.quit)
+    wp.wg.Wait()
+}
+
+func (wp *WorkerPool) AddJob(job Job) {
+    wp.jobQueue <- job
+}
+
+func (wp *WorkerPool) worker(id int) {
+    defer wp.wg.Done()
+    
+    for {
+        select {
+        case job := <-wp.jobQueue:
+            start := time.Now()
+            
+            resp, err := http.Get(job.URL)
+            result := JobResult{
+                ID:       job.ID,
+                Duration: time.Since(start).Milliseconds(),
+            }
+            
+            if err != nil {
+                result.Error = err.Error()
+            } else {
+                defer resp.Body.Close()
+                var data interface{}
+                if json.NewDecoder(resp.Body).Decode(&data) == nil {
+                    result.Data = data
+                } else {
+                    result.Error = "Failed to decode JSON"
+                }
+            }
+            
+            job.Response <- result
+            
+        case <-wp.quit:
+            return
+        }
+    }
+}
+
+var workerPool *WorkerPool
+
+func workerPoolHandler(w http.ResponseWriter, r *http.Request) {
+    countParam := r.URL.Query().Get("count")
+    count := 10
+    if countParam != "" {
+        if c, err := strconv.Atoi(countParam); err == nil && c > 0 {
+            count = c
+        }
+    }
+    
+    jobs := make([]Job, count)
+    responses := make(chan JobResult, count)
+    
+    // Create jobs
+    for i := 0; i < count; i++ {
+        jobs[i] = Job{
+            ID:       fmt.Sprintf("job_%d", i+1),
+            URL:      fmt.Sprintf("https://httpbin.org/delay/%d", i%3+1),
+            Response: responses,
+        }
+    }
+    
+    start := time.Now()
+    
+    // Submit all jobs
+    for _, job := range jobs {
+        workerPool.AddJob(job)
+    }
+    
+    // Collect results
+    results := make([]JobResult, 0, count)
+    for i := 0; i < count; i++ {
+        result := <-responses
+        results = append(results, result)
+    }
+    
+    totalDuration := time.Since(start)
+    
+    response := map[string]interface{}{
+        "message":           "Hello there! Worker pool processing completed",
+        "job_count":         count,
+        "worker_count":      workerPool.workerCount,
+        "results":           results,
+        "total_duration_ms": totalDuration.Milliseconds(),
+        "timestamp":         time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func pipelineHandler(w http.ResponseWriter, r *http.Request) {
+    // Pipeline pattern: process data through multiple stages
+    type PipelineData struct {
+        ID    string      `json:"id"`
+        Stage string      `json:"stage"`
+        Data  interface{} `json:"data"`
+    }
+    
+    input := make(chan PipelineData, 10)
+    stage1 := make(chan PipelineData, 10)
+    stage2 := make(chan PipelineData, 10)
+    output := make(chan PipelineData, 10)
+    
+    // Stage 1: Fetch data
+    go func() {
+        defer close(stage1)
+        for data := range input {
+            data.Stage = "fetch"
+            // Simulate data fetching
+            time.Sleep(100 * time.Millisecond)
+            data.Data = map[string]interface{}{
+                "fetched_at": time.Now().Format(time.RFC3339),
+                "source":     "external_api",
+            }
+            stage1 <- data
+        }
+    }()
+    
+    // Stage 2: Transform data
+    go func() {
+        defer close(stage2)
+        for data := range stage1 {
+            data.Stage = "transform"
+            // Simulate data transformation
+            time.Sleep(50 * time.Millisecond)
+            if dataMap, ok := data.Data.(map[string]interface{}); ok {
+                dataMap["transformed_at"] = time.Now().Format(time.RFC3339)
+                dataMap["processed"] = true
+            }
+            stage2 <- data
+        }
+    }()
+    
+    // Stage 3: Validate data
+    go func() {
+        defer close(output)
+        for data := range stage2 {
+            data.Stage = "validate"
+            // Simulate validation
+            time.Sleep(25 * time.Millisecond)
+            if dataMap, ok := data.Data.(map[string]interface{}); ok {
+                dataMap["validated_at"] = time.Now().Format(time.RFC3339)
+                dataMap["valid"] = true
+            }
+            output <- data
+        }
+    }()
+    
+    // Send data through pipeline
+    count := 5
+    var wg sync.WaitGroup
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        defer close(input)
+        for i := 0; i < count; i++ {
+            input <- PipelineData{
+                ID:   fmt.Sprintf("item_%d", i+1),
+                Data: map[string]interface{}{"initial": true},
+            }
+        }
+    }()
+    
+    // Collect results
+    results := make([]PipelineData, 0, count)
+    for result := range output {
+        results = append(results, result)
+    }
+    
+    wg.Wait()
+    
+    response := map[string]interface{}{
+        "message":    "Hello there! Pipeline processing completed",
+        "item_count": count,
+        "results":    results,
+        "timestamp":  time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func batchDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Batch Processing Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 400px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+            textarea { width: 100%; height: 150px; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Batch Processing Demo</h1>
+        <p>Hello there! This demonstrates various parallel processing patterns.</p>
+        
+        <div class="demo-section">
+            <h2>Batch Request Processing</h2>
+            <p>Send multiple HTTP requests in parallel:</p>
+            <button onclick="testBatchProcessing()">Test Batch Processing</button>
+            <div id="batch-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Data Aggregation</h2>
+            <p>Fetch data from multiple sources concurrently:</p>
+            <button onclick="testAggregation()">Test Data Aggregation</button>
+            <div id="aggregation-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Worker Pool</h2>
+            <p>Process jobs using a worker pool pattern:</p>
+            <button onclick="testWorkerPool(5)">5 Jobs</button>
+            <button onclick="testWorkerPool(20)">20 Jobs</button>
+            <button onclick="testWorkerPool(50)">50 Jobs</button>
+            <div id="worker-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Pipeline Processing</h2>
+            <p>Process data through multiple stages:</p>
+            <button onclick="testPipeline()">Test Pipeline</button>
+            <div id="pipeline-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Custom Batch Request</h2>
+            <p>Create your own batch request:</p>
+            <textarea id="batch-json" placeholder="Enter batch request JSON...">
+{
+  "requests": [
+    {
+      "id": "request1",
+      "method": "GET",
+      "url": "https://httpbin.org/get"
+    },
+    {
+      "id": "request2", 
+      "method": "GET",
+      "url": "https://httpbin.org/headers"
+    },
+    {
+      "id": "request3",
+      "method": "GET", 
+      "url": "https://httpbin.org/user-agent"
+    }
+  ],
+  "max_concurrency": 3,
+  "default_timeout": 10
+}
+            </textarea>
+            <br>
+            <button onclick="testCustomBatch()">Send Custom Batch</button>
+            <div id="custom-result" class="result"></div>
+        </div>
+        
+        <script>
+        function testBatchProcessing() {
+            const batchRequest = {
+                requests: [
+                    { id: "req1", method: "GET", url: "https://httpbin.org/get" },
+                    { id: "req2", method: "GET", url: "https://httpbin.org/headers" },
+                    { id: "req3", method: "GET", url: "https://httpbin.org/user-agent" },
+                    { id: "req4", method: "GET", url: "https://httpbin.org/delay/1" },
+                    { id: "req5", method: "GET", url: "https://httpbin.org/delay/2" }
+                ],
+                max_concurrency: 3,
+                default_timeout: 10
+            };
+            
+            document.getElementById('batch-result').innerHTML = 'Processing batch...';
+            
+            fetch('/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(batchRequest)
+            })
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Batch Results</h4>';
+                html += '<p>Total Duration: ' + data.total_duration_ms + 'ms</p>';
+                html += '<p>Requests: ' + data.total_requests + '</p>';
+                
+                data.responses.forEach(resp => {
+                    html += '<div style="margin: 10px 0; padding: 10px; background: #fff; border-radius: 3px;">';
+                    html += '<strong>' + resp.id + '</strong> - Status: ' + resp.status_code;
+                    html += ' (' + resp.duration_ms + 'ms)';
+                    if (resp.error) {
+                        html += '<br><span style="color: red;">Error: ' + resp.error + '</span>';
+                    }
+                    html += '</div>';
+                });
+                
+                document.getElementById('batch-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('batch-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function testAggregation() {
+            document.getElementById('aggregation-result').innerHTML = 'Aggregating data...';
+            
+            fetch('/aggregate')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Aggregation Results</h4>';
+                html += '<p>Total Duration: ' + data.total_duration_ms + 'ms</p>';
+                html += '<p>Sources: ' + data.sources + '</p>';
+                
+                data.results.forEach(result => {
+                    html += '<div style="margin: 10px 0; padding: 10px; background: #fff; border-radius: 3px;">';
+                    html += '<strong>' + result.source + '</strong> (' + result.duration_ms + 'ms)';
+                    if (result.error) {
+                        html += '<br><span style="color: red;">Error: ' + result.error + '</span>';
+                    } else {
+                        html += '<br>Data items: ' + (Array.isArray(result.data) ? result.data.length : 'N/A');
+                    }
+                    html += '</div>';
+                });
+                
+                document.getElementById('aggregation-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('aggregation-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function testWorkerPool(count) {
+            document.getElementById('worker-result').innerHTML = 'Processing ' + count + ' jobs...';
+            
+            fetch('/worker-pool?count=' + count)
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Worker Pool Results</h4>';
+                html += '<p>Jobs: ' + data.job_count + ', Workers: ' + data.worker_count + '</p>';
+                html += '<p>Total Duration: ' + data.total_duration_ms + 'ms</p>';
+                
+                const avgDuration = data.results.reduce((sum, r) => sum + r.duration_ms, 0) / data.results.length;
+                html += '<p>Average Job Duration: ' + avgDuration.toFixed(2) + 'ms</p>';
+                
+                const successCount = data.results.filter(r => !r.error).length;
+                html += '<p>Success Rate: ' + ((successCount / data.results.length) * 100).toFixed(1) + '%</p>';
+                
+                document.getElementById('worker-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('worker-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function testPipeline() {
+            document.getElementById('pipeline-result').innerHTML = 'Processing pipeline...';
+            
+            fetch('/pipeline')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Pipeline Results</h4>';
+                html += '<p>Items Processed: ' + data.item_count + '</p>';
+                
+                data.results.forEach(result => {
+                    html += '<div style="margin: 10px 0; padding: 10px; background: #fff; border-radius: 3px;">';
+                    html += '<strong>' + result.id + '</strong> - Stage: ' + result.stage;
+                    html += '<br><pre>' + JSON.stringify(result.data, null, 2) + '</pre>';
+                    html += '</div>';
+                });
+                
+                document.getElementById('pipeline-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('pipeline-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function testCustomBatch() {
+            const jsonText = document.getElementById('batch-json').value;
+            
+            try {
+                const batchRequest = JSON.parse(jsonText);
+                document.getElementById('custom-result').innerHTML = 'Processing custom batch...';
+                
+                fetch('/batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(batchRequest)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    let html = '<h4>Custom Batch Results</h4>';
+                    html += '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                    document.getElementById('custom-result').innerHTML = html;
+                })
+                .catch(error => {
+                    document.getElementById('custom-result').innerHTML = 
+                        '<p style="color: red;">Error: ' + error + '</p>';
+                });
+                
+            } catch (error) {
+                document.getElementById('custom-result').innerHTML = 
+                    '<p style="color: red;">Invalid JSON: ' + error.message + '</p>';
+            }
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // Initialize worker pool
+    workerPool = NewWorkerPool(5, 100)
+    workerPool.Start()
+    defer workerPool.Stop()
+    
+    http.HandleFunc("/", batchDemoHandler)
+    http.HandleFunc("/batch", batchHandler)
+    http.HandleFunc("/aggregate", aggregateHandler)
+    http.HandleFunc("/worker-pool", workerPoolHandler)
+    http.HandleFunc("/pipeline", pipelineHandler)
+    
+    fmt.Println("=== HTTP Batch Processing Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Batch request processing")
+    fmt.Println("• Parallel data aggregation")
+    fmt.Println("• Worker pool pattern")
+    fmt.Println("• Pipeline processing")
+    fmt.Println("• Concurrency control")
+    fmt.Println("• Request/response correlation")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - Batch processing demo")
+    fmt.Println("  POST /batch - Process batch requests")
+    fmt.Println("  GET  /aggregate - Parallel data aggregation")
+    fmt.Println("  GET  /worker-pool?count=N - Worker pool processing")
+    fmt.Println("  GET  /pipeline - Pipeline processing demo")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This batch processing example demonstrates comprehensive parallel request  
+handling including batch processing, data aggregation, worker pools, and  
+pipeline patterns. These techniques are essential for building high-performance  
+applications that can efficiently handle multiple concurrent operations.
+
+## HTTP custom transport and dialer
+
+Custom transports and dialers provide fine-grained control over network  
+connections, enabling features like connection pooling, custom DNS resolution,  
+and advanced networking configurations.
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/tls"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net"
+    "net/http"
+    "time"
+)
+
+type CustomDialer struct {
+    timeout     time.Duration
+    keepAlive   time.Duration
+    dnsCache    map[string]string
+    dialCount   int64
+}
+
+func NewCustomDialer(timeout, keepAlive time.Duration) *CustomDialer {
+    return &CustomDialer{
+        timeout:   timeout,
+        keepAlive: keepAlive,
+        dnsCache:  make(map[string]string),
+    }
+}
+
+func (d *CustomDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+    d.dialCount++
+    
+    dialer := &net.Dialer{
+        Timeout:   d.timeout,
+        KeepAlive: d.keepAlive,
+    }
+    
+    log.Printf("Custom dialer: connecting to %s (dial #%d)", address, d.dialCount)
+    
+    conn, err := dialer.DialContext(ctx, network, address)
+    if err != nil {
+        return nil, fmt.Errorf("dial failed: %w", err)
+    }
+    
+    // Wrap connection to add logging
+    return &loggedConnection{Conn: conn, address: address}, nil
+}
+
+type loggedConnection struct {
+    net.Conn
+    address string
+}
+
+func (lc *loggedConnection) Read(b []byte) (int, error) {
+    n, err := lc.Conn.Read(b)
+    if err != nil {
+        log.Printf("Read error from %s: %v", lc.address, err)
+    }
+    return n, err
+}
+
+func (lc *loggedConnection) Write(b []byte) (int, error) {
+    n, err := lc.Conn.Write(b)
+    if err != nil {
+        log.Printf("Write error to %s: %v", lc.address, err)
+    }
+    return n, err
+}
+
+func (lc *loggedConnection) Close() error {
+    log.Printf("Closing connection to %s", lc.address)
+    return lc.Conn.Close()
+}
+
+type CustomTransport struct {
+    *http.Transport
+    requestCount  int64
+    responseCount int64
+}
+
+func NewCustomTransport() *CustomTransport {
+    dialer := NewCustomDialer(30*time.Second, 30*time.Second)
+    
+    transport := &http.Transport{
+        DialContext: dialer.DialContext,
+        TLSClientConfig: &tls.Config{
+            InsecureSkipVerify: false,
+        },
+        MaxIdleConns:        100,
+        MaxIdleConnsPerHost: 10,
+        IdleConnTimeout:     90 * time.Second,
+        DisableCompression:  false,
+        ForceAttemptHTTP2:   true,
+    }
+    
+    return &CustomTransport{Transport: transport}
+}
+
+func (ct *CustomTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    ct.requestCount++
+    
+    // Add custom headers
+    req.Header.Set("X-Custom-Transport", "Go-Custom/1.0")
+    req.Header.Set("X-Request-ID", fmt.Sprintf("req_%d", ct.requestCount))
+    
+    start := time.Now()
+    resp, err := ct.Transport.RoundTrip(req)
+    duration := time.Since(start)
+    
+    if err != nil {
+        log.Printf("Request failed: %s %s (%v)", req.Method, req.URL, err)
+        return nil, err
+    }
+    
+    ct.responseCount++
+    
+    // Add response metadata
+    resp.Header.Set("X-Response-Time", duration.String())
+    resp.Header.Set("X-Transport-Info", fmt.Sprintf("req:%d,resp:%d", ct.requestCount, ct.responseCount))
+    
+    log.Printf("Request completed: %s %s (%d) in %v", 
+              req.Method, req.URL, resp.StatusCode, duration)
+    
+    return resp, nil
+}
+
+func (ct *CustomTransport) GetStats() map[string]interface{} {
+    return map[string]interface{}{
+        "requests":  ct.requestCount,
+        "responses": ct.responseCount,
+        "idle_connections": ct.Transport.IdleConnTimeout.String(),
+        "max_idle_conns": ct.Transport.MaxIdleConns,
+    }
+}
+
+// Connection pool monitoring
+type PoolMonitor struct {
+    transport *CustomTransport
+}
+
+func NewPoolMonitor(transport *CustomTransport) *PoolMonitor {
+    return &PoolMonitor{transport: transport}
+}
+
+func (pm *PoolMonitor) GetConnectionStats() map[string]interface{} {
+    // Note: Go's http.Transport doesn't expose detailed connection pool stats
+    // This is a simplified example of what monitoring might look like
+    return map[string]interface{}{
+        "max_idle_conns":         pm.transport.MaxIdleConns,
+        "max_idle_conns_per_host": pm.transport.MaxIdleConnsPerHost,
+        "idle_conn_timeout":      pm.transport.IdleConnTimeout.String(),
+        "tls_handshake_timeout":  pm.transport.TLSHandshakeTimeout.String(),
+        "force_attempt_http2":    pm.transport.ForceAttemptHTTP2,
+    }
+}
+
+func customTransportHandler(w http.ResponseWriter, r *http.Request) {
+    // Create client with custom transport
+    customTransport := NewCustomTransport()
+    client := &http.Client{
+        Transport: customTransport,
+        Timeout:   30 * time.Second,
+    }
+    
+    // Test different endpoints
+    urls := []string{
+        "https://httpbin.org/get",
+        "https://httpbin.org/headers",
+        "https://httpbin.org/user-agent",
+        "https://httpbin.org/delay/1",
+    }
+    
+    results := make([]map[string]interface{}, 0)
+    
+    for _, url := range urls {
+        start := time.Now()
+        
+        resp, err := client.Get(url)
+        if err != nil {
+            results = append(results, map[string]interface{}{
+                "url":   url,
+                "error": err.Error(),
+                "duration": time.Since(start).Milliseconds(),
+            })
+            continue
+        }
+        defer resp.Body.Close()
+        
+        var body interface{}
+        json.NewDecoder(resp.Body).Decode(&body)
+        
+        results = append(results, map[string]interface{}{
+            "url":           url,
+            "status_code":   resp.StatusCode,
+            "headers":       map[string]string{
+                "content-type": resp.Header.Get("Content-Type"),
+                "response-time": resp.Header.Get("X-Response-Time"),
+                "transport-info": resp.Header.Get("X-Transport-Info"),
+            },
+            "duration":      time.Since(start).Milliseconds(),
+            "body_snippet":  fmt.Sprintf("%.100s...", fmt.Sprintf("%v", body)),
+        })
+    }
+    
+    response := map[string]interface{}{
+        "message":          "Hello there! Custom transport test completed",
+        "transport_stats":  customTransport.GetStats(),
+        "connection_stats": NewPoolMonitor(customTransport).GetConnectionStats(),
+        "results":          results,
+        "timestamp":        time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+// Proxy transport for routing through proxy
+type ProxyTransport struct {
+    proxyURL   string
+    underlying http.RoundTripper
+}
+
+func NewProxyTransport(proxyURL string) *ProxyTransport {
+    return &ProxyTransport{
+        proxyURL:   proxyURL,
+        underlying: http.DefaultTransport,
+    }
+}
+
+func (pt *ProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    // Add proxy headers
+    req.Header.Set("X-Forwarded-For", "127.0.0.1")
+    req.Header.Set("X-Proxy-By", "Go-Proxy-Transport")
+    
+    log.Printf("Proxying request: %s %s through %s", req.Method, req.URL, pt.proxyURL)
+    
+    return pt.underlying.RoundTrip(req)
+}
+
+func proxyTransportHandler(w http.ResponseWriter, r *http.Request) {
+    proxyTransport := NewProxyTransport("http://proxy.example.com:8080")
+    client := &http.Client{
+        Transport: proxyTransport,
+        Timeout:   30 * time.Second,
+    }
+    
+    // Test request through proxy transport
+    resp, err := client.Get("https://httpbin.org/headers")
+    if err != nil {
+        http.Error(w, "Proxy request failed: "+err.Error(), 
+                  http.StatusInternalServerError)
+        return
+    }
+    defer resp.Body.Close()
+    
+    var responseData interface{}
+    json.NewDecoder(resp.Body).Decode(&responseData)
+    
+    result := map[string]interface{}{
+        "message":      "Hello there! Proxy transport test",
+        "proxy_url":    proxyTransport.proxyURL,
+        "status_code":  resp.StatusCode,
+        "response":     responseData,
+        "timestamp":    time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
+// Circuit breaker transport
+type CircuitBreakerTransport struct {
+    underlying    http.RoundTripper
+    failures      int
+    lastFailure   time.Time
+    threshold     int
+    timeout       time.Duration
+    state         string // "closed", "open", "half-open"
+}
+
+func NewCircuitBreakerTransport(threshold int, timeout time.Duration) *CircuitBreakerTransport {
+    return &CircuitBreakerTransport{
+        underlying: http.DefaultTransport,
+        threshold:  threshold,
+        timeout:    timeout,
+        state:      "closed",
+    }
+}
+
+func (cbt *CircuitBreakerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    switch cbt.state {
+    case "open":
+        if time.Since(cbt.lastFailure) > cbt.timeout {
+            cbt.state = "half-open"
+            log.Println("Circuit breaker: transitioning to half-open")
+        } else {
+            return nil, fmt.Errorf("circuit breaker is open")
+        }
+    }
+    
+    resp, err := cbt.underlying.RoundTrip(req)
+    
+    if err != nil || (resp != nil && resp.StatusCode >= 500) {
+        cbt.failures++
+        cbt.lastFailure = time.Now()
+        
+        if cbt.failures >= cbt.threshold {
+            cbt.state = "open"
+            log.Printf("Circuit breaker: opened due to %d failures", cbt.failures)
+        }
+        
+        if err != nil {
+            return nil, err
+        }
+    } else {
+        // Success - reset failure count and close circuit
+        if cbt.state == "half-open" {
+            cbt.state = "closed"
+            log.Println("Circuit breaker: closed after successful request")
+        }
+        cbt.failures = 0
+    }
+    
+    return resp, nil
+}
+
+func (cbt *CircuitBreakerTransport) GetState() map[string]interface{} {
+    return map[string]interface{}{
+        "state":        cbt.state,
+        "failures":     cbt.failures,
+        "threshold":    cbt.threshold,
+        "last_failure": cbt.lastFailure.Format(time.RFC3339),
+        "timeout":      cbt.timeout.String(),
+    }
+}
+
+func circuitBreakerHandler(w http.ResponseWriter, r *http.Request) {
+    cbTransport := NewCircuitBreakerTransport(3, 10*time.Second)
+    client := &http.Client{
+        Transport: cbTransport,
+        Timeout:   5 * time.Second,
+    }
+    
+    // Test circuit breaker with intentional failures
+    testURLs := []string{
+        "https://httpbin.org/status/200",
+        "https://httpbin.org/status/500", // This will cause failures
+        "https://httpbin.org/status/500",
+        "https://httpbin.org/status/500", // Should trigger circuit breaker
+        "https://httpbin.org/status/200", // Should be blocked
+    }
+    
+    results := make([]map[string]interface{}, 0)
+    
+    for i, url := range testURLs {
+        time.Sleep(100 * time.Millisecond) // Brief pause between requests
+        
+        start := time.Now()
+        resp, err := client.Get(url)
+        duration := time.Since(start)
+        
+        result := map[string]interface{}{
+            "request":        i + 1,
+            "url":           url,
+            "duration_ms":   duration.Milliseconds(),
+            "circuit_state": cbTransport.GetState(),
+        }
+        
+        if err != nil {
+            result["error"] = err.Error()
+        } else {
+            result["status_code"] = resp.StatusCode
+            resp.Body.Close()
+        }
+        
+        results = append(results, result)
+    }
+    
+    response := map[string]interface{}{
+        "message":           "Hello there! Circuit breaker test completed",
+        "final_state":       cbTransport.GetState(),
+        "results":           results,
+        "timestamp":         time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func transportDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Custom Transport Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 400px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Custom Transport Demo</h1>
+        <p>Hello there! This demonstrates custom HTTP transports and dialers.</p>
+        
+        <div class="demo-section">
+            <h2>Custom Transport with Logging</h2>
+            <p>Test custom transport with connection logging and monitoring:</p>
+            <button onclick="testCustomTransport()">Test Custom Transport</button>
+            <div id="custom-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Proxy Transport</h2>
+            <p>Test transport that routes through a proxy:</p>
+            <button onclick="testProxyTransport()">Test Proxy Transport</button>
+            <div id="proxy-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Circuit Breaker Transport</h2>
+            <p>Test transport with circuit breaker pattern:</p>
+            <button onclick="testCircuitBreaker()">Test Circuit Breaker</button>
+            <div id="circuit-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Connection Pool Information</h2>
+            <p>Understanding Go's HTTP connection pooling:</p>
+            <pre>
+• MaxIdleConns: Maximum number of idle connections across all hosts
+• MaxIdleConnsPerHost: Maximum idle connections per host
+• IdleConnTimeout: How long idle connections stay open
+• TLSHandshakeTimeout: Timeout for TLS handshakes
+• DisableKeepAlives: Disable HTTP keep-alives
+• ForceAttemptHTTP2: Try HTTP/2 for HTTPS requests
+
+Connection reuse improves performance by avoiding the overhead
+of establishing new connections for each request.
+            </pre>
+        </div>
+        
+        <script>
+        function testCustomTransport() {
+            document.getElementById('custom-result').innerHTML = 'Testing custom transport...';
+            
+            fetch('/custom-transport')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Custom Transport Results</h4>';
+                html += '<h5>Transport Stats:</h5>';
+                html += '<pre>' + JSON.stringify(data.transport_stats, null, 2) + '</pre>';
+                html += '<h5>Connection Stats:</h5>';
+                html += '<pre>' + JSON.stringify(data.connection_stats, null, 2) + '</pre>';
+                html += '<h5>Request Results:</h5>';
+                
+                data.results.forEach(result => {
+                    html += '<div style="margin: 10px 0; padding: 10px; background: #fff; border-radius: 3px;">';
+                    html += '<strong>' + result.url + '</strong>';
+                    if (result.error) {
+                        html += '<br><span style="color: red;">Error: ' + result.error + '</span>';
+                    } else {
+                        html += '<br>Status: ' + result.status_code + ' (' + result.duration + 'ms)';
+                        if (result.headers) {
+                            html += '<br>Transport Info: ' + result.headers['transport-info'];
+                        }
+                    }
+                    html += '</div>';
+                });
+                
+                document.getElementById('custom-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('custom-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function testProxyTransport() {
+            document.getElementById('proxy-result').innerHTML = 'Testing proxy transport...';
+            
+            fetch('/proxy-transport')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Proxy Transport Results</h4>';
+                html += '<p>Proxy URL: ' + data.proxy_url + '</p>';
+                html += '<p>Status: ' + data.status_code + '</p>';
+                html += '<h5>Response Headers:</h5>';
+                html += '<pre>' + JSON.stringify(data.response, null, 2) + '</pre>';
+                
+                document.getElementById('proxy-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('proxy-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        
+        function testCircuitBreaker() {
+            document.getElementById('circuit-result').innerHTML = 'Testing circuit breaker...';
+            
+            fetch('/circuit-breaker')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Circuit Breaker Results</h4>';
+                html += '<h5>Final State:</h5>';
+                html += '<pre>' + JSON.stringify(data.final_state, null, 2) + '</pre>';
+                html += '<h5>Request Sequence:</h5>';
+                
+                data.results.forEach(result => {
+                    html += '<div style="margin: 10px 0; padding: 10px; background: #fff; border-radius: 3px;">';
+                    html += '<strong>Request ' + result.request + '</strong>';
+                    html += '<br>URL: ' + result.url;
+                    
+                    if (result.error) {
+                        html += '<br><span style="color: red;">Error: ' + result.error + '</span>';
+                    } else {
+                        html += '<br>Status: ' + result.status_code;
+                    }
+                    
+                    html += '<br>Circuit State: ' + result.circuit_state.state;
+                    html += ' (failures: ' + result.circuit_state.failures + ')';
+                    html += '<br>Duration: ' + result.duration_ms + 'ms';
+                    html += '</div>';
+                });
+                
+                document.getElementById('circuit-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('circuit-result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error + '</p>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    http.HandleFunc("/", transportDemoHandler)
+    http.HandleFunc("/custom-transport", customTransportHandler)
+    http.HandleFunc("/proxy-transport", proxyTransportHandler)
+    http.HandleFunc("/circuit-breaker", circuitBreakerHandler)
+    
+    fmt.Println("=== HTTP Custom Transport Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Custom dialers with logging")
+    fmt.Println("• Transport connection pooling")
+    fmt.Println("• Proxy transport routing")
+    fmt.Println("• Circuit breaker pattern")
+    fmt.Println("• Connection monitoring")
+    fmt.Println("• Request/response interception")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET / - Transport demo page")
+    fmt.Println("  GET /custom-transport - Custom transport test")
+    fmt.Println("  GET /proxy-transport - Proxy transport test")
+    fmt.Println("  GET /circuit-breaker - Circuit breaker test")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This custom transport example demonstrates advanced HTTP client configuration  
+including custom dialers, connection pooling, proxy routing, and circuit  
+breaker patterns. Custom transports provide fine-grained control over network  
+behavior and enable sophisticated resilience patterns.
+
+## HTTP template rendering and static files
+
+Template rendering and static file serving are fundamental for web applications.  
+This example demonstrates various templating techniques, static asset handling,  
+and content delivery optimization.
+
+```go
+package main
+
+import (
+    "embed"
+    "fmt"
+    "html/template"
+    "log"
+    "net/http"
+    "path/filepath"
+    "strings"
+    "time"
+)
+
+//go:embed static/*
+var staticFiles embed.FS
+
+//go:embed templates/*
+var templateFiles embed.FS
+
+type TemplateData struct {
+    Title       string
+    Message     string
+    User        User
+    Items       []Item
+    Timestamp   time.Time
+    IsLoggedIn  bool
+    CSRF        string
+}
+
+type User struct {
+    ID       int    `json:"id"`
+    Name     string `json:"name"`
+    Email    string `json:"email"`
+    Role     string `json:"role"`
+    Avatar   string `json:"avatar"`
+}
+
+type Item struct {
+    ID          int       `json:"id"`
+    Name        string    `json:"name"`
+    Description string    `json:"description"`
+    Price       float64   `json:"price"`
+    Category    string    `json:"category"`
+    CreatedAt   time.Time `json:"created_at"`
+}
+
+type TemplateManager struct {
+    templates *template.Template
+}
+
+func NewTemplateManager() *TemplateManager {
+    // Custom functions for templates
+    funcMap := template.FuncMap{
+        "formatTime": func(t time.Time) string {
+            return t.Format("January 2, 2006 at 3:04 PM")
+        },
+        "formatPrice": func(price float64) string {
+            return fmt.Sprintf("$%.2f", price)
+        },
+        "upper": strings.ToUpper,
+        "lower": strings.ToLower,
+        "truncate": func(s string, length int) string {
+            if len(s) <= length {
+                return s
+            }
+            return s[:length] + "..."
+        },
+        "add": func(a, b int) int {
+            return a + b
+        },
+        "multiply": func(a, b float64) float64 {
+            return a * b
+        },
+        "safeHTML": func(s string) template.HTML {
+            return template.HTML(s)
+        },
+    }
+    
+    // Parse embedded templates
+    tmpl, err := template.New("").Funcs(funcMap).ParseFS(templateFiles, "templates/*.html")
+    if err != nil {
+        log.Fatal("Error parsing templates:", err)
+    }
+    
+    return &TemplateManager{templates: tmpl}
+}
+
+func (tm *TemplateManager) Render(w http.ResponseWriter, name string, data interface{}) error {
+    return tm.templates.ExecuteTemplate(w, name, data)
+}
+
+func createTemplateFiles() {
+    // This would create the template files in a real application
+    // For this example, we'll reference the embedded templates
+}
+
+func homeHandler(tm *TemplateManager) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        data := TemplateData{
+            Title:      "Hello there! Welcome to Go Templates",
+            Message:    "This demonstrates template rendering with Go",
+            User: User{
+                ID:     1,
+                Name:   "Alice Johnson",
+                Email:  "alice@example.com",
+                Role:   "Admin",
+                Avatar: "/static/avatars/alice.jpg",
+            },
+            Items: []Item{
+                {1, "Go Programming Book", "Learn Go from basics to advanced", 29.99, "Books", time.Now().Add(-24 * time.Hour)},
+                {2, "HTTP Server Guide", "Building robust HTTP servers", 19.99, "Books", time.Now().Add(-48 * time.Hour)},
+                {3, "Web Development Kit", "Complete toolkit for web dev", 49.99, "Tools", time.Now().Add(-72 * time.Hour)},
+            },
+            Timestamp:  time.Now(),
+            IsLoggedIn: true,
+            CSRF:       "csrf_token_123456",
+        }
+        
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        if err := tm.Render(w, "home.html", data); err != nil {
+            http.Error(w, "Template error: "+err.Error(), 
+                      http.StatusInternalServerError)
+            return
+        }
+    }
+}
+
+func productHandler(tm *TemplateManager) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        productID := r.URL.Query().Get("id")
+        if productID == "" {
+            productID = "1"
+        }
+        
+        product := Item{
+            ID:          1,
+            Name:        "Advanced Go Programming",
+            Description: "Master advanced Go concepts including concurrency, networking, and performance optimization. This comprehensive guide covers real-world patterns and best practices.",
+            Price:       39.99,
+            Category:    "Programming Books",
+            CreatedAt:   time.Now().Add(-30 * 24 * time.Hour),
+        }
+        
+        data := TemplateData{
+            Title:      fmt.Sprintf("Product: %s", product.Name),
+            Message:    "Product details page",
+            User: User{
+                ID:   1,
+                Name: "Alice Johnson",
+                Role: "Customer",
+            },
+            Items:      []Item{product},
+            Timestamp:  time.Now(),
+            IsLoggedIn: true,
+        }
+        
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        if err := tm.Render(w, "product.html", data); err != nil {
+            http.Error(w, "Template error: "+err.Error(), 
+                      http.StatusInternalServerError)
+            return
+        }
+    }
+}
+
+func dashboardHandler(tm *TemplateManager) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        items := []Item{
+            {1, "Sales Report", "Monthly sales analysis", 0.0, "Reports", time.Now().Add(-1 * time.Hour)},
+            {2, "User Analytics", "User behavior insights", 0.0, "Analytics", time.Now().Add(-2 * time.Hour)},
+            {3, "Performance Metrics", "System performance data", 0.0, "Monitoring", time.Now().Add(-3 * time.Hour)},
+            {4, "Security Audit", "Security compliance check", 0.0, "Security", time.Now().Add(-4 * time.Hour)},
+        }
+        
+        data := TemplateData{
+            Title:   "Admin Dashboard",
+            Message: "Welcome to your dashboard",
+            User: User{
+                ID:     1,
+                Name:   "Admin User",
+                Email:  "admin@example.com",
+                Role:   "Administrator",
+                Avatar: "/static/avatars/admin.jpg",
+            },
+            Items:      items,
+            Timestamp:  time.Now(),
+            IsLoggedIn: true,
+        }
+        
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        if err := tm.Render(w, "dashboard.html", data); err != nil {
+            http.Error(w, "Template error: "+err.Error(), 
+                      http.StatusInternalServerError)
+            return
+        }
+    }
+}
+
+// Static file handler with caching and compression
+func staticHandler() http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        path := strings.TrimPrefix(r.URL.Path, "/static/")
+        
+        // Security check
+        if strings.Contains(path, "..") {
+            http.Error(w, "Invalid path", http.StatusBadRequest)
+            return
+        }
+        
+        // Try to serve from embedded files
+        fullPath := "static/" + path
+        data, err := staticFiles.ReadFile(fullPath)
+        if err != nil {
+            http.NotFound(w, r)
+            return
+        }
+        
+        // Set content type based on file extension
+        ext := filepath.Ext(path)
+        switch ext {
+        case ".css":
+            w.Header().Set("Content-Type", "text/css")
+        case ".js":
+            w.Header().Set("Content-Type", "application/javascript")
+        case ".png":
+            w.Header().Set("Content-Type", "image/png")
+        case ".jpg", ".jpeg":
+            w.Header().Set("Content-Type", "image/jpeg")
+        case ".gif":
+            w.Header().Set("Content-Type", "image/gif")
+        case ".svg":
+            w.Header().Set("Content-Type", "image/svg+xml")
+        case ".ico":
+            w.Header().Set("Content-Type", "image/x-icon")
+        default:
+            w.Header().Set("Content-Type", "application/octet-stream")
+        }
+        
+        // Set caching headers
+        w.Header().Set("Cache-Control", "public, max-age=31536000") // 1 year
+        w.Header().Set("ETag", fmt.Sprintf("\"%x\"", len(data)))
+        
+        // Check if client has cached version
+        if r.Header.Get("If-None-Match") == w.Header().Get("ETag") {
+            w.WriteHeader(http.StatusNotModified)
+            return
+        }
+        
+        w.Write(data)
+    })
+}
+
+// Template fragment handler for AJAX updates
+func fragmentHandler(tm *TemplateManager) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        fragmentName := r.URL.Query().Get("name")
+        if fragmentName == "" {
+            http.Error(w, "Fragment name required", http.StatusBadRequest)
+            return
+        }
+        
+        var data interface{}
+        
+        switch fragmentName {
+        case "user-info":
+            data = User{
+                ID:     1,
+                Name:   "Alice Johnson",
+                Email:  "alice@example.com",
+                Role:   "Admin",
+                Avatar: "/static/avatars/alice.jpg",
+            }
+        case "recent-items":
+            data = []Item{
+                {1, "New Item 1", "Recently added item", 15.99, "New", time.Now()},
+                {2, "New Item 2", "Another recent item", 25.99, "New", time.Now().Add(-1 * time.Hour)},
+            }
+        default:
+            http.Error(w, "Unknown fragment", http.StatusNotFound)
+            return
+        }
+        
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        if err := tm.Render(w, fragmentName+".html", data); err != nil {
+            http.Error(w, "Fragment error: "+err.Error(), 
+                      http.StatusInternalServerError)
+            return
+        }
+    }
+}
+
+// API handler that can return both JSON and HTML
+func apiHandler(tm *TemplateManager) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        items := []Item{
+            {1, "API Item 1", "First API item", 10.00, "API", time.Now()},
+            {2, "API Item 2", "Second API item", 20.00, "API", time.Now()},
+        }
+        
+        // Check Accept header for content negotiation
+        accept := r.Header.Get("Accept")
+        
+        if strings.Contains(accept, "text/html") {
+            // Return HTML template
+            data := TemplateData{
+                Title:     "API Data",
+                Message:   "Data from API endpoint",
+                Items:     items,
+                Timestamp: time.Now(),
+            }
+            
+            w.Header().Set("Content-Type", "text/html; charset=utf-8")
+            if err := tm.Render(w, "api-data.html", data); err != nil {
+                http.Error(w, "Template error: "+err.Error(), 
+                          http.StatusInternalServerError)
+                return
+            }
+        } else {
+            // Return JSON
+            w.Header().Set("Content-Type", "application/json")
+            fmt.Fprintf(w, `{
+                "message": "Hello there! API data",
+                "items": [
+                    {"id": 1, "name": "API Item 1", "price": 10.00},
+                    {"id": 2, "name": "API Item 2", "price": 20.00}
+                ],
+                "timestamp": "%s"
+            }`, time.Now().Format(time.RFC3339))
+        }
+    }
+}
+
+func createEmbeddedFiles() {
+    // In a real application, you would create actual template files
+    // Here we're demonstrating the structure they would have
+    
+    baseTemplate := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <h1>{{.Title}}</h1>
+        {{if .IsLoggedIn}}
+            <div class="user-info">
+                Welcome, {{.User.Name}} ({{.User.Role}})
+            </div>
+        {{end}}
+    </header>
+    <main>
+        {{template "content" .}}
+    </main>
+    <footer>
+        <p>Generated at {{formatTime .Timestamp}}</p>
+    </footer>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>`
+    
+    log.Println("Template structure:")
+    log.Println("- Base template with header/footer")
+    log.Println("- Custom template functions")
+    log.Println("- Static file serving with caching")
+    log.Println("- Fragment rendering for AJAX")
+    log.Println("- Content negotiation")
+    log.Printf("Base template length: %d chars", len(baseTemplate))
+}
+
+func main() {
+    // Create template manager
+    tm := NewTemplateManager()
+    
+    // Show embedded file info
+    createEmbeddedFiles()
+    
+    // Routes
+    http.HandleFunc("/", homeHandler(tm))
+    http.HandleFunc("/product", productHandler(tm))
+    http.HandleFunc("/dashboard", dashboardHandler(tm))
+    http.HandleFunc("/fragment", fragmentHandler(tm))
+    http.HandleFunc("/api/data", apiHandler(tm))
+    
+    // Static files
+    http.Handle("/static/", http.StripPrefix("/static/", staticHandler()))
+    
+    fmt.Println("=== HTTP Template and Static Files Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• HTML template rendering with custom functions")
+    fmt.Println("• Embedded static file serving")
+    fmt.Println("• Template fragment loading for AJAX")
+    fmt.Println("• Content negotiation (HTML/JSON)")
+    fmt.Println("• Static file caching and optimization")
+    fmt.Println("• Template inheritance and composition")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET / - Home page with template")
+    fmt.Println("  GET /product?id=1 - Product detail page")
+    fmt.Println("  GET /dashboard - Admin dashboard")
+    fmt.Println("  GET /fragment?name=user-info - Template fragment")
+    fmt.Println("  GET /api/data - Content negotiation endpoint")
+    fmt.Println("  GET /static/* - Static file serving")
+    fmt.Println()
+    fmt.Println("Template Functions Available:")
+    fmt.Println("• formatTime - Format timestamps")
+    fmt.Println("• formatPrice - Format currency")
+    fmt.Println("• upper/lower - String case conversion")
+    fmt.Println("• truncate - String truncation")
+    fmt.Println("• add/multiply - Math operations")
+    fmt.Println("• safeHTML - Render raw HTML")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This template rendering example demonstrates comprehensive web application  
+patterns including template inheritance, custom functions, static file serving,  
+fragment loading, and content negotiation. These techniques are essential  
+for building modern web applications with Go.
+
+## HTTP session management and state
+
+Session management maintains user state across HTTP requests. This example  
+demonstrates session storage, security considerations, and state management  
+patterns for web applications.
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "encoding/base64"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "sync"
+    "time"
+)
+
+type Session struct {
+    ID        string                 `json:"id"`
+    UserID    string                 `json:"user_id"`
+    Data      map[string]interface{} `json:"data"`
+    CreatedAt time.Time              `json:"created_at"`
+    LastSeen  time.Time              `json:"last_seen"`
+    ExpiresAt time.Time              `json:"expires_at"`
+    IPAddress string                 `json:"ip_address"`
+    UserAgent string                 `json:"user_agent"`
+}
+
+type SessionStore interface {
+    Create(session *Session) error
+    Get(sessionID string) (*Session, error)
+    Update(session *Session) error
+    Delete(sessionID string) error
+    Cleanup() error
+}
+
+type MemorySessionStore struct {
+    sessions map[string]*Session
+    mu       sync.RWMutex
+}
+
+func NewMemorySessionStore() *MemorySessionStore {
+    store := &MemorySessionStore{
+        sessions: make(map[string]*Session),
+    }
+    
+    // Start cleanup goroutine
+    go store.cleanupExpired()
+    
+    return store
+}
+
+func (s *MemorySessionStore) Create(session *Session) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    
+    s.sessions[session.ID] = session
+    return nil
+}
+
+func (s *MemorySessionStore) Get(sessionID string) (*Session, error) {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    
+    session, exists := s.sessions[sessionID]
+    if !exists {
+        return nil, fmt.Errorf("session not found")
+    }
+    
+    if time.Now().After(session.ExpiresAt) {
+        delete(s.sessions, sessionID)
+        return nil, fmt.Errorf("session expired")
+    }
+    
+    return session, nil
+}
+
+func (s *MemorySessionStore) Update(session *Session) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    
+    s.sessions[session.ID] = session
+    return nil
+}
+
+func (s *MemorySessionStore) Delete(sessionID string) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    
+    delete(s.sessions, sessionID)
+    return nil
+}
+
+func (s *MemorySessionStore) Cleanup() error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    
+    now := time.Now()
+    for id, session := range s.sessions {
+        if now.After(session.ExpiresAt) {
+            delete(s.sessions, id)
+        }
+    }
+    
+    return nil
+}
+
+func (s *MemorySessionStore) cleanupExpired() {
+    ticker := time.NewTicker(5 * time.Minute)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        s.Cleanup()
+    }
+}
+
+func (s *MemorySessionStore) GetStats() map[string]interface{} {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    
+    active := 0
+    expired := 0
+    now := time.Now()
+    
+    for _, session := range s.sessions {
+        if now.After(session.ExpiresAt) {
+            expired++
+        } else {
+            active++
+        }
+    }
+    
+    return map[string]interface{}{
+        "total_sessions":   len(s.sessions),
+        "active_sessions":  active,
+        "expired_sessions": expired,
+    }
+}
+
+type SessionManager struct {
+    store      SessionStore
+    cookieName string
+    duration   time.Duration
+    secure     bool
+    httpOnly   bool
+}
+
+func NewSessionManager(store SessionStore) *SessionManager {
+    return &SessionManager{
+        store:      store,
+        cookieName: "session_id",
+        duration:   24 * time.Hour,
+        secure:     false, // Set to true in production with HTTPS
+        httpOnly:   true,
+    }
+}
+
+func (sm *SessionManager) generateSessionID() string {
+    bytes := make([]byte, 32)
+    if _, err := rand.Read(bytes); err != nil {
+        log.Printf("Error generating session ID: %v", err)
+        return fmt.Sprintf("session_%d", time.Now().UnixNano())
+    }
+    return base64.URLEncoding.EncodeToString(bytes)
+}
+
+func (sm *SessionManager) CreateSession(w http.ResponseWriter, r *http.Request, userID string) (*Session, error) {
+    session := &Session{
+        ID:        sm.generateSessionID(),
+        UserID:    userID,
+        Data:      make(map[string]interface{}),
+        CreatedAt: time.Now(),
+        LastSeen:  time.Now(),
+        ExpiresAt: time.Now().Add(sm.duration),
+        IPAddress: r.RemoteAddr,
+        UserAgent: r.Header.Get("User-Agent"),
+    }
+    
+    if err := sm.store.Create(session); err != nil {
+        return nil, err
+    }
+    
+    cookie := &http.Cookie{
+        Name:     sm.cookieName,
+        Value:    session.ID,
+        Expires:  session.ExpiresAt,
+        HttpOnly: sm.httpOnly,
+        Secure:   sm.secure,
+        SameSite: http.SameSiteStrictMode,
+        Path:     "/",
+    }
+    
+    http.SetCookie(w, cookie)
+    
+    log.Printf("Created session %s for user %s", session.ID, userID)
+    return session, nil
+}
+
+func (sm *SessionManager) GetSession(r *http.Request) (*Session, error) {
+    cookie, err := r.Cookie(sm.cookieName)
+    if err != nil {
+        return nil, fmt.Errorf("no session cookie")
+    }
+    
+    session, err := sm.store.Get(cookie.Value)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Update last seen time
+    session.LastSeen = time.Now()
+    sm.store.Update(session)
+    
+    return session, nil
+}
+
+func (sm *SessionManager) DestroySession(w http.ResponseWriter, r *http.Request) error {
+    cookie, err := r.Cookie(sm.cookieName)
+    if err != nil {
+        return nil // No session to destroy
+    }
+    
+    sm.store.Delete(cookie.Value)
+    
+    // Clear the cookie
+    expiredCookie := &http.Cookie{
+        Name:     sm.cookieName,
+        Value:    "",
+        Expires:  time.Unix(0, 0),
+        HttpOnly: sm.httpOnly,
+        Secure:   sm.secure,
+        Path:     "/",
+    }
+    
+    http.SetCookie(w, expiredCookie)
+    
+    log.Printf("Destroyed session %s", cookie.Value)
+    return nil
+}
+
+func SessionMiddleware(sm *SessionManager) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            session, err := sm.GetSession(r)
+            if err == nil {
+                // Add session to request context
+                ctx := r.Context()
+                ctx = r.WithContext(ctx)
+                r = r.WithContext(ctx)
+                r.Header.Set("X-Session-ID", session.ID)
+                r.Header.Set("X-User-ID", session.UserID)
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+// Global session manager
+var sessionManager *SessionManager
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        w.Header().Set("Content-Type", "text/html")
+        fmt.Fprint(w, `
+        <!DOCTYPE html>
+        <html>
+        <head><title>Login</title></head>
+        <body>
+            <h1>Login</h1>
+            <form method="POST">
+                <label>Username: <input type="text" name="username" required></label><br><br>
+                <label>Password: <input type="password" name="password" required></label><br><br>
+                <button type="submit">Login</button>
+            </form>
+        </body>
+        </html>`)
+        return
+    }
+    
+    username := r.FormValue("username")
+    password := r.FormValue("password")
+    
+    // Simple authentication (in production, hash passwords and check database)
+    if username == "admin" && password == "password" {
+        session, err := sessionManager.CreateSession(w, r, username)
+        if err != nil {
+            http.Error(w, "Failed to create session", http.StatusInternalServerError)
+            return
+        }
+        
+        // Store user info in session
+        session.Data["username"] = username
+        session.Data["role"] = "admin"
+        session.Data["login_time"] = time.Now().Format(time.RFC3339)
+        sessionManager.store.Update(session)
+        
+        response := map[string]interface{}{
+            "message":    "Hello there! Login successful",
+            "user":       username,
+            "session_id": session.ID,
+            "expires_at": session.ExpiresAt.Format(time.RFC3339),
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+    } else {
+        http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+    }
+}
+
+func dashboardHandler(w http.ResponseWriter, r *http.Request) {
+    session, err := sessionManager.GetSession(r)
+    if err != nil {
+        http.Redirect(w, r, "/login", http.StatusSeeOther)
+        return
+    }
+    
+    // Update session data
+    session.Data["last_page"] = "dashboard"
+    session.Data["page_views"] = getPageViews(session) + 1
+    sessionManager.store.Update(session)
+    
+    response := map[string]interface{}{
+        "message":     "Hello there! Welcome to your dashboard",
+        "user":        session.UserID,
+        "session_id":  session.ID,
+        "created_at":  session.CreatedAt.Format(time.RFC3339),
+        "last_seen":   session.LastSeen.Format(time.RFC3339),
+        "session_data": session.Data,
+        "ip_address":  session.IPAddress,
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func getPageViews(session *Session) int {
+    if views, ok := session.Data["page_views"].(int); ok {
+        return views
+    }
+    return 0
+}
+
+func profileHandler(w http.ResponseWriter, r *http.Request) {
+    session, err := sessionManager.GetSession(r)
+    if err != nil {
+        http.Error(w, "Unauthorized", http.StatusUnauthorized)
+        return
+    }
+    
+    if r.Method == http.MethodPost {
+        // Update profile data in session
+        email := r.FormValue("email")
+        if email != "" {
+            session.Data["email"] = email
+        }
+        
+        theme := r.FormValue("theme")
+        if theme != "" {
+            session.Data["theme"] = theme
+        }
+        
+        session.Data["profile_updated"] = time.Now().Format(time.RFC3339)
+        sessionManager.store.Update(session)
+    }
+    
+    response := map[string]interface{}{
+        "message":      "Hello there! Profile data",
+        "user":         session.UserID,
+        "profile_data": session.Data,
+        "timestamp":    time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+    err := sessionManager.DestroySession(w, r)
+    if err != nil {
+        http.Error(w, "Logout failed", http.StatusInternalServerError)
+        return
+    }
+    
+    response := map[string]interface{}{
+        "message": "Hello there! Logout successful",
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func sessionStatsHandler(w http.ResponseWriter, r *http.Request) {
+    store, ok := sessionManager.store.(*MemorySessionStore)
+    if !ok {
+        http.Error(w, "Stats not available", http.StatusInternalServerError)
+        return
+    }
+    
+    stats := store.GetStats()
+    stats["message"] = "Session statistics"
+    stats["timestamp"] = time.Now().Format(time.RFC3339)
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(stats)
+}
+
+func sessionDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Session Management Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
+        </style>
+    </head>
+    <body>
+        <h1>Session Management Demo</h1>
+        <p>Hello there! This demonstrates HTTP session management.</p>
+        
+        <div class="demo-section">
+            <h2>Authentication</h2>
+            <button onclick="showLogin()">Show Login Form</button>
+            <button onclick="loginUser()">Quick Login (admin/password)</button>
+            <button onclick="logout()">Logout</button>
+            <div id="auth-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Session Data</h2>
+            <button onclick="checkDashboard()">Access Dashboard</button>
+            <button onclick="updateProfile()">Update Profile</button>
+            <button onclick="getSessionStats()">Session Stats</button>
+            <div id="session-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Session Information</h2>
+            <pre>
+Session Features:
+• Secure session ID generation
+• Automatic expiration handling
+• User state persistence
+• Session data storage
+• Cookie-based session tracking
+• IP address validation
+• User agent tracking
+• Automatic cleanup of expired sessions
+
+Security Features:
+• HttpOnly cookies (prevents XSS)
+• Secure flag for HTTPS
+• SameSite protection
+• Session ID regeneration
+• Expiration time limits
+            </pre>
+        </div>
+        
+        <script>
+        function showLogin() {
+            window.open('/login', '_blank');
+        }
+        
+        function loginUser() {
+            const formData = new FormData();
+            formData.append('username', 'admin');
+            formData.append('password', 'password');
+            
+            fetch('/login', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('auth-result').innerHTML = 
+                    '<h4>Login Result</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('auth-result').innerHTML = 
+                    '<h4 style="color: red;">Login Error: ' + error + '</h4>';
+            });
+        }
+        
+        function logout() {
+            fetch('/logout', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('auth-result').innerHTML = 
+                    '<h4>Logout Result</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('auth-result').innerHTML = 
+                    '<h4 style="color: red;">Logout Error: ' + error + '</h4>';
+            });
+        }
+        
+        function checkDashboard() {
+            fetch('/dashboard')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('session-result').innerHTML = 
+                    '<h4>Dashboard Data</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('session-result').innerHTML = 
+                    '<h4 style="color: red;">Dashboard Error: ' + error + '</h4>';
+            });
+        }
+        
+        function updateProfile() {
+            const formData = new FormData();
+            formData.append('email', 'admin@example.com');
+            formData.append('theme', 'dark');
+            
+            fetch('/profile', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('session-result').innerHTML = 
+                    '<h4>Profile Update</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('session-result').innerHTML = 
+                    '<h4 style="color: red;">Profile Error: ' + error + '</h4>';
+            });
+        }
+        
+        function getSessionStats() {
+            fetch('/session-stats')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('session-result').innerHTML = 
+                    '<h4>Session Statistics</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('session-result').innerHTML = 
+                    '<h4 style="color: red;">Stats Error: ' + error + '</h4>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // Initialize session store and manager
+    store := NewMemorySessionStore()
+    sessionManager = NewSessionManager(store)
+    
+    // Routes
+    http.HandleFunc("/", sessionDemoHandler)
+    http.HandleFunc("/login", loginHandler)
+    http.HandleFunc("/dashboard", dashboardHandler)
+    http.HandleFunc("/profile", profileHandler)
+    http.HandleFunc("/logout", logoutHandler)
+    http.HandleFunc("/session-stats", sessionStatsHandler)
+    
+    fmt.Println("=== HTTP Session Management Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Cookie-based session management")
+    fmt.Println("• Secure session ID generation")
+    fmt.Println("• Session data storage and retrieval")
+    fmt.Println("• Automatic session expiration")
+    fmt.Println("• User authentication flow")
+    fmt.Println("• Session state persistence")
+    fmt.Println("• Security best practices")
+    fmt.Println()
+    fmt.Println("Test credentials: admin / password")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - Session demo page")
+    fmt.Println("  GET  /login - Login form")
+    fmt.Println("  POST /login - Authenticate user")
+    fmt.Println("  GET  /dashboard - Protected dashboard")
+    fmt.Println("  POST /profile - Update profile data")
+    fmt.Println("  POST /logout - Destroy session")
+    fmt.Println("  GET  /session-stats - Session statistics")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This session management example demonstrates comprehensive user state handling  
+including secure session creation, data persistence, authentication flow,  
+and security best practices. Session management is fundamental for building  
+interactive web applications that maintain user state.
+
+## HTTP webhook handling and validation
+
+Webhooks enable real-time communication between services by allowing external  
+systems to notify your application of events. This example demonstrates  
+webhook reception, validation, and processing patterns.
+
+```go
+package main
+
+import (
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type WebhookEvent struct {
+    ID        string                 `json:"id"`
+    Type      string                 `json:"type"`
+    Source    string                 `json:"source"`
+    Data      map[string]interface{} `json:"data"`
+    Timestamp time.Time              `json:"timestamp"`
+    Signature string                 `json:"-"` // Not included in JSON
+}
+
+type WebhookProcessor struct {
+    secrets map[string]string // source -> secret mapping
+    handlers map[string]WebhookHandler
+}
+
+type WebhookHandler func(event WebhookEvent) error
+
+func NewWebhookProcessor() *WebhookProcessor {
+    return &WebhookProcessor{
+        secrets:  make(map[string]string),
+        handlers: make(map[string]WebhookHandler),
+    }
+}
+
+func (wp *WebhookProcessor) AddSecret(source, secret string) {
+    wp.secrets[source] = secret
+}
+
+func (wp *WebhookProcessor) AddHandler(eventType string, handler WebhookHandler) {
+    wp.handlers[eventType] = handler
+}
+
+func (wp *WebhookProcessor) validateSignature(payload []byte, signature, source string) bool {
+    secret, exists := wp.secrets[source]
+    if !exists {
+        log.Printf("No secret configured for source: %s", source)
+        return false
+    }
+    
+    // GitHub-style signature validation
+    if strings.HasPrefix(signature, "sha256=") {
+        signature = strings.TrimPrefix(signature, "sha256=")
+        mac := hmac.New(sha256.New, []byte(secret))
+        mac.Write(payload)
+        expectedSignature := hex.EncodeToString(mac.Sum(nil))
+        return hmac.Equal([]byte(signature), []byte(expectedSignature))
+    }
+    
+    // Simple HMAC validation
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write(payload)
+    expectedSignature := hex.EncodeToString(mac.Sum(nil))
+    return hmac.Equal([]byte(signature), []byte(expectedSignature))
+}
+
+func (wp *WebhookProcessor) ProcessWebhook(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Read the request body
+    body, err := io.ReadAll(r.Body)
+    if err != nil {
+        http.Error(w, "Error reading request body", http.StatusBadRequest)
+        return
+    }
+    
+    // Get headers for validation
+    signature := r.Header.Get("X-Signature")
+    if signature == "" {
+        signature = r.Header.Get("X-Hub-Signature-256") // GitHub format
+    }
+    
+    source := r.Header.Get("X-Source")
+    if source == "" {
+        source = r.Header.Get("User-Agent")
+    }
+    
+    eventType := r.Header.Get("X-Event-Type")
+    if eventType == "" {
+        eventType = r.Header.Get("X-GitHub-Event") // GitHub format
+    }
+    
+    // Validate signature if required
+    if signature != "" && source != "" {
+        if !wp.validateSignature(body, signature, source) {
+            log.Printf("Invalid signature for webhook from %s", source)
+            http.Error(w, "Invalid signature", http.StatusUnauthorized)
+            return
+        }
+    }
+    
+    // Parse webhook event
+    var event WebhookEvent
+    if err := json.Unmarshal(body, &event); err != nil {
+        // If JSON parsing fails, create a generic event
+        event = WebhookEvent{
+            ID:        fmt.Sprintf("webhook_%d", time.Now().UnixNano()),
+            Type:      eventType,
+            Source:    source,
+            Data:      map[string]interface{}{"raw_body": string(body)},
+            Timestamp: time.Now(),
+            Signature: signature,
+        }
+    }
+    
+    // Set fields from headers if not present in body
+    if event.Type == "" {
+        event.Type = eventType
+    }
+    if event.Source == "" {
+        event.Source = source
+    }
+    if event.Timestamp.IsZero() {
+        event.Timestamp = time.Now()
+    }
+    
+    log.Printf("Received webhook: type=%s, source=%s, id=%s", 
+              event.Type, event.Source, event.ID)
+    
+    // Process the event
+    handler, exists := wp.handlers[event.Type]
+    if !exists {
+        log.Printf("No handler for event type: %s", event.Type)
+        w.WriteHeader(http.StatusAccepted) // Accept but don't process
+        fmt.Fprint(w, "Event received but no handler configured")
+        return
+    }
+    
+    if err := handler(event); err != nil {
+        log.Printf("Error processing webhook: %v", err)
+        http.Error(w, "Processing error", http.StatusInternalServerError)
+        return
+    }
+    
+    // Send success response
+    response := map[string]interface{}{
+        "message":    "Hello there! Webhook processed successfully",
+        "event_id":   event.ID,
+        "event_type": event.Type,
+        "source":     event.Source,
+        "timestamp":  time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+    json.NewEncoder(w).Encode(response)
+}
+
+// Sample webhook handlers
+func gitHubPushHandler(event WebhookEvent) error {
+    log.Printf("Processing GitHub push event: %s", event.ID)
+    
+    // Extract push data
+    if repository, ok := event.Data["repository"].(map[string]interface{}); ok {
+        if name, ok := repository["name"].(string); ok {
+            log.Printf("Push to repository: %s", name)
+        }
+    }
+    
+    if commits, ok := event.Data["commits"].([]interface{}); ok {
+        log.Printf("Number of commits: %d", len(commits))
+    }
+    
+    // Simulate processing
+    time.Sleep(100 * time.Millisecond)
+    
+    return nil
+}
+
+func paymentWebhookHandler(event WebhookEvent) error {
+    log.Printf("Processing payment event: %s", event.ID)
+    
+    // Extract payment data
+    if amount, ok := event.Data["amount"].(float64); ok {
+        log.Printf("Payment amount: $%.2f", amount)
+    }
+    
+    if status, ok := event.Data["status"].(string); ok {
+        log.Printf("Payment status: %s", status)
+        
+        switch status {
+        case "completed":
+            // Process successful payment
+            log.Println("Payment completed successfully")
+        case "failed":
+            // Handle failed payment
+            log.Println("Payment failed")
+        case "pending":
+            // Handle pending payment
+            log.Println("Payment is pending")
+        }
+    }
+    
+    return nil
+}
+
+func orderWebhookHandler(event WebhookEvent) error {
+    log.Printf("Processing order event: %s", event.ID)
+    
+    // Extract order data
+    if orderID, ok := event.Data["order_id"].(string); ok {
+        log.Printf("Order ID: %s", orderID)
+    }
+    
+    if items, ok := event.Data["items"].([]interface{}); ok {
+        log.Printf("Order items: %d", len(items))
+    }
+    
+    return nil
+}
+
+func userEventHandler(event WebhookEvent) error {
+    log.Printf("Processing user event: %s", event.ID)
+    
+    // Extract user data
+    if userID, ok := event.Data["user_id"].(string); ok {
+        log.Printf("User ID: %s", userID)
+    }
+    
+    if action, ok := event.Data["action"].(string); ok {
+        log.Printf("User action: %s", action)
+        
+        switch action {
+        case "created":
+            log.Println("New user created")
+        case "updated":
+            log.Println("User updated")
+        case "deleted":
+            log.Println("User deleted")
+        }
+    }
+    
+    return nil
+}
+
+// Test webhook sender
+func sendTestWebhook(w http.ResponseWriter, r *http.Request) {
+    webhookType := r.URL.Query().Get("type")
+    if webhookType == "" {
+        webhookType = "test"
+    }
+    
+    var testEvent map[string]interface{}
+    
+    switch webhookType {
+    case "github-push":
+        testEvent = map[string]interface{}{
+            "id":   "github_push_123",
+            "type": "push",
+            "source": "github",
+            "data": map[string]interface{}{
+                "repository": map[string]interface{}{
+                    "name": "test-repo",
+                    "url":  "https://github.com/user/test-repo",
+                },
+                "commits": []interface{}{
+                    map[string]interface{}{
+                        "id":      "abc123",
+                        "message": "Add new feature",
+                        "author":  "developer@example.com",
+                    },
+                },
+                "ref": "refs/heads/main",
+            },
+            "timestamp": time.Now(),
+        }
+        
+    case "payment":
+        testEvent = map[string]interface{}{
+            "id":   "payment_456",
+            "type": "payment",
+            "source": "stripe",
+            "data": map[string]interface{}{
+                "payment_id": "pay_123456789",
+                "amount":     99.99,
+                "currency":   "USD",
+                "status":     "completed",
+                "customer":   "cust_abcdefgh",
+            },
+            "timestamp": time.Now(),
+        }
+        
+    case "order":
+        testEvent = map[string]interface{}{
+            "id":   "order_789",
+            "type": "order",
+            "source": "ecommerce",
+            "data": map[string]interface{}{
+                "order_id": "order_123456",
+                "total":    149.99,
+                "status":   "completed",
+                "items": []interface{}{
+                    map[string]interface{}{
+                        "product_id": "prod_1",
+                        "quantity":   2,
+                        "price":      49.99,
+                    },
+                    map[string]interface{}{
+                        "product_id": "prod_2",
+                        "quantity":   1,
+                        "price":      50.01,
+                    },
+                },
+            },
+            "timestamp": time.Now(),
+        }
+        
+    case "user":
+        testEvent = map[string]interface{}{
+            "id":   "user_event_101",
+            "type": "user",
+            "source": "auth_service",
+            "data": map[string]interface{}{
+                "user_id": "user_123456",
+                "action":  "created",
+                "email":   "newuser@example.com",
+                "name":    "Alice Johnson",
+            },
+            "timestamp": time.Now(),
+        }
+        
+    default:
+        testEvent = map[string]interface{}{
+            "id":   "test_event_999",
+            "type": "test",
+            "source": "test_system",
+            "data": map[string]interface{}{
+                "message": "Hello there! This is a test webhook",
+                "test_id": "test_123",
+            },
+            "timestamp": time.Now(),
+        }
+    }
+    
+    // Generate signature for the test
+    payload, _ := json.Marshal(testEvent)
+    secret := "test_secret_key"
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write(payload)
+    signature := hex.EncodeToString(mac.Sum(nil))
+    
+    // Send webhook to ourselves
+    req, _ := http.NewRequest("POST", "http://localhost:8080/webhook", 
+                             strings.NewReader(string(payload)))
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("X-Signature", signature)
+    req.Header.Set("X-Source", testEvent["source"].(string))
+    req.Header.Set("X-Event-Type", testEvent["type"].(string))
+    
+    client := &http.Client{Timeout: 10 * time.Second}
+    resp, err := client.Do(req)
+    if err != nil {
+        http.Error(w, "Failed to send webhook: "+err.Error(), 
+                  http.StatusInternalServerError)
+        return
+    }
+    defer resp.Body.Close()
+    
+    responseBody, _ := io.ReadAll(resp.Body)
+    
+    result := map[string]interface{}{
+        "message":          "Test webhook sent",
+        "webhook_type":     webhookType,
+        "response_status":  resp.StatusCode,
+        "response_body":    string(responseBody),
+        "signature":        signature,
+        "timestamp":        time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
+func webhookDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Webhook Handling Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 300px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+        </style>
+    </head>
+    <body>
+        <h1>Webhook Handling Demo</h1>
+        <p>Hello there! This demonstrates webhook reception and processing.</p>
+        
+        <div class="demo-section">
+            <h2>Test Webhooks</h2>
+            <p>Send test webhooks to see the processing in action:</p>
+            <button onclick="sendWebhook('github-push')">GitHub Push Event</button>
+            <button onclick="sendWebhook('payment')">Payment Event</button>
+            <button onclick="sendWebhook('order')">Order Event</button>
+            <button onclick="sendWebhook('user')">User Event</button>
+            <button onclick="sendWebhook('test')">Generic Test Event</button>
+            <div id="webhook-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Webhook Configuration</h2>
+            <pre>
+Endpoint: POST /webhook
+
+Headers:
+• X-Signature: HMAC-SHA256 signature for validation
+• X-Source: Source system identifier  
+• X-Event-Type: Type of event being sent
+• Content-Type: application/json
+
+Supported Event Types:
+• push - Git repository push events
+• payment - Payment processing events  
+• order - E-commerce order events
+• user - User management events
+• test - Generic test events
+
+Security Features:
+• HMAC-SHA256 signature validation
+• Source verification
+• Request timestamp validation
+• Payload size limits
+• Rate limiting support
+            </pre>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Example Webhook Payload</h2>
+            <pre>
+{
+  "id": "event_123456",
+  "type": "payment",
+  "source": "stripe",
+  "data": {
+    "payment_id": "pay_123456789",
+    "amount": 99.99,
+    "currency": "USD",
+    "status": "completed",
+    "customer": "cust_abcdefgh"
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+            </pre>
+        </div>
+        
+        <script>
+        function sendWebhook(type) {
+            document.getElementById('webhook-result').innerHTML = 'Sending ' + type + ' webhook...';
+            
+            fetch('/send-test-webhook?type=' + type)
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Webhook Test Result</h4>';
+                html += '<p>Type: ' + data.webhook_type + '</p>';
+                html += '<p>Response Status: ' + data.response_status + '</p>';
+                html += '<p>Signature: ' + data.signature.substring(0, 20) + '...</p>';
+                html += '<h5>Response Body:</h5>';
+                html += '<pre>' + data.response_body + '</pre>';
+                
+                document.getElementById('webhook-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('webhook-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // Create webhook processor
+    processor := NewWebhookProcessor()
+    
+    // Configure secrets for different sources
+    processor.AddSecret("github", "github_webhook_secret")
+    processor.AddSecret("stripe", "stripe_webhook_secret")
+    processor.AddSecret("ecommerce", "ecommerce_webhook_secret")
+    processor.AddSecret("auth_service", "auth_webhook_secret")
+    processor.AddSecret("test_system", "test_secret_key")
+    
+    // Register event handlers
+    processor.AddHandler("push", gitHubPushHandler)
+    processor.AddHandler("payment", paymentWebhookHandler)
+    processor.AddHandler("order", orderWebhookHandler)
+    processor.AddHandler("user", userEventHandler)
+    processor.AddHandler("test", func(event WebhookEvent) error {
+        log.Printf("Processing test event: %s", event.ID)
+        return nil
+    })
+    
+    // Routes
+    http.HandleFunc("/", webhookDemoHandler)
+    http.HandleFunc("/webhook", processor.ProcessWebhook)
+    http.HandleFunc("/send-test-webhook", sendTestWebhook)
+    
+    fmt.Println("=== HTTP Webhook Handling Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Webhook signature validation")
+    fmt.Println("• Multi-source webhook handling")
+    fmt.Println("• Event type routing")
+    fmt.Println("• Security best practices")
+    fmt.Println("• Payload processing")
+    fmt.Println("• Error handling and logging")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - Webhook demo page")
+    fmt.Println("  POST /webhook - Webhook receiver")
+    fmt.Println("  GET  /send-test-webhook?type=X - Send test webhook")
+    fmt.Println()
+    fmt.Println("Supported webhook types:")
+    fmt.Println("• github-push - GitHub push events")
+    fmt.Println("• payment - Payment processing events")
+    fmt.Println("• order - E-commerce order events")
+    fmt.Println("• user - User management events")
+    fmt.Println("• test - Generic test events")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This webhook handling example demonstrates comprehensive event processing  
+including signature validation, multi-source handling, and security best  
+practices. Webhooks are essential for building event-driven architectures  
+and real-time integrations between services.
+
+## HTTP API versioning strategies
+
+API versioning allows you to evolve your API while maintaining backward  
+compatibility. This example demonstrates different versioning approaches  
+and migration strategies for HTTP APIs.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type User struct {
+    ID        int       `json:"id"`
+    Name      string    `json:"name"`
+    Email     string    `json:"email"`
+    CreatedAt time.Time `json:"created_at"`
+    // V2 fields
+    FirstName string `json:"first_name,omitempty"`
+    LastName  string `json:"last_name,omitempty"`
+    Avatar    string `json:"avatar,omitempty"`
+    // V3 fields
+    Profile   *UserProfile `json:"profile,omitempty"`
+    Settings  *UserSettings `json:"settings,omitempty"`
+}
+
+type UserProfile struct {
+    Bio       string   `json:"bio"`
+    Location  string   `json:"location"`
+    Website   string   `json:"website"`
+    Skills    []string `json:"skills"`
+}
+
+type UserSettings struct {
+    Theme         string `json:"theme"`
+    Language      string `json:"language"`
+    Notifications bool   `json:"notifications"`
+    Privacy       string `json:"privacy"`
+}
+
+type APIVersion struct {
+    Major int
+    Minor int
+}
+
+func (v APIVersion) String() string {
+    return fmt.Sprintf("v%d.%d", v.Major, v.Minor)
+}
+
+func parseVersion(versionStr string) APIVersion {
+    versionStr = strings.TrimPrefix(versionStr, "v")
+    parts := strings.Split(versionStr, ".")
+    
+    major := 1
+    minor := 0
+    
+    if len(parts) >= 1 {
+        if m, err := strconv.Atoi(parts[0]); err == nil {
+            major = m
+        }
+    }
+    
+    if len(parts) >= 2 {
+        if m, err := strconv.Atoi(parts[1]); err == nil {
+            minor = m
+        }
+    }
+    
+    return APIVersion{Major: major, Minor: minor}
+}
+
+func getVersionFromRequest(r *http.Request) APIVersion {
+    // Method 1: URL path versioning
+    if strings.HasPrefix(r.URL.Path, "/api/v") {
+        pathParts := strings.Split(r.URL.Path, "/")
+        if len(pathParts) >= 3 {
+            return parseVersion(pathParts[2])
+        }
+    }
+    
+    // Method 2: Header versioning
+    if version := r.Header.Get("API-Version"); version != "" {
+        return parseVersion(version)
+    }
+    
+    // Method 3: Accept header versioning
+    accept := r.Header.Get("Accept")
+    if strings.Contains(accept, "application/vnd.api") {
+        if strings.Contains(accept, "version=") {
+            parts := strings.Split(accept, "version=")
+            if len(parts) > 1 {
+                versionPart := strings.Split(parts[1], ",")[0]
+                return parseVersion(versionPart)
+            }
+        }
+    }
+    
+    // Method 4: Query parameter versioning
+    if version := r.URL.Query().Get("version"); version != "" {
+        return parseVersion(version)
+    }
+    
+    // Default to v1.0
+    return APIVersion{Major: 1, Minor: 0}
+}
+
+func transformUserForVersion(user User, version APIVersion) interface{} {
+    switch version.Major {
+    case 1:
+        // V1: Basic user information
+        return map[string]interface{}{
+            "id":         user.ID,
+            "name":       user.Name,
+            "email":      user.Email,
+            "created_at": user.CreatedAt.Format(time.RFC3339),
+        }
+        
+    case 2:
+        // V2: Split name into first_name and last_name, add avatar
+        v2User := map[string]interface{}{
+            "id":         user.ID,
+            "email":      user.Email,
+            "created_at": user.CreatedAt.Format(time.RFC3339),
+        }
+        
+        if user.FirstName != "" && user.LastName != "" {
+            v2User["first_name"] = user.FirstName
+            v2User["last_name"] = user.LastName
+        } else {
+            // Split name for backwards compatibility
+            nameParts := strings.SplitN(user.Name, " ", 2)
+            v2User["first_name"] = nameParts[0]
+            if len(nameParts) > 1 {
+                v2User["last_name"] = nameParts[1]
+            }
+        }
+        
+        if user.Avatar != "" {
+            v2User["avatar"] = user.Avatar
+        }
+        
+        return v2User
+        
+    case 3:
+        // V3: Full user object with profile and settings
+        return user
+        
+    default:
+        // Unknown version, return latest
+        return user
+    }
+}
+
+func createSampleUsers() []User {
+    return []User{
+        {
+            ID:        1,
+            Name:      "Alice Johnson",
+            Email:     "alice@example.com",
+            CreatedAt: time.Now().Add(-30 * 24 * time.Hour),
+            FirstName: "Alice",
+            LastName:  "Johnson",
+            Avatar:    "https://example.com/avatars/alice.jpg",
+            Profile: &UserProfile{
+                Bio:      "Software engineer passionate about Go",
+                Location: "San Francisco, CA",
+                Website:  "https://alice.dev",
+                Skills:   []string{"Go", "Python", "JavaScript", "React"},
+            },
+            Settings: &UserSettings{
+                Theme:         "dark",
+                Language:      "en",
+                Notifications: true,
+                Privacy:       "public",
+            },
+        },
+        {
+            ID:        2,
+            Name:      "Bob Smith",
+            Email:     "bob@example.com",
+            CreatedAt: time.Now().Add(-15 * 24 * time.Hour),
+            FirstName: "Bob",
+            LastName:  "Smith",
+            Avatar:    "https://example.com/avatars/bob.jpg",
+            Profile: &UserProfile{
+                Bio:      "DevOps engineer and cloud architect",
+                Location: "New York, NY",
+                Website:  "https://bobsmith.io",
+                Skills:   []string{"Kubernetes", "AWS", "Docker", "Go"},
+            },
+            Settings: &UserSettings{
+                Theme:         "light",
+                Language:      "en",
+                Notifications: false,
+                Privacy:       "private",
+            },
+        },
+    }
+}
+
+func usersHandler(w http.ResponseWriter, r *http.Request) {
+    version := getVersionFromRequest(r)
+    users := createSampleUsers()
+    
+    // Transform users based on API version
+    transformedUsers := make([]interface{}, len(users))
+    for i, user := range users {
+        transformedUsers[i] = transformUserForVersion(user, version)
+    }
+    
+    response := map[string]interface{}{
+        "message":     "Hello there! User list retrieved",
+        "version":     version.String(),
+        "users":       transformedUsers,
+        "total":       len(users),
+        "timestamp":   time.Now().Format(time.RFC3339),
+    }
+    
+    // Set response headers
+    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set("API-Version", version.String())
+    w.Header().Set("X-API-Deprecated", getDeprecationWarning(version))
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func userHandler(w http.ResponseWriter, r *http.Request) {
+    version := getVersionFromRequest(r)
+    
+    // Extract user ID from path
+    path := strings.TrimPrefix(r.URL.Path, "/api/")
+    path = strings.TrimPrefix(path, version.String()+"/")
+    path = strings.TrimPrefix(path, "users/")
+    
+    userID, err := strconv.Atoi(path)
+    if err != nil {
+        http.Error(w, "Invalid user ID", http.StatusBadRequest)
+        return
+    }
+    
+    users := createSampleUsers()
+    var user *User
+    for _, u := range users {
+        if u.ID == userID {
+            user = &u
+            break
+        }
+    }
+    
+    if user == nil {
+        http.Error(w, "User not found", http.StatusNotFound)
+        return
+    }
+    
+    transformedUser := transformUserForVersion(*user, version)
+    
+    response := map[string]interface{}{
+        "message":   "Hello there! User details retrieved",
+        "version":   version.String(),
+        "user":      transformedUser,
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.Header().Set("API-Version", version.String())
+    w.Header().Set("X-API-Deprecated", getDeprecationWarning(version))
+    
+    json.NewEncoder(w).Encode(response)
+}
+
+func getDeprecationWarning(version APIVersion) string {
+    if version.Major == 1 {
+        return "API v1 is deprecated. Please migrate to v2 or v3."
+    }
+    if version.Major == 2 && version.Minor == 0 {
+        return "API v2.0 will be deprecated in 6 months. Consider upgrading to v3."
+    }
+    return ""
+}
+
+func versionInfoHandler(w http.ResponseWriter, r *http.Request) {
+    currentVersion := getVersionFromRequest(r)
+    
+    versionInfo := map[string]interface{}{
+        "message":         "API version information",
+        "current_version": currentVersion.String(),
+        "supported_versions": []map[string]interface{}{
+            {
+                "version":     "v1.0",
+                "status":      "deprecated",
+                "sunset_date": "2024-12-31",
+                "description": "Original API version with basic user fields",
+            },
+            {
+                "version":     "v2.0",
+                "status":      "stable",
+                "sunset_date": "2025-06-30",
+                "description": "Enhanced API with split name fields and avatar support",
+            },
+            {
+                "version":     "v3.0",
+                "status":      "current",
+                "sunset_date": null,
+                "description": "Latest API with full user profiles and settings",
+            },
+        },
+        "versioning_methods": []string{
+            "URL path: /api/v2/users",
+            "Header: API-Version: v2.0",
+            "Accept: application/vnd.api+json;version=2.0",
+            "Query: /api/users?version=v2.0",
+        },
+        "migration_guide": "https://api.example.com/docs/migration",
+        "timestamp":       time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(versionInfo)
+}
+
+func migrationHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>API Migration Guide</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; max-width: 1200px; }
+            .version-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            .deprecated { border-left: 4px solid #dc3545; }
+            .stable { border-left: 4px solid #ffc107; }
+            .current { border-left: 4px solid #28a745; }
+            table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+            th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+            th { background: #f8f9fa; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
+            .breaking-change { background: #fff3cd; padding: 10px; border-radius: 3px; margin: 10px 0; }
+        </style>
+    </head>
+    <body>
+        <h1>API Versioning Migration Guide</h1>
+        <p>Hello there! This guide helps you migrate between API versions.</p>
+        
+        <div class="version-section deprecated">
+            <h2>API v1.0 (Deprecated)</h2>
+            <p><strong>Status:</strong> Deprecated | <strong>Sunset:</strong> December 31, 2024</p>
+            <p>The original API version with basic user information.</p>
+            
+            <h3>Response Format:</h3>
+            <pre>
+{
+  "id": 1,
+  "name": "Alice Johnson",
+  "email": "alice@example.com",
+  "created_at": "2023-12-01T10:00:00Z"
+}
+            </pre>
+        </div>
+        
+        <div class="version-section stable">
+            <h2>API v2.0 (Stable)</h2>
+            <p><strong>Status:</strong> Stable | <strong>Sunset:</strong> June 30, 2025</p>
+            <p>Enhanced API with improved name handling and avatar support.</p>
+            
+            <h3>Breaking Changes:</h3>
+            <div class="breaking-change">
+                <strong>Name Field Split:</strong> The <code>name</code> field has been split into <code>first_name</code> and <code>last_name</code> fields.
+            </div>
+            
+            <h3>Response Format:</h3>
+            <pre>
+{
+  "id": 1,
+  "first_name": "Alice",
+  "last_name": "Johnson",
+  "email": "alice@example.com",
+  "avatar": "https://example.com/avatars/alice.jpg",
+  "created_at": "2023-12-01T10:00:00Z"
+}
+            </pre>
+        </div>
+        
+        <div class="version-section current">
+            <h2>API v3.0 (Current)</h2>
+            <p><strong>Status:</strong> Current | <strong>Sunset:</strong> None</p>
+            <p>Latest API with full user profiles and settings.</p>
+            
+            <h3>New Features:</h3>
+            <ul>
+                <li>User profiles with bio, location, and skills</li>
+                <li>User settings for theme and preferences</li>
+                <li>Enhanced data structure</li>
+                <li>Better error handling</li>
+            </ul>
+            
+            <h3>Response Format:</h3>
+            <pre>
+{
+  "id": 1,
+  "name": "Alice Johnson",
+  "first_name": "Alice",
+  "last_name": "Johnson",
+  "email": "alice@example.com",
+  "avatar": "https://example.com/avatars/alice.jpg",
+  "created_at": "2023-12-01T10:00:00Z",
+  "profile": {
+    "bio": "Software engineer passionate about Go",
+    "location": "San Francisco, CA",
+    "website": "https://alice.dev",
+    "skills": ["Go", "Python", "JavaScript", "React"]
+  },
+  "settings": {
+    "theme": "dark",
+    "language": "en",
+    "notifications": true,
+    "privacy": "public"
+  }
+}
+            </pre>
+        </div>
+        
+        <h2>Versioning Methods</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Example</th>
+                    <th>Pros</th>
+                    <th>Cons</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>URL Path</td>
+                    <td><code>/api/v2/users</code></td>
+                    <td>Clear, cacheable</td>
+                    <td>URL pollution</td>
+                </tr>
+                <tr>
+                    <td>Header</td>
+                    <td><code>API-Version: v2.0</code></td>
+                    <td>Clean URLs</td>
+                    <td>Less visible</td>
+                </tr>
+                <tr>
+                    <td>Accept Header</td>
+                    <td><code>application/vnd.api+json;version=2.0</code></td>
+                    <td>HTTP standard</td>
+                    <td>Complex</td>
+                </tr>
+                <tr>
+                    <td>Query Parameter</td>
+                    <td><code>/api/users?version=v2.0</code></td>
+                    <td>Simple</td>
+                    <td>Can be ignored</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <h2>Migration Checklist</h2>
+        <h3>V1 → V2 Migration:</h3>
+        <ul>
+            <li>☐ Update client to handle split name fields</li>
+            <li>☐ Add avatar field handling</li>
+            <li>☐ Update API version in requests</li>
+            <li>☐ Test with new response format</li>
+            <li>☐ Update documentation</li>
+        </ul>
+        
+        <h3>V2 → V3 Migration:</h3>
+        <ul>
+            <li>☐ Add profile object handling</li>
+            <li>☐ Add settings object handling</li>
+            <li>☐ Update API version in requests</li>
+            <li>☐ Handle new nested data structure</li>
+            <li>☐ Update error handling for new format</li>
+        </ul>
+        
+        <h2>Test API Versions</h2>
+        <p>Try different versioning methods:</p>
+        <ul>
+            <li><a href="/api/v1/users" target="_blank">V1 Users (URL path)</a></li>
+            <li><a href="/api/v2/users" target="_blank">V2 Users (URL path)</a></li>
+            <li><a href="/api/v3/users" target="_blank">V3 Users (URL path)</a></li>
+            <li><a href="/api/users?version=v2.0" target="_blank">V2 Users (Query param)</a></li>
+        </ul>
+    </body>
+    </html>`)
+}
+
+func apiVersionDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>API Versioning Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 400px; }
+            select, input { margin: 5px; padding: 5px; }
+        </style>
+    </head>
+    <body>
+        <h1>API Versioning Demo</h1>
+        <p>Hello there! This demonstrates different API versioning strategies.</p>
+        
+        <div class="demo-section">
+            <h2>Test API Versions</h2>
+            <p>Select version and method to test:</p>
+            <select id="version">
+                <option value="v1.0">v1.0 (Deprecated)</option>
+                <option value="v2.0" selected>v2.0 (Stable)</option>
+                <option value="v3.0">v3.0 (Current)</option>
+            </select>
+            
+            <select id="method">
+                <option value="path">URL Path</option>
+                <option value="header">Header</option>
+                <option value="accept">Accept Header</option>
+                <option value="query">Query Parameter</option>
+            </select>
+            
+            <button onclick="testVersion()">Test API Version</button>
+            <button onclick="testSpecificUser()">Test User Details</button>
+            <div id="version-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Version Information</h2>
+            <button onclick="getVersionInfo()">Get Version Info</button>
+            <button onclick="showMigrationGuide()">Migration Guide</button>
+            <div id="info-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Comparison Tool</h2>
+            <button onclick="compareVersions()">Compare All Versions</button>
+            <div id="comparison-result" class="result"></div>
+        </div>
+        
+        <script>
+        function testVersion() {
+            const version = document.getElementById('version').value;
+            const method = document.getElementById('method').value;
+            
+            let url = '/api/users';
+            let headers = { 'Content-Type': 'application/json' };
+            
+            switch (method) {
+                case 'path':
+                    url = '/api/' + version + '/users';
+                    break;
+                case 'header':
+                    headers['API-Version'] = version;
+                    break;
+                case 'accept':
+                    headers['Accept'] = 'application/vnd.api+json;version=' + version;
+                    break;
+                case 'query':
+                    url = '/api/users?version=' + version;
+                    break;
+            }
+            
+            document.getElementById('version-result').innerHTML = 'Testing ' + version + ' via ' + method + '...';
+            
+            fetch(url, { headers: headers })
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>API ' + version + ' Response (' + method + ')</h4>';
+                html += '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                document.getElementById('version-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('version-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testSpecificUser() {
+            const version = document.getElementById('version').value;
+            const method = document.getElementById('method').value;
+            
+            let url = '/api/users/1';
+            let headers = { 'Content-Type': 'application/json' };
+            
+            switch (method) {
+                case 'path':
+                    url = '/api/' + version + '/users/1';
+                    break;
+                case 'header':
+                    headers['API-Version'] = version;
+                    break;
+                case 'accept':
+                    headers['Accept'] = 'application/vnd.api+json;version=' + version;
+                    break;
+                case 'query':
+                    url = '/api/users/1?version=' + version;
+                    break;
+            }
+            
+            fetch(url, { headers: headers })
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>User Details - API ' + version + '</h4>';
+                html += '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                document.getElementById('version-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('version-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function getVersionInfo() {
+            fetch('/api/version-info')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('info-result').innerHTML = 
+                    '<h4>Version Information</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('info-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function showMigrationGuide() {
+            window.open('/migration-guide', '_blank');
+        }
+        
+        function compareVersions() {
+            document.getElementById('comparison-result').innerHTML = 'Comparing all versions...';
+            
+            const versions = ['v1.0', 'v2.0', 'v3.0'];
+            const promises = versions.map(version => 
+                fetch('/api/' + version + '/users/1').then(r => r.json())
+            );
+            
+            Promise.all(promises).then(results => {
+                let html = '<h4>Version Comparison</h4>';
+                
+                results.forEach((result, index) => {
+                    html += '<h5>' + versions[index] + ':</h5>';
+                    html += '<pre>' + JSON.stringify(result.user, null, 2) + '</pre>';
+                });
+                
+                document.getElementById('comparison-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('comparison-result').innerHTML = 
+                    '<h4 style="color: red;">Comparison Error: ' + error + '</h4>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // API versioning routes
+    http.HandleFunc("/", apiVersionDemoHandler)
+    http.HandleFunc("/migration-guide", migrationHandler)
+    
+    // Version-specific routes (URL path versioning)
+    http.HandleFunc("/api/v1/users", usersHandler)
+    http.HandleFunc("/api/v1/users/", userHandler)
+    http.HandleFunc("/api/v2/users", usersHandler)
+    http.HandleFunc("/api/v2/users/", userHandler)
+    http.HandleFunc("/api/v3/users", usersHandler)
+    http.HandleFunc("/api/v3/users/", userHandler)
+    
+    // Generic routes (use header/query versioning)
+    http.HandleFunc("/api/users", usersHandler)
+    http.HandleFunc("/api/users/", userHandler)
+    
+    // Utility routes
+    http.HandleFunc("/api/version-info", versionInfoHandler)
+    
+    fmt.Println("=== HTTP API Versioning Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Multiple versioning strategies")
+    fmt.Println("• Backward compatibility")
+    fmt.Println("• Version deprecation handling")
+    fmt.Println("• Data transformation between versions")
+    fmt.Println("• Migration guidance")
+    fmt.Println("• Version detection from multiple sources")
+    fmt.Println()
+    fmt.Println("API Versions:")
+    fmt.Println("• v1.0 - Basic user data (deprecated)")
+    fmt.Println("• v2.0 - Enhanced with split names and avatars")
+    fmt.Println("• v3.0 - Full profiles and settings")
+    fmt.Println()
+    fmt.Println("Versioning methods:")
+    fmt.Println("• URL: /api/v2/users")
+    fmt.Println("• Header: API-Version: v2.0")
+    fmt.Println("• Accept: application/vnd.api+json;version=2.0")
+    fmt.Println("• Query: /api/users?version=v2.0")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This API versioning example demonstrates comprehensive strategies for managing  
+API evolution including multiple versioning methods, backward compatibility,  
+deprecation handling, and migration guidance. Proper API versioning is  
+essential for maintaining long-term API stability and client satisfaction.
+
+## HTTP circuit breaker pattern
+
+The circuit breaker pattern prevents cascading failures by automatically  
+stopping requests to failing services. This example demonstrates circuit  
+breaker implementation for HTTP services with state management and recovery.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "sync"
+    "time"
+)
+
+type CircuitState string
+
+const (
+    StateClosed   CircuitState = "closed"
+    StateOpen     CircuitState = "open"
+    StateHalfOpen CircuitState = "half-open"
+)
+
+type CircuitBreaker struct {
+    name             string
+    maxFailures      int
+    timeout          time.Duration
+    resetTimeout     time.Duration
+    state            CircuitState
+    failures         int
+    lastFailureTime  time.Time
+    lastSuccessTime  time.Time
+    nextAttempt      time.Time
+    mu               sync.RWMutex
+    onStateChange    func(name string, from, to CircuitState)
+}
+
+func NewCircuitBreaker(name string, maxFailures int, timeout, resetTimeout time.Duration) *CircuitBreaker {
+    return &CircuitBreaker{
+        name:         name,
+        maxFailures:  maxFailures,
+        timeout:      timeout,
+        resetTimeout: resetTimeout,
+        state:        StateClosed,
+    }
+}
+
+func (cb *CircuitBreaker) Call(fn func() error) error {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+    
+    now := time.Now()
+    
+    // Check if we should transition from open to half-open
+    if cb.state == StateOpen && now.After(cb.nextAttempt) {
+        cb.setState(StateHalfOpen)
+    }
+    
+    // Don't allow calls when circuit is open
+    if cb.state == StateOpen {
+        return fmt.Errorf("circuit breaker %s is open", cb.name)
+    }
+    
+    // Execute the function
+    err := fn()
+    
+    if err != nil {
+        cb.onFailure(now)
+        return err
+    }
+    
+    cb.onSuccess(now)
+    return nil
+}
+
+func (cb *CircuitBreaker) onSuccess(now time.Time) {
+    cb.lastSuccessTime = now
+    
+    if cb.state == StateHalfOpen {
+        // Reset the circuit breaker on successful call in half-open state
+        cb.setState(StateClosed)
+        cb.failures = 0
+    }
+}
+
+func (cb *CircuitBreaker) onFailure(now time.Time) {
+    cb.failures++
+    cb.lastFailureTime = now
+    
+    if cb.failures >= cb.maxFailures {
+        cb.setState(StateOpen)
+        cb.nextAttempt = now.Add(cb.resetTimeout)
+    }
+}
+
+func (cb *CircuitBreaker) setState(newState CircuitState) {
+    if cb.state != newState {
+        oldState := cb.state
+        cb.state = newState
+        
+        log.Printf("Circuit breaker %s: %s -> %s", cb.name, oldState, newState)
+        
+        if cb.onStateChange != nil {
+            cb.onStateChange(cb.name, oldState, newState)
+        }
+    }
+}
+
+func (cb *CircuitBreaker) GetState() map[string]interface{} {
+    cb.mu.RLock()
+    defer cb.mu.RUnlock()
+    
+    return map[string]interface{}{
+        "name":              cb.name,
+        "state":             string(cb.state),
+        "failures":          cb.failures,
+        "max_failures":      cb.maxFailures,
+        "timeout":           cb.timeout.String(),
+        "reset_timeout":     cb.resetTimeout.String(),
+        "last_failure_time": cb.lastFailureTime.Format(time.RFC3339),
+        "last_success_time": cb.lastSuccessTime.Format(time.RFC3339),
+        "next_attempt":      cb.nextAttempt.Format(time.RFC3339),
+    }
+}
+
+type HTTPCircuitBreaker struct {
+    client         *http.Client
+    circuitBreaker *CircuitBreaker
+}
+
+func NewHTTPCircuitBreaker(name string, maxFailures int, timeout, resetTimeout time.Duration) *HTTPCircuitBreaker {
+    return &HTTPCircuitBreaker{
+        client: &http.Client{Timeout: timeout},
+        circuitBreaker: NewCircuitBreaker(name, maxFailures, timeout, resetTimeout),
+    }
+}
+
+func (hcb *HTTPCircuitBreaker) Get(url string) (*http.Response, error) {
+    var resp *http.Response
+    var err error
+    
+    cbErr := hcb.circuitBreaker.Call(func() error {
+        resp, err = hcb.client.Get(url)
+        
+        if err != nil {
+            return err
+        }
+        
+        // Consider 5xx status codes as failures
+        if resp.StatusCode >= 500 {
+            return fmt.Errorf("server error: %d", resp.StatusCode)
+        }
+        
+        return nil
+    })
+    
+    if cbErr != nil {
+        return nil, cbErr
+    }
+    
+    return resp, err
+}
+
+func (hcb *HTTPCircuitBreaker) GetState() map[string]interface{} {
+    return hcb.circuitBreaker.GetState()
+}
+
+// Global circuit breakers for different services
+var (
+    paymentService   *HTTPCircuitBreaker
+    userService      *HTTPCircuitBreaker
+    inventoryService *HTTPCircuitBreaker
+)
+
+func initCircuitBreakers() {
+    // Circuit breaker for payment service (more sensitive)
+    paymentService = NewHTTPCircuitBreaker(
+        "payment-service",
+        3,                  // Max failures
+        5*time.Second,      // Request timeout
+        30*time.Second,     // Reset timeout
+    )
+    
+    // Circuit breaker for user service
+    userService = NewHTTPCircuitBreaker(
+        "user-service",
+        5,                  // Max failures
+        10*time.Second,     // Request timeout
+        20*time.Second,     // Reset timeout
+    )
+    
+    // Circuit breaker for inventory service
+    inventoryService = NewHTTPCircuitBreaker(
+        "inventory-service",
+        4,                  // Max failures
+        8*time.Second,      // Request timeout
+        25*time.Second,     // Reset timeout
+    )
+    
+    // Set up state change notifications
+    paymentService.circuitBreaker.onStateChange = onCircuitBreakerStateChange
+    userService.circuitBreaker.onStateChange = onCircuitBreakerStateChange
+    inventoryService.circuitBreaker.onStateChange = onCircuitBreakerStateChange
+}
+
+func onCircuitBreakerStateChange(name string, from, to CircuitState) {
+    log.Printf("⚡ Circuit breaker state change: %s (%s -> %s)", name, from, to)
+    
+    // In a real application, you might:
+    // - Send alerts to monitoring systems
+    // - Update metrics
+    // - Trigger fallback mechanisms
+    // - Notify operations teams
+}
+
+// Handlers that use circuit breakers
+func orderHandler(w http.ResponseWriter, r *http.Request) {
+    orderID := r.URL.Query().Get("order_id")
+    if orderID == "" {
+        orderID = "order_12345"
+    }
+    
+    // Simulate order processing with multiple service calls
+    var responses []map[string]interface{}
+    
+    // 1. Check inventory
+    inventoryResp, err := inventoryService.Get("https://httpbin.org/status/200")
+    if err != nil {
+        responses = append(responses, map[string]interface{}{
+            "service": "inventory",
+            "status":  "failed",
+            "error":   err.Error(),
+        })
+    } else {
+        inventoryResp.Body.Close()
+        responses = append(responses, map[string]interface{}{
+            "service": "inventory",
+            "status":  "success",
+            "code":    inventoryResp.StatusCode,
+        })
+    }
+    
+    // 2. Process payment
+    paymentResp, err := paymentService.Get("https://httpbin.org/status/200")
+    if err != nil {
+        responses = append(responses, map[string]interface{}{
+            "service": "payment",
+            "status":  "failed",
+            "error":   err.Error(),
+        })
+    } else {
+        paymentResp.Body.Close()
+        responses = append(responses, map[string]interface{}{
+            "service": "payment",
+            "status":  "success",
+            "code":    paymentResp.StatusCode,
+        })
+    }
+    
+    // 3. Update user account
+    userResp, err := userService.Get("https://httpbin.org/status/200")
+    if err != nil {
+        responses = append(responses, map[string]interface{}{
+            "service": "user",
+            "status":  "failed",
+            "error":   err.Error(),
+        })
+    } else {
+        userResp.Body.Close()
+        responses = append(responses, map[string]interface{}{
+            "service": "user",
+            "status":  "success",
+            "code":    userResp.StatusCode,
+        })
+    }
+    
+    // Determine overall order status
+    successCount := 0
+    for _, resp := range responses {
+        if resp["status"] == "success" {
+            successCount++
+        }
+    }
+    
+    orderStatus := "completed"
+    if successCount < len(responses) {
+        orderStatus = "partially_completed"
+    }
+    if successCount == 0 {
+        orderStatus = "failed"
+    }
+    
+    response := map[string]interface{}{
+        "message":        "Hello there! Order processing completed",
+        "order_id":       orderID,
+        "order_status":   orderStatus,
+        "service_calls":  responses,
+        "success_rate":   float64(successCount) / float64(len(responses)) * 100,
+        "timestamp":      time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    if orderStatus == "failed" {
+        w.WriteHeader(http.StatusServiceUnavailable)
+    }
+    json.NewEncoder(w).Encode(response)
+}
+
+func simulateFailureHandler(w http.ResponseWriter, r *http.Request) {
+    service := r.URL.Query().Get("service")
+    statusCode := r.URL.Query().Get("status")
+    
+    if statusCode == "" {
+        statusCode = "500"
+    }
+    
+    var cb *HTTPCircuitBreaker
+    switch service {
+    case "payment":
+        cb = paymentService
+    case "user":
+        cb = userService
+    case "inventory":
+        cb = inventoryService
+    default:
+        http.Error(w, "Unknown service", http.StatusBadRequest)
+        return
+    }
+    
+    // Force a failure by calling a failing endpoint
+    url := fmt.Sprintf("https://httpbin.org/status/%s", statusCode)
+    resp, err := cb.Get(url)
+    
+    result := map[string]interface{}{
+        "message":       "Failure simulation completed",
+        "service":       service,
+        "url":           url,
+        "circuit_state": cb.GetState(),
+        "timestamp":     time.Now().Format(time.RFC3339),
+    }
+    
+    if err != nil {
+        result["error"] = err.Error()
+    } else {
+        result["status_code"] = resp.StatusCode
+        resp.Body.Close()
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(result)
+}
+
+func circuitStatusHandler(w http.ResponseWriter, r *http.Request) {
+    status := map[string]interface{}{
+        "message": "Circuit breaker status",
+        "services": map[string]interface{}{
+            "payment":   paymentService.GetState(),
+            "user":      userService.GetState(),
+            "inventory": inventoryService.GetState(),
+        },
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(status)
+}
+
+func circuitBreakerDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Circuit Breaker Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 300px; }
+            .status-closed { color: #28a745; font-weight: bold; }
+            .status-open { color: #dc3545; font-weight: bold; }
+            .status-half-open { color: #ffc107; font-weight: bold; }
+            .service-card { background: #fff; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #007cba; }
+        </style>
+    </head>
+    <body>
+        <h1>Circuit Breaker Pattern Demo</h1>
+        <p>Hello there! This demonstrates circuit breaker implementation for HTTP services.</p>
+        
+        <div class="demo-section">
+            <h2>Service Calls</h2>
+            <p>Test normal operations that use multiple services:</p>
+            <button onclick="processOrder()">Process Order</button>
+            <button onclick="processMultipleOrders()">Process 10 Orders</button>
+            <div id="order-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Failure Simulation</h2>
+            <p>Simulate failures to trigger circuit breakers:</p>
+            <button onclick="simulateFailure('payment', '500')">Payment Service Failure</button>
+            <button onclick="simulateFailure('user', '503')">User Service Failure</button>
+            <button onclick="simulateFailure('inventory', '500')">Inventory Service Failure</button>
+            <button onclick="simulateFailure('payment', '200')">Payment Service Recovery</button>
+            <div id="failure-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Circuit Breaker Status</h2>
+            <button onclick="getCircuitStatus()">Get Status</button>
+            <button onclick="startStatusMonitoring()">Start Auto-Refresh</button>
+            <button onclick="stopStatusMonitoring()">Stop Auto-Refresh</button>
+            <div id="status-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Circuit Breaker States</h2>
+            <div class="service-card">
+                <h4>Closed State <span class="status-closed">●</span></h4>
+                <p>Normal operation. Requests are passed through. Failures are counted.</p>
+            </div>
+            <div class="service-card">
+                <h4>Open State <span class="status-open">●</span></h4>
+                <p>Circuit is tripped. All requests fail immediately without calling the service.</p>
+            </div>
+            <div class="service-card">
+                <h4>Half-Open State <span class="status-half-open">●</span></h4>
+                <p>Testing phase. Limited requests are allowed to test if service has recovered.</p>
+            </div>
+        </div>
+        
+        <script>
+        let statusInterval = null;
+        
+        function processOrder() {
+            document.getElementById('order-result').innerHTML = 'Processing order...';
+            
+            fetch('/order?order_id=ORD' + Date.now())
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Order Processing Result</h4>';
+                html += '<p>Order Status: <strong>' + data.order_status + '</strong></p>';
+                html += '<p>Success Rate: ' + data.success_rate.toFixed(1) + '%</p>';
+                html += '<h5>Service Calls:</h5>';
+                
+                data.service_calls.forEach(call => {
+                    const statusColor = call.status === 'success' ? 'green' : 'red';
+                    html += '<p style="color: ' + statusColor + ';">';
+                    html += call.service + ': ' + call.status;
+                    if (call.error) {
+                        html += ' (' + call.error + ')';
+                    }
+                    html += '</p>';
+                });
+                
+                document.getElementById('order-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('order-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function processMultipleOrders() {
+            document.getElementById('order-result').innerHTML = 'Processing 10 orders...';
+            
+            const promises = [];
+            for (let i = 0; i < 10; i++) {
+                promises.push(
+                    fetch('/order?order_id=BATCH' + i)
+                    .then(r => r.json())
+                    .catch(e => ({ error: e.message }))
+                );
+            }
+            
+            Promise.all(promises).then(results => {
+                let successCount = 0;
+                let failedCount = 0;
+                let partialCount = 0;
+                
+                results.forEach(result => {
+                    if (result.order_status === 'completed') successCount++;
+                    else if (result.order_status === 'failed') failedCount++;
+                    else partialCount++;
+                });
+                
+                let html = '<h4>Batch Order Processing</h4>';
+                html += '<p>Completed: ' + successCount + '</p>';
+                html += '<p>Partially Completed: ' + partialCount + '</p>';
+                html += '<p>Failed: ' + failedCount + '</p>';
+                
+                document.getElementById('order-result').innerHTML = html;
+                getCircuitStatus(); // Refresh status after batch
+            });
+        }
+        
+        function simulateFailure(service, status) {
+            document.getElementById('failure-result').innerHTML = 'Simulating ' + service + ' failure...';
+            
+            fetch('/simulate-failure?service=' + service + '&status=' + status)
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Failure Simulation Result</h4>';
+                html += '<p>Service: ' + data.service + '</p>';
+                html += '<p>Circuit State: <span class="status-' + data.circuit_state.state + '">' + 
+                        data.circuit_state.state + '</span></p>';
+                html += '<p>Failures: ' + data.circuit_state.failures + '/' + data.circuit_state.max_failures + '</p>';
+                
+                if (data.error) {
+                    html += '<p style="color: red;">Error: ' + data.error + '</p>';
+                }
+                
+                document.getElementById('failure-result').innerHTML = html;
+                getCircuitStatus(); // Refresh status
+            })
+            .catch(error => {
+                document.getElementById('failure-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function getCircuitStatus() {
+            fetch('/circuit-status')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Circuit Breaker Status</h4>';
+                
+                Object.keys(data.services).forEach(serviceName => {
+                    const service = data.services[serviceName];
+                    html += '<div class="service-card">';
+                    html += '<h5>' + service.name + ' <span class="status-' + service.state + '">' + 
+                            service.state + '</span></h5>';
+                    html += '<p>Failures: ' + service.failures + '/' + service.max_failures + '</p>';
+                    html += '<p>Timeout: ' + service.timeout + '</p>';
+                    html += '<p>Reset Timeout: ' + service.reset_timeout + '</p>';
+                    if (service.last_failure_time !== '0001-01-01T00:00:00Z') {
+                        html += '<p>Last Failure: ' + new Date(service.last_failure_time).toLocaleString() + '</p>';
+                    }
+                    html += '</div>';
+                });
+                
+                document.getElementById('status-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('status-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function startStatusMonitoring() {
+            if (statusInterval) return;
+            
+            statusInterval = setInterval(getCircuitStatus, 2000);
+            getCircuitStatus(); // Initial load
+        }
+        
+        function stopStatusMonitoring() {
+            if (statusInterval) {
+                clearInterval(statusInterval);
+                statusInterval = null;
+            }
+        }
+        
+        // Initial status load
+        getCircuitStatus();
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // Initialize circuit breakers
+    initCircuitBreakers()
+    
+    // Routes
+    http.HandleFunc("/", circuitBreakerDemoHandler)
+    http.HandleFunc("/order", orderHandler)
+    http.HandleFunc("/simulate-failure", simulateFailureHandler)
+    http.HandleFunc("/circuit-status", circuitStatusHandler)
+    
+    fmt.Println("=== HTTP Circuit Breaker Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Circuit breaker pattern implementation")
+    fmt.Println("• Automatic failure detection")
+    fmt.Println("• Service degradation handling")
+    fmt.Println("• State transitions (closed/open/half-open)")
+    fmt.Println("• Fallback mechanisms")
+    fmt.Println("• Recovery testing")
+    fmt.Println()
+    fmt.Println("Circuit breakers configured:")
+    fmt.Println("• Payment Service: 3 failures, 30s reset")
+    fmt.Println("• User Service: 5 failures, 20s reset")
+    fmt.Println("• Inventory Service: 4 failures, 25s reset")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET / - Circuit breaker demo")
+    fmt.Println("  GET /order - Process order (uses all services)")
+    fmt.Println("  GET /simulate-failure - Simulate service failures")
+    fmt.Println("  GET /circuit-status - Get circuit breaker status")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This circuit breaker example demonstrates comprehensive failure handling  
+including automatic failure detection, state management, and recovery testing.  
+Circuit breakers are essential for building resilient distributed systems  
+that can gracefully handle service failures and prevent cascading outages.
+
+## HTTP request mocking and testing utilities
+
+Request mocking and testing utilities are essential for unit testing HTTP  
+clients and services. This example demonstrates comprehensive testing  
+patterns including mock servers, request verification, and test utilities.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "net/http/httptest"
+    "strings"
+    "testing"
+    "time"
+)
+
+// MockServer provides a configurable HTTP mock server for testing
+type MockServer struct {
+    server     *httptest.Server
+    responses  map[string]*MockResponse
+    requests   []*RecordedRequest
+    middleware []func(http.Handler) http.Handler
+}
+
+type MockResponse struct {
+    StatusCode int                    `json:"status_code"`
+    Headers    map[string]string      `json:"headers"`
+    Body       interface{}            `json:"body"`
+    Delay      time.Duration          `json:"delay"`
+    Count      int                   `json:"count"` // How many times to use this response
+    Used       int                   `json:"used"`  // How many times it's been used
+}
+
+type RecordedRequest struct {
+    Method    string              `json:"method"`
+    URL       string              `json:"url"`
+    Headers   map[string][]string `json:"headers"`
+    Body      string              `json:"body"`
+    Timestamp time.Time           `json:"timestamp"`
+}
+
+func NewMockServer() *MockServer {
+    ms := &MockServer{
+        responses: make(map[string]*MockResponse),
+        requests:  make([]*RecordedRequest, 0),
+    }
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", ms.handler)
+    
+    // Apply middleware
+    var handler http.Handler = mux
+    for i := len(ms.middleware) - 1; i >= 0; i-- {
+        handler = ms.middleware[i](handler)
+    }
+    
+    ms.server = httptest.NewServer(handler)
+    return ms
+}
+
+func (ms *MockServer) AddResponse(method, path string, response *MockResponse) {
+    key := method + " " + path
+    ms.responses[key] = response
+}
+
+func (ms *MockServer) AddMiddleware(middleware func(http.Handler) http.Handler) {
+    ms.middleware = append(ms.middleware, middleware)
+}
+
+func (ms *MockServer) handler(w http.ResponseWriter, r *http.Request) {
+    // Record the request
+    body, _ := io.ReadAll(r.Body)
+    r.Body = io.NopCloser(bytes.NewReader(body))
+    
+    recordedReq := &RecordedRequest{
+        Method:    r.Method,
+        URL:       r.URL.String(),
+        Headers:   r.Header,
+        Body:      string(body),
+        Timestamp: time.Now(),
+    }
+    ms.requests = append(ms.requests, recordedReq)
+    
+    // Find matching response
+    key := r.Method + " " + r.URL.Path
+    response, exists := ms.responses[key]
+    if !exists {
+        // Try wildcard match
+        wildcardKey := r.Method + " *"
+        response, exists = ms.responses[wildcardKey]
+    }
+    
+    if !exists {
+        http.Error(w, "No mock response configured", http.StatusNotFound)
+        return
+    }
+    
+    // Check if response has been used too many times
+    if response.Count > 0 && response.Used >= response.Count {
+        http.Error(w, "Mock response exhausted", http.StatusGone)
+        return
+    }
+    
+    response.Used++
+    
+    // Add delay if specified
+    if response.Delay > 0 {
+        time.Sleep(response.Delay)
+    }
+    
+    // Set headers
+    for key, value := range response.Headers {
+        w.Header().Set(key, value)
+    }
+    
+    // Set status code
+    w.WriteHeader(response.StatusCode)
+    
+    // Write body
+    switch body := response.Body.(type) {
+    case string:
+        w.Write([]byte(body))
+    case []byte:
+        w.Write(body)
+    default:
+        json.NewEncoder(w).Encode(body)
+    }
+}
+
+func (ms *MockServer) GetRequests() []*RecordedRequest {
+    return ms.requests
+}
+
+func (ms *MockServer) ClearRequests() {
+    ms.requests = make([]*RecordedRequest, 0)
+}
+
+func (ms *MockServer) GetURL() string {
+    return ms.server.URL
+}
+
+func (ms *MockServer) Close() {
+    ms.server.Close()
+}
+
+// HTTPClient wrapper for testing
+type HTTPClient struct {
+    client  *http.Client
+    baseURL string
+}
+
+func NewHTTPClient(baseURL string) *HTTPClient {
+    return &HTTPClient{
+        client:  &http.Client{Timeout: 30 * time.Second},
+        baseURL: baseURL,
+    }
+}
+
+func (c *HTTPClient) Get(path string) (*http.Response, error) {
+    url := c.baseURL + path
+    return c.client.Get(url)
+}
+
+func (c *HTTPClient) Post(path string, body interface{}) (*http.Response, error) {
+    url := c.baseURL + path
+    
+    var bodyReader io.Reader
+    if body != nil {
+        jsonBody, err := json.Marshal(body)
+        if err != nil {
+            return nil, err
+        }
+        bodyReader = bytes.NewReader(jsonBody)
+    }
+    
+    req, err := http.NewRequest("POST", url, bodyReader)
+    if err != nil {
+        return nil, err
+    }
+    
+    req.Header.Set("Content-Type", "application/json")
+    return c.client.Do(req)
+}
+
+// Test utilities
+func AssertStatusCode(t *testing.T, expected, actual int) {
+    if expected != actual {
+        t.Errorf("Expected status code %d, got %d", expected, actual)
+    }
+}
+
+func AssertHeader(t *testing.T, response *http.Response, key, expected string) {
+    actual := response.Header.Get(key)
+    if actual != expected {
+        t.Errorf("Expected header %s to be %q, got %q", key, expected, actual)
+    }
+}
+
+func AssertBodyContains(t *testing.T, response *http.Response, expected string) {
+    body, err := io.ReadAll(response.Body)
+    if err != nil {
+        t.Fatalf("Failed to read response body: %v", err)
+    }
+    
+    bodyStr := string(body)
+    if !strings.Contains(bodyStr, expected) {
+        t.Errorf("Expected response body to contain %q, got %q", expected, bodyStr)
+    }
+}
+
+func AssertRequestCount(t *testing.T, mockServer *MockServer, expected int) {
+    actual := len(mockServer.GetRequests())
+    if actual != expected {
+        t.Errorf("Expected %d requests, got %d", expected, actual)
+    }
+}
+
+func AssertRequestMethod(t *testing.T, request *RecordedRequest, expected string) {
+    if request.Method != expected {
+        t.Errorf("Expected request method %s, got %s", expected, request.Method)
+    }
+}
+
+func AssertRequestPath(t *testing.T, request *RecordedRequest, expected string) {
+    if !strings.Contains(request.URL, expected) {
+        t.Errorf("Expected request URL to contain %s, got %s", expected, request.URL)
+    }
+}
+
+// Example tests demonstrating the testing utilities
+func TestHTTPClientGet(t *testing.T) {
+    // Create mock server
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    // Configure mock response
+    mockServer.AddResponse("GET", "/users", &MockResponse{
+        StatusCode: 200,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body: map[string]interface{}{
+            "message": "Hello there! Mock response",
+            "users": []map[string]interface{}{
+                {"id": 1, "name": "Alice"},
+                {"id": 2, "name": "Bob"},
+            },
+        },
+    })
+    
+    // Create HTTP client
+    client := NewHTTPClient(mockServer.GetURL())
+    
+    // Make request
+    response, err := client.Get("/users")
+    if err != nil {
+        t.Fatalf("Request failed: %v", err)
+    }
+    defer response.Body.Close()
+    
+    // Assertions
+    AssertStatusCode(t, 200, response.StatusCode)
+    AssertHeader(t, response, "Content-Type", "application/json")
+    AssertBodyContains(t, response, "Hello there! Mock response")
+    AssertRequestCount(t, mockServer, 1)
+    
+    requests := mockServer.GetRequests()
+    AssertRequestMethod(t, requests[0], "GET")
+    AssertRequestPath(t, requests[0], "/users")
+}
+
+func TestHTTPClientPost(t *testing.T) {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    // Configure mock response
+    mockServer.AddResponse("POST", "/users", &MockResponse{
+        StatusCode: 201,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body: map[string]interface{}{
+            "message": "User created successfully",
+            "id":      123,
+        },
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    
+    // Prepare request body
+    requestBody := map[string]interface{}{
+        "name":  "Charlie",
+        "email": "charlie@example.com",
+    }
+    
+    response, err := client.Post("/users", requestBody)
+    if err != nil {
+        t.Fatalf("Request failed: %v", err)
+    }
+    defer response.Body.Close()
+    
+    AssertStatusCode(t, 201, response.StatusCode)
+    AssertRequestCount(t, mockServer, 1)
+    
+    requests := mockServer.GetRequests()
+    AssertRequestMethod(t, requests[0], "POST")
+    
+    // Verify request body
+    var receivedBody map[string]interface{}
+    json.Unmarshal([]byte(requests[0].Body), &receivedBody)
+    
+    if receivedBody["name"] != "Charlie" {
+        t.Errorf("Expected name Charlie, got %v", receivedBody["name"])
+    }
+}
+
+func TestErrorHandling(t *testing.T) {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    // Configure error response
+    mockServer.AddResponse("GET", "/error", &MockResponse{
+        StatusCode: 500,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body: map[string]interface{}{
+            "error":   "Internal server error",
+            "message": "Something went wrong",
+        },
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    
+    response, err := client.Get("/error")
+    if err != nil {
+        t.Fatalf("Request failed: %v", err)
+    }
+    defer response.Body.Close()
+    
+    AssertStatusCode(t, 500, response.StatusCode)
+    AssertBodyContains(t, response, "Internal server error")
+}
+
+func TestResponseDelay(t *testing.T) {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    // Configure delayed response
+    mockServer.AddResponse("GET", "/slow", &MockResponse{
+        StatusCode: 200,
+        Headers:    map[string]string{"Content-Type": "text/plain"},
+        Body:       "Delayed response",
+        Delay:      100 * time.Millisecond,
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    
+    start := time.Now()
+    response, err := client.Get("/slow")
+    duration := time.Since(start)
+    
+    if err != nil {
+        t.Fatalf("Request failed: %v", err)
+    }
+    defer response.Body.Close()
+    
+    if duration < 100*time.Millisecond {
+        t.Errorf("Expected delay of at least 100ms, got %v", duration)
+    }
+    
+    AssertStatusCode(t, 200, response.StatusCode)
+}
+
+func TestLimitedResponses(t *testing.T) {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    // Configure response that can only be used twice
+    mockServer.AddResponse("GET", "/limited", &MockResponse{
+        StatusCode: 200,
+        Body:       "Limited response",
+        Count:      2, // Can only be used twice
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    
+    // First request should succeed
+    resp1, err := client.Get("/limited")
+    if err != nil {
+        t.Fatalf("First request failed: %v", err)
+    }
+    resp1.Body.Close()
+    AssertStatusCode(t, 200, resp1.StatusCode)
+    
+    // Second request should succeed
+    resp2, err := client.Get("/limited")
+    if err != nil {
+        t.Fatalf("Second request failed: %v", err)
+    }
+    resp2.Body.Close()
+    AssertStatusCode(t, 200, resp2.StatusCode)
+    
+    // Third request should fail (response exhausted)
+    resp3, err := client.Get("/limited")
+    if err != nil {
+        t.Fatalf("Third request failed: %v", err)
+    }
+    resp3.Body.Close()
+    AssertStatusCode(t, 410, resp3.StatusCode) // Gone
+}
+
+// Demo handlers for the web interface
+func runTestsHandler(w http.ResponseWriter, r *http.Request) {
+    testType := r.URL.Query().Get("type")
+    
+    var results []map[string]interface{}
+    
+    switch testType {
+    case "get":
+        results = append(results, runGetTest())
+    case "post":
+        results = append(results, runPostTest())
+    case "error":
+        results = append(results, runErrorTest())
+    case "delay":
+        results = append(results, runDelayTest())
+    case "limited":
+        results = append(results, runLimitedTest())
+    default:
+        // Run all tests
+        results = append(results, runGetTest())
+        results = append(results, runPostTest())
+        results = append(results, runErrorTest())
+        results = append(results, runDelayTest())
+        results = append(results, runLimitedTest())
+    }
+    
+    response := map[string]interface{}{
+        "message":    "Hello there! Test execution completed",
+        "test_type":  testType,
+        "results":    results,
+        "timestamp":  time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func runGetTest() map[string]interface{} {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    mockServer.AddResponse("GET", "/users", &MockResponse{
+        StatusCode: 200,
+        Headers:    map[string]string{"Content-Type": "application/json"},
+        Body: map[string]interface{}{
+            "message": "Hello there! Mock response",
+            "users":   []string{"Alice", "Bob"},
+        },
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    response, err := client.Get("/users")
+    
+    result := map[string]interface{}{
+        "test_name": "GET Request Test",
+        "success":   err == nil && response.StatusCode == 200,
+    }
+    
+    if response != nil {
+        result["status_code"] = response.StatusCode
+        response.Body.Close()
+    }
+    
+    if err != nil {
+        result["error"] = err.Error()
+    }
+    
+    return result
+}
+
+func runPostTest() map[string]interface{} {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    mockServer.AddResponse("POST", "/users", &MockResponse{
+        StatusCode: 201,
+        Body:       map[string]interface{}{"id": 123, "message": "Created"},
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    requestBody := map[string]string{"name": "Charlie"}
+    response, err := client.Post("/users", requestBody)
+    
+    result := map[string]interface{}{
+        "test_name": "POST Request Test",
+        "success":   err == nil && response.StatusCode == 201,
+    }
+    
+    if response != nil {
+        result["status_code"] = response.StatusCode
+        response.Body.Close()
+    }
+    
+    if err != nil {
+        result["error"] = err.Error()
+    }
+    
+    return result
+}
+
+func runErrorTest() map[string]interface{} {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    mockServer.AddResponse("GET", "/error", &MockResponse{
+        StatusCode: 500,
+        Body:       "Internal Server Error",
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    response, err := client.Get("/error")
+    
+    result := map[string]interface{}{
+        "test_name": "Error Handling Test",
+        "success":   err == nil && response.StatusCode == 500,
+    }
+    
+    if response != nil {
+        result["status_code"] = response.StatusCode
+        response.Body.Close()
+    }
+    
+    if err != nil {
+        result["error"] = err.Error()
+    }
+    
+    return result
+}
+
+func runDelayTest() map[string]interface{} {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    mockServer.AddResponse("GET", "/slow", &MockResponse{
+        StatusCode: 200,
+        Body:       "Delayed response",
+        Delay:      100 * time.Millisecond,
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    start := time.Now()
+    response, err := client.Get("/slow")
+    duration := time.Since(start)
+    
+    result := map[string]interface{}{
+        "test_name":     "Delay Test",
+        "success":       err == nil && duration >= 100*time.Millisecond,
+        "duration_ms":   duration.Milliseconds(),
+        "expected_delay": 100,
+    }
+    
+    if response != nil {
+        result["status_code"] = response.StatusCode
+        response.Body.Close()
+    }
+    
+    if err != nil {
+        result["error"] = err.Error()
+    }
+    
+    return result
+}
+
+func runLimitedTest() map[string]interface{} {
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    mockServer.AddResponse("GET", "/limited", &MockResponse{
+        StatusCode: 200,
+        Body:       "Limited response",
+        Count:      2,
+    })
+    
+    client := NewHTTPClient(mockServer.GetURL())
+    
+    // Make three requests
+    statuses := []int{}
+    for i := 0; i < 3; i++ {
+        response, err := client.Get("/limited")
+        if err == nil {
+            statuses = append(statuses, response.StatusCode)
+            response.Body.Close()
+        }
+    }
+    
+    // Should have 200, 200, 410 (first two succeed, third fails)
+    success := len(statuses) == 3 && 
+              statuses[0] == 200 && 
+              statuses[1] == 200 && 
+              statuses[2] == 410
+    
+    return map[string]interface{}{
+        "test_name":     "Limited Response Test",
+        "success":       success,
+        "status_codes":  statuses,
+        "expected":      []int{200, 200, 410},
+    }
+}
+
+func mockingDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Mocking and Testing Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 400px; }
+            .test-pass { color: #28a745; font-weight: bold; }
+            .test-fail { color: #dc3545; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Mocking and Testing Demo</h1>
+        <p>Hello there! This demonstrates HTTP mocking utilities for testing.</p>
+        
+        <div class="demo-section">
+            <h2>Test Execution</h2>
+            <p>Run different types of tests to see mocking in action:</p>
+            <button onclick="runTest('get')">GET Request Test</button>
+            <button onclick="runTest('post')">POST Request Test</button>
+            <button onclick="runTest('error')">Error Handling Test</button>
+            <button onclick="runTest('delay')">Response Delay Test</button>
+            <button onclick="runTest('limited')">Limited Response Test</button>
+            <button onclick="runTest('all')">Run All Tests</button>
+            <div id="test-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Mock Server Features</h2>
+            <ul>
+                <li><strong>Response Configuration:</strong> Set status codes, headers, and body content</li>
+                <li><strong>Request Recording:</strong> Capture all incoming requests for verification</li>
+                <li><strong>Response Delays:</strong> Simulate network latency and slow services</li>
+                <li><strong>Limited Responses:</strong> Control how many times a response can be used</li>
+                <li><strong>Wildcard Matching:</strong> Use patterns to match multiple endpoints</li>
+                <li><strong>Middleware Support:</strong> Add custom request/response processing</li>
+            </ul>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Testing Best Practices</h2>
+            <pre>
+1. Isolation: Each test should use its own mock server
+2. Verification: Assert both request and response details
+3. Edge Cases: Test error conditions and timeouts
+4. Cleanup: Always close mock servers after tests
+5. Realistic Data: Use representative test data
+6. State Management: Reset mock state between tests
+
+Example Test Structure:
+func TestUserService(t *testing.T) {
+    // Arrange
+    mockServer := NewMockServer()
+    defer mockServer.Close()
+    
+    mockServer.AddResponse("GET", "/users", &MockResponse{
+        StatusCode: 200,
+        Body: []User{{ID: 1, Name: "Alice"}},
+    })
+    
+    client := NewUserService(mockServer.GetURL())
+    
+    // Act
+    users, err := client.GetUsers()
+    
+    // Assert
+    assert.NoError(t, err)
+    assert.Len(t, users, 1)
+    assert.Equal(t, "Alice", users[0].Name)
+    
+    // Verify request was made correctly
+    requests := mockServer.GetRequests()
+    assert.Len(t, requests, 1)
+    assert.Equal(t, "GET", requests[0].Method)
+}
+            </pre>
+        </div>
+        
+        <script>
+        function runTest(type) {
+            document.getElementById('test-result').innerHTML = 'Running ' + (type === 'all' ? 'all tests' : type + ' test') + '...';
+            
+            fetch('/run-tests?type=' + type)
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Test Results</h4>';
+                
+                data.results.forEach(result => {
+                    const statusClass = result.success ? 'test-pass' : 'test-fail';
+                    const statusText = result.success ? 'PASS' : 'FAIL';
+                    
+                    html += '<div style="margin: 10px 0; padding: 10px; background: #fff; border-radius: 3px;">';
+                    html += '<h5>' + result.test_name + ' <span class="' + statusClass + '">' + statusText + '</span></h5>';
+                    
+                    if (result.status_code) {
+                        html += '<p>Status Code: ' + result.status_code + '</p>';
+                    }
+                    
+                    if (result.duration_ms) {
+                        html += '<p>Duration: ' + result.duration_ms + 'ms</p>';
+                    }
+                    
+                    if (result.status_codes) {
+                        html += '<p>Status Codes: [' + result.status_codes.join(', ') + ']</p>';
+                        html += '<p>Expected: [' + result.expected.join(', ') + ']</p>';
+                    }
+                    
+                    if (result.error) {
+                        html += '<p style="color: red;">Error: ' + result.error + '</p>';
+                    }
+                    
+                    html += '</div>';
+                });
+                
+                document.getElementById('test-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('test-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    http.HandleFunc("/", mockingDemoHandler)
+    http.HandleFunc("/run-tests", runTestsHandler)
+    
+    fmt.Println("=== HTTP Mocking and Testing Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Mock HTTP server creation")
+    fmt.Println("• Request recording and verification")
+    fmt.Println("• Response configuration and delays")
+    fmt.Println("• Limited response usage")
+    fmt.Println("• Test utilities and assertions")
+    fmt.Println("• Testing best practices")
+    fmt.Println()
+    fmt.Println("Testing features:")
+    fmt.Println("• Response mocking with custom status/headers/body")
+    fmt.Println("• Request capture and verification")
+    fmt.Println("• Simulated network delays")
+    fmt.Println("• Response count limiting")
+    fmt.Println("• Wildcard path matching")
+    fmt.Println("• Middleware support")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET / - Mocking demo page")
+    fmt.Println("  GET /run-tests?type=X - Run specific test type")
+    
+    // Note: In a real testing scenario, these would be actual unit tests
+    // This demo runs the tests through HTTP handlers for demonstration
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This mocking and testing example demonstrates comprehensive HTTP testing  
+utilities including mock servers, request recording, response configuration,  
+and testing best practices. Proper mocking is essential for reliable unit  
+testing of HTTP clients and services.
+
+## HTTP content filtering and validation
+
+Content filtering and validation ensure data integrity and security by  
+validating incoming requests and filtering responses. This example  
+demonstrates comprehensive validation patterns and content filtering.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "regexp"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type ValidationRule struct {
+    Field    string
+    Required bool
+    MinLen   int
+    MaxLen   int
+    Pattern  *regexp.Regexp
+    Custom   func(interface{}) error
+}
+
+type ValidationError struct {
+    Field   string `json:"field"`
+    Message string `json:"message"`
+    Value   interface{} `json:"value,omitempty"`
+}
+
+type ValidationResult struct {
+    Valid  bool               `json:"valid"`
+    Errors []ValidationError  `json:"errors"`
+}
+
+type ContentFilter struct {
+    rules         []ValidationRule
+    allowedFields map[string]bool
+    blockedWords  []string
+    maxSize       int64
+}
+
+func NewContentFilter() *ContentFilter {
+    return &ContentFilter{
+        rules:         make([]ValidationRule, 0),
+        allowedFields: make(map[string]bool),
+        blockedWords:  make([]string, 0),
+        maxSize:       1024 * 1024, // 1MB default
+    }
+}
+
+func (cf *ContentFilter) AddRule(rule ValidationRule) {
+    cf.rules = append(cf.rules, rule)
+}
+
+func (cf *ContentFilter) SetAllowedFields(fields []string) {
+    cf.allowedFields = make(map[string]bool)
+    for _, field := range fields {
+        cf.allowedFields[field] = true
+    }
+}
+
+func (cf *ContentFilter) AddBlockedWords(words []string) {
+    cf.blockedWords = append(cf.blockedWords, words...)
+}
+
+func (cf *ContentFilter) SetMaxSize(size int64) {
+    cf.maxSize = size
+}
+
+func (cf *ContentFilter) ValidateRequest(r *http.Request) *ValidationResult {
+    result := &ValidationResult{Valid: true, Errors: make([]ValidationError, 0)}
+    
+    // Check content length
+    if r.ContentLength > cf.maxSize {
+        result.Valid = false
+        result.Errors = append(result.Errors, ValidationError{
+            Field:   "content-length",
+            Message: fmt.Sprintf("Request too large: %d bytes (max %d)", r.ContentLength, cf.maxSize),
+            Value:   r.ContentLength,
+        })
+    }
+    
+    // Check content type for JSON requests
+    contentType := r.Header.Get("Content-Type")
+    if r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH" {
+        if !strings.Contains(contentType, "application/json") {
+            result.Valid = false
+            result.Errors = append(result.Errors, ValidationError{
+                Field:   "content-type",
+                Message: "Content-Type must be application/json",
+                Value:   contentType,
+            })
+        }
+    }
+    
+    return result
+}
+
+func (cf *ContentFilter) ValidateData(data map[string]interface{}) *ValidationResult {
+    result := &ValidationResult{Valid: true, Errors: make([]ValidationError, 0)}
+    
+    // Check allowed fields
+    if len(cf.allowedFields) > 0 {
+        for field := range data {
+            if !cf.allowedFields[field] {
+                result.Valid = false
+                result.Errors = append(result.Errors, ValidationError{
+                    Field:   field,
+                    Message: "Field not allowed",
+                    Value:   data[field],
+                })
+            }
+        }
+    }
+    
+    // Apply validation rules
+    for _, rule := range cf.rules {
+        value, exists := data[rule.Field]
+        
+        // Check required fields
+        if rule.Required && !exists {
+            result.Valid = false
+            result.Errors = append(result.Errors, ValidationError{
+                Field:   rule.Field,
+                Message: "Field is required",
+            })
+            continue
+        }
+        
+        if !exists {
+            continue
+        }
+        
+        // Validate string fields
+        if strValue, ok := value.(string); ok {
+            if err := cf.validateString(rule, strValue); err != nil {
+                result.Valid = false
+                result.Errors = append(result.Errors, ValidationError{
+                    Field:   rule.Field,
+                    Message: err.Error(),
+                    Value:   value,
+                })
+            }
+        }
+        
+        // Apply custom validation
+        if rule.Custom != nil {
+            if err := rule.Custom(value); err != nil {
+                result.Valid = false
+                result.Errors = append(result.Errors, ValidationError{
+                    Field:   rule.Field,
+                    Message: err.Error(),
+                    Value:   value,
+                })
+            }
+        }
+    }
+    
+    return result
+}
+
+func (cf *ContentFilter) validateString(rule ValidationRule, value string) error {
+    // Check length constraints
+    if rule.MinLen > 0 && len(value) < rule.MinLen {
+        return fmt.Errorf("minimum length is %d characters", rule.MinLen)
+    }
+    
+    if rule.MaxLen > 0 && len(value) > rule.MaxLen {
+        return fmt.Errorf("maximum length is %d characters", rule.MaxLen)
+    }
+    
+    // Check pattern matching
+    if rule.Pattern != nil && !rule.Pattern.MatchString(value) {
+        return fmt.Errorf("invalid format")
+    }
+    
+    // Check for blocked words
+    lowerValue := strings.ToLower(value)
+    for _, word := range cf.blockedWords {
+        if strings.Contains(lowerValue, strings.ToLower(word)) {
+            return fmt.Errorf("contains prohibited content")
+        }
+    }
+    
+    return nil
+}
+
+func (cf *ContentFilter) FilterResponse(data map[string]interface{}) map[string]interface{} {
+    filtered := make(map[string]interface{})
+    
+    for key, value := range data {
+        // Filter based on allowed fields if configured
+        if len(cf.allowedFields) > 0 && !cf.allowedFields[key] {
+            continue
+        }
+        
+        // Filter string values for blocked words
+        if strValue, ok := value.(string); ok {
+            filtered[key] = cf.filterString(strValue)
+        } else {
+            filtered[key] = value
+        }
+    }
+    
+    return filtered
+}
+
+func (cf *ContentFilter) filterString(value string) string {
+    result := value
+    for _, word := range cf.blockedWords {
+        // Replace blocked words with asterisks
+        pattern := regexp.MustCompile("(?i)" + regexp.QuoteMeta(word))
+        replacement := strings.Repeat("*", len(word))
+        result = pattern.ReplaceAllString(result, replacement)
+    }
+    return result
+}
+
+// Predefined validation functions
+func ValidateEmail(value interface{}) error {
+    email, ok := value.(string)
+    if !ok {
+        return fmt.Errorf("must be a string")
+    }
+    
+    emailPattern := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+    if !emailPattern.MatchString(email) {
+        return fmt.Errorf("invalid email format")
+    }
+    
+    return nil
+}
+
+func ValidateAge(value interface{}) error {
+    age, ok := value.(float64) // JSON numbers are float64
+    if !ok {
+        return fmt.Errorf("must be a number")
+    }
+    
+    if age < 0 || age > 150 {
+        return fmt.Errorf("age must be between 0 and 150")
+    }
+    
+    return nil
+}
+
+func ValidateURL(value interface{}) error {
+    url, ok := value.(string)
+    if !ok {
+        return fmt.Errorf("must be a string")
+    }
+    
+    urlPattern := regexp.MustCompile(`^https?://[^\s/$.?#].[^\s]*$`)
+    if !urlPattern.MatchString(url) {
+        return fmt.Errorf("invalid URL format")
+    }
+    
+    return nil
+}
+
+func ValidatePhoneNumber(value interface{}) error {
+    phone, ok := value.(string)
+    if !ok {
+        return fmt.Errorf("must be a string")
+    }
+    
+    // Simple phone number pattern
+    phonePattern := regexp.MustCompile(`^\+?[\d\s\-\(\)]+$`)
+    if !phonePattern.MatchString(phone) {
+        return fmt.Errorf("invalid phone number format")
+    }
+    
+    return nil
+}
+
+// Middleware for content filtering
+func ContentFilterMiddleware(filter *ContentFilter) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Validate request
+            if validation := filter.ValidateRequest(r); !validation.Valid {
+                w.Header().Set("Content-Type", "application/json")
+                w.WriteHeader(http.StatusBadRequest)
+                json.NewEncoder(w).Encode(map[string]interface{}{
+                    "error":      "Request validation failed",
+                    "validation": validation,
+                })
+                return
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+// Sample handlers demonstrating content filtering
+func createUserHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    // Parse request body
+    var userData map[string]interface{}
+    if err := json.NewDecoder(r.Body).Decode(&userData); err != nil {
+        http.Error(w, "Invalid JSON", http.StatusBadRequest)
+        return
+    }
+    
+    // Create content filter for user creation
+    filter := NewContentFilter()
+    filter.SetAllowedFields([]string{"name", "email", "age", "bio", "website", "phone"})
+    filter.AddBlockedWords([]string{"spam", "hack", "virus", "malware"})
+    
+    // Add validation rules
+    namePattern := regexp.MustCompile(`^[a-zA-Z\s]+$`)
+    filter.AddRule(ValidationRule{
+        Field:    "name",
+        Required: true,
+        MinLen:   2,
+        MaxLen:   50,
+        Pattern:  namePattern,
+    })
+    
+    filter.AddRule(ValidationRule{
+        Field:    "email",
+        Required: true,
+        Custom:   ValidateEmail,
+    })
+    
+    filter.AddRule(ValidationRule{
+        Field:  "age",
+        Custom: ValidateAge,
+    })
+    
+    filter.AddRule(ValidationRule{
+        Field:   "bio",
+        MaxLen:  200,
+    })
+    
+    filter.AddRule(ValidationRule{
+        Field:  "website",
+        Custom: ValidateURL,
+    })
+    
+    filter.AddRule(ValidationRule{
+        Field:  "phone",
+        Custom: ValidatePhoneNumber,
+    })
+    
+    // Validate data
+    validation := filter.ValidateData(userData)
+    if !validation.Valid {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusBadRequest)
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "error":      "Data validation failed",
+            "validation": validation,
+        })
+        return
+    }
+    
+    // Filter and clean data
+    cleanedData := filter.FilterResponse(userData)
+    
+    // Simulate user creation
+    user := map[string]interface{}{
+        "id":         12345,
+        "name":       cleanedData["name"],
+        "email":      cleanedData["email"],
+        "age":        cleanedData["age"],
+        "bio":        cleanedData["bio"],
+        "website":    cleanedData["website"],
+        "phone":      cleanedData["phone"],
+        "created_at": time.Now().Format(time.RFC3339),
+        "status":     "active",
+    }
+    
+    response := map[string]interface{}{
+        "message":   "Hello there! User created successfully",
+        "user":      user,
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusCreated)
+    json.NewEncoder(w).Encode(response)
+}
+
+func searchUsersHandler(w http.ResponseWriter, r *http.Request) {
+    query := r.URL.Query().Get("q")
+    page := r.URL.Query().Get("page")
+    limit := r.URL.Query().Get("limit")
+    
+    // Validate query parameters
+    filter := NewContentFilter()
+    filter.AddBlockedWords([]string{"script", "javascript", "eval", "alert"})
+    
+    // Validate search query
+    if query != "" {
+        queryData := map[string]interface{}{"query": query}
+        filter.AddRule(ValidationRule{
+            Field:   "query",
+            MinLen:  1,
+            MaxLen:  100,
+        })
+        
+        if validation := filter.ValidateData(queryData); !validation.Valid {
+            w.Header().Set("Content-Type", "application/json")
+            w.WriteHeader(http.StatusBadRequest)
+            json.NewEncoder(w).Encode(map[string]interface{}{
+                "error":      "Invalid search query",
+                "validation": validation,
+            })
+            return
+        }
+        
+        // Filter the query
+        query = filter.filterString(query)
+    }
+    
+    // Validate pagination parameters
+    pageNum := 1
+    if page != "" {
+        if p, err := strconv.Atoi(page); err != nil || p < 1 {
+            http.Error(w, "Invalid page number", http.StatusBadRequest)
+            return
+        } else {
+            pageNum = p
+        }
+    }
+    
+    limitNum := 10
+    if limit != "" {
+        if l, err := strconv.Atoi(limit); err != nil || l < 1 || l > 100 {
+            http.Error(w, "Invalid limit (1-100)", http.StatusBadRequest)
+            return
+        } else {
+            limitNum = l
+        }
+    }
+    
+    // Mock search results
+    users := []map[string]interface{}{
+        {"id": 1, "name": "Alice Johnson", "email": "alice@example.com"},
+        {"id": 2, "name": "Bob Smith", "email": "bob@example.com"},
+        {"id": 3, "name": "Charlie Brown", "email": "charlie@example.com"},
+    }
+    
+    // Filter search results if query provided
+    if query != "" {
+        filteredUsers := make([]map[string]interface{}, 0)
+        for _, user := range users {
+            name := user["name"].(string)
+            if strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+                filteredUsers = append(filteredUsers, user)
+            }
+        }
+        users = filteredUsers
+    }
+    
+    response := map[string]interface{}{
+        "message":    "Hello there! Search completed",
+        "query":      query,
+        "users":      users,
+        "page":       pageNum,
+        "limit":      limitNum,
+        "total":      len(users),
+        "timestamp":  time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func validationDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Content Filtering and Validation Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+            textarea { width: 100%; height: 120px; }
+            input { margin: 5px; padding: 5px; width: 200px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 300px; }
+            .error { color: #dc3545; }
+            .success { color: #28a745; }
+        </style>
+    </head>
+    <body>
+        <h1>Content Filtering and Validation Demo</h1>
+        <p>Hello there! This demonstrates content filtering and validation.</p>
+        
+        <div class="demo-section">
+            <h2>User Creation with Validation</h2>
+            <p>Test user creation with various validation rules:</p>
+            <textarea id="user-data" placeholder="Enter JSON data for user creation...">
+{
+  "name": "Alice Johnson",
+  "email": "alice@example.com",
+  "age": 25,
+  "bio": "Software engineer passionate about Go programming",
+  "website": "https://alice.dev",
+  "phone": "+1-555-0123"
+}
+            </textarea>
+            <br>
+            <button onclick="createUser()">Create User</button>
+            <button onclick="testInvalidData()">Test Invalid Data</button>
+            <button onclick="testBlockedWords()">Test Blocked Words</button>
+            <div id="user-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Search with Content Filtering</h2>
+            <p>Test search functionality with query filtering:</p>
+            <input type="text" id="search-query" placeholder="Search query..." value="alice">
+            <input type="number" id="search-page" placeholder="Page" value="1" min="1">
+            <input type="number" id="search-limit" placeholder="Limit" value="10" min="1" max="100">
+            <br>
+            <button onclick="searchUsers()">Search Users</button>
+            <button onclick="testMaliciousQuery()">Test Malicious Query</button>
+            <div id="search-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Validation Rules</h2>
+            <h4>User Creation Rules:</h4>
+            <ul>
+                <li><strong>name:</strong> Required, 2-50 characters, letters and spaces only</li>
+                <li><strong>email:</strong> Required, valid email format</li>
+                <li><strong>age:</strong> Optional, number between 0-150</li>
+                <li><strong>bio:</strong> Optional, max 200 characters</li>
+                <li><strong>website:</strong> Optional, valid URL format</li>
+                <li><strong>phone:</strong> Optional, valid phone number format</li>
+            </ul>
+            
+            <h4>Content Filtering:</h4>
+            <ul>
+                <li>Blocked words are filtered from all text fields</li>
+                <li>Blocked words: spam, hack, virus, malware, script, javascript, eval, alert</li>
+                <li>Maximum request size: 1MB</li>
+                <li>Only allowed fields are accepted</li>
+            </ul>
+        </div>
+        
+        <script>
+        function createUser() {
+            const userData = document.getElementById('user-data').value;
+            
+            try {
+                JSON.parse(userData); // Validate JSON
+            } catch (e) {
+                document.getElementById('user-result').innerHTML = 
+                    '<div class="error">Invalid JSON: ' + e.message + '</div>';
+                return;
+            }
+            
+            document.getElementById('user-result').innerHTML = 'Creating user...';
+            
+            fetch('/create-user', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: userData
+            })
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>User Creation Result</h4>';
+                if (data.error) {
+                    html += '<div class="error">Error: ' + data.error + '</div>';
+                    if (data.validation && data.validation.errors) {
+                        html += '<h5>Validation Errors:</h5><ul>';
+                        data.validation.errors.forEach(error => {
+                            html += '<li class="error">' + error.field + ': ' + error.message + '</li>';
+                        });
+                        html += '</ul>';
+                    }
+                } else {
+                    html += '<div class="success">User created successfully!</div>';
+                    html += '<pre>' + JSON.stringify(data.user, null, 2) + '</pre>';
+                }
+                document.getElementById('user-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('user-result').innerHTML = 
+                    '<div class="error">Request failed: ' + error + '</div>';
+            });
+        }
+        
+        function testInvalidData() {
+            const invalidData = {
+                "name": "A", // Too short
+                "email": "invalid-email", // Invalid format
+                "age": -5, // Invalid age
+                "bio": "A".repeat(250), // Too long
+                "website": "not-a-url", // Invalid URL
+                "phone": "abc123", // Invalid phone
+                "unauthorized_field": "This field is not allowed"
+            };
+            
+            document.getElementById('user-data').value = JSON.stringify(invalidData, null, 2);
+        }
+        
+        function testBlockedWords() {
+            const blockedData = {
+                "name": "Spam User",
+                "email": "user@example.com",
+                "bio": "I love to hack systems and create virus software with malware"
+            };
+            
+            document.getElementById('user-data').value = JSON.stringify(blockedData, null, 2);
+        }
+        
+        function searchUsers() {
+            const query = document.getElementById('search-query').value;
+            const page = document.getElementById('search-page').value;
+            const limit = document.getElementById('search-limit').value;
+            
+            let url = '/search-users?';
+            if (query) url += 'q=' + encodeURIComponent(query) + '&';
+            if (page) url += 'page=' + page + '&';
+            if (limit) url += 'limit=' + limit;
+            
+            document.getElementById('search-result').innerHTML = 'Searching...';
+            
+            fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Search Results</h4>';
+                if (data.error) {
+                    html += '<div class="error">Error: ' + data.error + '</div>';
+                } else {
+                    html += '<p>Query: "' + data.query + '" | Results: ' + data.total + '</p>';
+                    html += '<pre>' + JSON.stringify(data.users, null, 2) + '</pre>';
+                }
+                document.getElementById('search-result').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('search-result').innerHTML = 
+                    '<div class="error">Search failed: ' + error + '</div>';
+            });
+        }
+        
+        function testMaliciousQuery() {
+            document.getElementById('search-query').value = '<script>alert("XSS")</script>';
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    // Create global content filter for requests
+    globalFilter := NewContentFilter()
+    globalFilter.SetMaxSize(1024 * 1024) // 1MB limit
+    
+    http.HandleFunc("/", validationDemoHandler)
+    
+    // Apply content filter middleware to API endpoints
+    http.Handle("/create-user", ContentFilterMiddleware(globalFilter)(http.HandlerFunc(createUserHandler)))
+    http.HandleFunc("/search-users", searchUsersHandler)
+    
+    fmt.Println("=== HTTP Content Filtering and Validation Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Request validation with custom rules")
+    fmt.Println("• Content filtering and blocked word detection")
+    fmt.Println("• Field validation (email, URL, phone, etc.)")
+    fmt.Println("• Query parameter validation")
+    fmt.Println("• Response content filtering")
+    fmt.Println("• Security-focused input sanitization")
+    fmt.Println()
+    fmt.Println("Validation types:")
+    fmt.Println("• Required field validation")
+    fmt.Println("• String length constraints")
+    fmt.Println("• Pattern matching (regex)")
+    fmt.Println("• Custom validation functions")
+    fmt.Println("• Allowed field whitelisting")
+    fmt.Println("• Blocked word filtering")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - Validation demo page")
+    fmt.Println("  POST /create-user - User creation with validation")
+    fmt.Println("  GET  /search-users - Search with content filtering")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This content filtering and validation example demonstrates comprehensive  
+input validation, content filtering, and security measures for HTTP APIs.  
+Proper validation and filtering are essential for data integrity, security,  
+and preventing malicious input from compromising your application.
+
+## HTTP server-sent events (SSE) advanced implementation
+
+Server-sent events enable real-time data streaming from server to clients.  
+This advanced example demonstrates comprehensive SSE implementation with  
+connection management, event types, and broadcasting capabilities.
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strconv"
+    "sync"
+    "time"
+)
+
+type SSEEvent struct {
+    ID    string      `json:"id,omitempty"`
+    Event string      `json:"event,omitempty"`
+    Data  interface{} `json:"data"`
+    Retry int         `json:"retry,omitempty"`
+}
+
+type SSEClient struct {
+    ID       string
+    Channel  chan SSEEvent
+    Request  *http.Request
+    Writer   http.ResponseWriter
+    LastSeen time.Time
+    Topics   map[string]bool
+}
+
+type SSEManager struct {
+    clients    map[string]*SSEClient
+    topics     map[string]map[string]*SSEClient
+    register   chan *SSEClient
+    unregister chan *SSEClient
+    broadcast  chan SSEMessage
+    mu         sync.RWMutex
+}
+
+type SSEMessage struct {
+    Topic string
+    Event SSEEvent
+}
+
+func NewSSEManager() *SSEManager {
+    manager := &SSEManager{
+        clients:    make(map[string]*SSEClient),
+        topics:     make(map[string]map[string]*SSEClient),
+        register:   make(chan *SSEClient),
+        unregister: make(chan *SSEClient),
+        broadcast:  make(chan SSEMessage),
+    }
+    
+    go manager.run()
+    return manager
+}
+
+func (m *SSEManager) run() {
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case client := <-m.register:
+            m.addClient(client)
+            log.Printf("SSE client connected: %s", client.ID)
+            
+            // Send welcome message
+            welcomeEvent := SSEEvent{
+                ID:    fmt.Sprintf("welcome_%d", time.Now().UnixNano()),
+                Event: "welcome",
+                Data: map[string]interface{}{
+                    "message":    "Hello there! Connected to SSE stream",
+                    "client_id":  client.ID,
+                    "server_time": time.Now().Format(time.RFC3339),
+                },
+            }
+            select {
+            case client.Channel <- welcomeEvent:
+            default:
+                close(client.Channel)
+            }
+            
+        case client := <-m.unregister:
+            m.removeClient(client)
+            log.Printf("SSE client disconnected: %s", client.ID)
+            
+        case message := <-m.broadcast:
+            m.broadcastToTopic(message.Topic, message.Event)
+            
+        case <-ticker.C:
+            m.sendHeartbeat()
+            m.cleanupStaleClients()
+        }
+    }
+}
+
+func (m *SSEManager) addClient(client *SSEClient) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    m.clients[client.ID] = client
+    
+    // Subscribe to topics
+    for topic := range client.Topics {
+        if m.topics[topic] == nil {
+            m.topics[topic] = make(map[string]*SSEClient)
+        }
+        m.topics[topic][client.ID] = client
+    }
+}
+
+func (m *SSEManager) removeClient(client *SSEClient) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    
+    delete(m.clients, client.ID)
+    
+    // Unsubscribe from topics
+    for topic := range client.Topics {
+        if clients, exists := m.topics[topic]; exists {
+            delete(clients, client.ID)
+            if len(clients) == 0 {
+                delete(m.topics, topic)
+            }
+        }
+    }
+    
+    close(client.Channel)
+}
+
+func (m *SSEManager) broadcastToTopic(topic string, event SSEEvent) {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    
+    if clients, exists := m.topics[topic]; exists {
+        for _, client := range clients {
+            select {
+            case client.Channel <- event:
+                client.LastSeen = time.Now()
+            default:
+                // Client channel is full, remove client
+                go func(c *SSEClient) {
+                    m.unregister <- c
+                }(client)
+            }
+        }
+    }
+}
+
+func (m *SSEManager) sendHeartbeat() {
+    heartbeatEvent := SSEEvent{
+        ID:    fmt.Sprintf("heartbeat_%d", time.Now().UnixNano()),
+        Event: "heartbeat",
+        Data: map[string]interface{}{
+            "timestamp": time.Now().Format(time.RFC3339),
+            "server_uptime": time.Since(startTime).String(),
+        },
+    }
+    
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    
+    for _, client := range m.clients {
+        select {
+        case client.Channel <- heartbeatEvent:
+            client.LastSeen = time.Now()
+        default:
+            // Client not responding, will be cleaned up
+        }
+    }
+}
+
+func (m *SSEManager) cleanupStaleClients() {
+    cutoff := time.Now().Add(-2 * time.Minute)
+    
+    m.mu.RLock()
+    staleClients := make([]*SSEClient, 0)
+    for _, client := range m.clients {
+        if client.LastSeen.Before(cutoff) {
+            staleClients = append(staleClients, client)
+        }
+    }
+    m.mu.RUnlock()
+    
+    for _, client := range staleClients {
+        m.unregister <- client
+    }
+}
+
+func (m *SSEManager) GetStats() map[string]interface{} {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    
+    topicStats := make(map[string]int)
+    for topic, clients := range m.topics {
+        topicStats[topic] = len(clients)
+    }
+    
+    return map[string]interface{}{
+        "total_clients":    len(m.clients),
+        "total_topics":     len(m.topics),
+        "topic_subscribers": topicStats,
+        "server_uptime":    time.Since(startTime).String(),
+    }
+}
+
+var (
+    sseManager *SSEManager
+    startTime  time.Time
+)
+
+func sseHandler(w http.ResponseWriter, r *http.Request) {
+    // Check if client supports SSE
+    if r.Header.Get("Accept") != "text/event-stream" {
+        http.Error(w, "SSE not supported", http.StatusNotAcceptable)
+        return
+    }
+    
+    // Set SSE headers
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    w.Header().Set("Access-Control-Allow-Origin", "*")
+    w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
+    
+    // Get client preferences
+    topics := make(map[string]bool)
+    if topicParam := r.URL.Query().Get("topics"); topicParam != "" {
+        for _, topic := range []string{topicParam} {
+            topics[topic] = true
+        }
+    } else {
+        // Default topics
+        topics["general"] = true
+        topics["updates"] = true
+    }
+    
+    // Create client
+    clientID := fmt.Sprintf("client_%d", time.Now().UnixNano())
+    client := &SSEClient{
+        ID:       clientID,
+        Channel:  make(chan SSEEvent, 100),
+        Request:  r,
+        Writer:   w,
+        LastSeen: time.Now(),
+        Topics:   topics,
+    }
+    
+    // Register client
+    sseManager.register <- client
+    
+    // Setup cleanup on disconnect
+    defer func() {
+        sseManager.unregister <- client
+    }()
+    
+    // Handle client disconnect
+    notify := r.Context().Done()
+    
+    // Send events to client
+    for {
+        select {
+        case event := <-client.Channel:
+            if err := writeSSEEvent(w, event); err != nil {
+                log.Printf("Error writing SSE event: %v", err)
+                return
+            }
+            
+        case <-notify:
+            log.Printf("SSE client disconnected: %s", clientID)
+            return
+        }
+    }
+}
+
+func writeSSEEvent(w http.ResponseWriter, event SSEEvent) error {
+    if event.ID != "" {
+        fmt.Fprintf(w, "id: %s\n", event.ID)
+    }
+    
+    if event.Event != "" {
+        fmt.Fprintf(w, "event: %s\n", event.Event)
+    }
+    
+    if event.Retry > 0 {
+        fmt.Fprintf(w, "retry: %d\n", event.Retry)
+    }
+    
+    // Handle data serialization
+    var dataStr string
+    switch data := event.Data.(type) {
+    case string:
+        dataStr = data
+    case []byte:
+        dataStr = string(data)
+    default:
+        jsonData, err := json.Marshal(data)
+        if err != nil {
+            return err
+        }
+        dataStr = string(jsonData)
+    }
+    
+    fmt.Fprintf(w, "data: %s\n\n", dataStr)
+    
+    // Flush the data to client
+    if flusher, ok := w.(http.Flusher); ok {
+        flusher.Flush()
+    }
+    
+    return nil
+}
+
+func broadcastHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    var request struct {
+        Topic   string      `json:"topic"`
+        Event   string      `json:"event"`
+        Data    interface{} `json:"data"`
+        Message string      `json:"message"`
+    }
+    
+    if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+        http.Error(w, "Invalid JSON", http.StatusBadRequest)
+        return
+    }
+    
+    if request.Topic == "" {
+        request.Topic = "general"
+    }
+    
+    if request.Event == "" {
+        request.Event = "message"
+    }
+    
+    if request.Data == nil && request.Message != "" {
+        request.Data = map[string]interface{}{
+            "message":   request.Message,
+            "timestamp": time.Now().Format(time.RFC3339),
+        }
+    }
+    
+    event := SSEEvent{
+        ID:    fmt.Sprintf("broadcast_%d", time.Now().UnixNano()),
+        Event: request.Event,
+        Data:  request.Data,
+    }
+    
+    message := SSEMessage{
+        Topic: request.Topic,
+        Event: event,
+    }
+    
+    sseManager.broadcast <- message
+    
+    response := map[string]interface{}{
+        "message":    "Hello there! Event broadcasted successfully",
+        "topic":      request.Topic,
+        "event_type": request.Event,
+        "event_id":   event.ID,
+        "timestamp":  time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func sseStatsHandler(w http.ResponseWriter, r *http.Request) {
+    stats := sseManager.GetStats()
+    stats["message"] = "SSE server statistics"
+    stats["timestamp"] = time.Now().Format(time.RFC3339)
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(stats)
+}
+
+// Simulate real-time events
+func startEventGenerators() {
+    // Stock price updates
+    go func() {
+        ticker := time.NewTicker(5 * time.Second)
+        defer ticker.Stop()
+        
+        stocks := []string{"AAPL", "GOOGL", "MSFT", "AMZN", "TSLA"}
+        
+        for range ticker.C {
+            stock := stocks[time.Now().Unix()%int64(len(stocks))]
+            price := 100 + float64(time.Now().Unix()%200)
+            change := (float64(time.Now().Unix()%20) - 10) / 10.0
+            
+            event := SSEEvent{
+                ID:    fmt.Sprintf("stock_%d", time.Now().UnixNano()),
+                Event: "stock_update",
+                Data: map[string]interface{}{
+                    "symbol": stock,
+                    "price":  price,
+                    "change": change,
+                    "timestamp": time.Now().Format(time.RFC3339),
+                },
+            }
+            
+            sseManager.broadcast <- SSEMessage{Topic: "stocks", Event: event}
+        }
+    }()
+    
+    // News updates
+    go func() {
+        ticker := time.NewTicker(10 * time.Second)
+        defer ticker.Stop()
+        
+        news := []string{
+            "Go 1.22 released with new features",
+            "HTTP/3 adoption continues to grow",
+            "WebAssembly support improved in latest browsers",
+            "Cloud computing trends for 2024",
+            "New security best practices published",
+        }
+        
+        for range ticker.C {
+            article := news[time.Now().Unix()%int64(len(news))]
+            
+            event := SSEEvent{
+                ID:    fmt.Sprintf("news_%d", time.Now().UnixNano()),
+                Event: "news_update",
+                Data: map[string]interface{}{
+                    "headline": article,
+                    "category": "technology",
+                    "timestamp": time.Now().Format(time.RFC3339),
+                },
+            }
+            
+            sseManager.broadcast <- SSEMessage{Topic: "news", Event: event}
+        }
+    }()
+    
+    // System metrics
+    go func() {
+        ticker := time.NewTicker(3 * time.Second)
+        defer ticker.Stop()
+        
+        for range ticker.C {
+            event := SSEEvent{
+                ID:    fmt.Sprintf("metrics_%d", time.Now().UnixNano()),
+                Event: "system_metrics",
+                Data: map[string]interface{}{
+                    "cpu_usage":    float64(time.Now().Unix()%100),
+                    "memory_usage": float64(time.Now().Unix()%100),
+                    "connections":  len(sseManager.clients),
+                    "timestamp":    time.Now().Format(time.RFC3339),
+                },
+            }
+            
+            sseManager.broadcast <- SSEMessage{Topic: "metrics", Event: event}
+        }
+    }()
+}
+
+func sseDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Advanced Server-Sent Events Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            .events-container { height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background: white; }
+            .event-item { margin: 5px 0; padding: 8px; border-radius: 3px; }
+            .event-welcome { background: #d4edda; }
+            .event-heartbeat { background: #f8f9fa; }
+            .event-stock_update { background: #fff3cd; }
+            .event-news_update { background: #d1ecf1; }
+            .event-system_metrics { background: #e2e3e5; }
+            .event-message { background: #d1e7dd; }
+            button { margin: 5px; padding: 10px 15px; }
+            input, select { margin: 5px; padding: 5px; }
+            .status-connected { color: #28a745; font-weight: bold; }
+            .status-disconnected { color: #dc3545; font-weight: bold; }
+            .stats { background: #fff; padding: 10px; border-radius: 3px; margin: 10px 0; }
+        </style>
+    </head>
+    <body>
+        <h1>Advanced Server-Sent Events Demo</h1>
+        <p>Hello there! This demonstrates real-time SSE with multiple event types.</p>
+        
+        <div class="demo-section">
+            <h2>Connection Control</h2>
+            <label>Topics: 
+                <select id="topics">
+                    <option value="general">General</option>
+                    <option value="stocks">Stock Updates</option>
+                    <option value="news">News Updates</option>
+                    <option value="metrics">System Metrics</option>
+                </select>
+            </label>
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+            <button onclick="clearEvents()">Clear Events</button>
+            <span id="connection-status" class="status-disconnected">Disconnected</span>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Broadcast Message</h2>
+            <input type="text" id="broadcast-topic" placeholder="Topic" value="general">
+            <input type="text" id="broadcast-event" placeholder="Event type" value="message">
+            <input type="text" id="broadcast-message" placeholder="Message" value="Hello everyone!">
+            <button onclick="broadcastMessage()">Send Broadcast</button>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Server Statistics</h2>
+            <button onclick="getStats()">Get Stats</button>
+            <button onclick="startStatsPolling()">Start Auto-Update</button>
+            <button onclick="stopStatsPolling()">Stop Auto-Update</button>
+            <div id="stats-display" class="stats">Click "Get Stats" to load...</div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Real-time Events</h2>
+            <div id="events" class="events-container">
+                <p>Connect to start receiving events...</p>
+            </div>
+        </div>
+        
+        <script>
+        let eventSource = null;
+        let statsInterval = null;
+        
+        function connect() {
+            if (eventSource) {
+                eventSource.close();
+            }
+            
+            const topic = document.getElementById('topics').value;
+            eventSource = new EventSource('/sse?topics=' + topic);
+            
+            eventSource.onopen = function() {
+                document.getElementById('connection-status').textContent = 'Connected';
+                document.getElementById('connection-status').className = 'status-connected';
+                addEvent('system', 'Connected to SSE stream for topic: ' + topic, 'info');
+            };
+            
+            eventSource.onerror = function() {
+                document.getElementById('connection-status').textContent = 'Connection Error';
+                document.getElementById('connection-status').className = 'status-disconnected';
+                addEvent('system', 'Connection error occurred', 'error');
+            };
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    addEvent('message', data, 'message');
+                } catch (e) {
+                    addEvent('message', event.data, 'message');
+                }
+            };
+            
+            // Specific event handlers
+            eventSource.addEventListener('welcome', function(event) {
+                const data = JSON.parse(event.data);
+                addEvent('welcome', data, 'welcome');
+            });
+            
+            eventSource.addEventListener('heartbeat', function(event) {
+                const data = JSON.parse(event.data);
+                addEvent('heartbeat', 'Heartbeat: ' + data.timestamp, 'heartbeat');
+            });
+            
+            eventSource.addEventListener('stock_update', function(event) {
+                const data = JSON.parse(event.data);
+                addEvent('stock_update', 
+                        data.symbol + ': $' + data.price + ' (' + 
+                        (data.change >= 0 ? '+' : '') + data.change + ')', 'stock_update');
+            });
+            
+            eventSource.addEventListener('news_update', function(event) {
+                const data = JSON.parse(event.data);
+                addEvent('news_update', data.headline, 'news_update');
+            });
+            
+            eventSource.addEventListener('system_metrics', function(event) {
+                const data = JSON.parse(event.data);
+                addEvent('system_metrics', 
+                        'CPU: ' + data.cpu_usage + '% | Memory: ' + data.memory_usage + '% | Connections: ' + data.connections, 
+                        'system_metrics');
+            });
+        }
+        
+        function disconnect() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            document.getElementById('connection-status').textContent = 'Disconnected';
+            document.getElementById('connection-status').className = 'status-disconnected';
+            addEvent('system', 'Disconnected from SSE stream', 'info');
+        }
+        
+        function addEvent(type, data, eventClass) {
+            const eventsContainer = document.getElementById('events');
+            const eventDiv = document.createElement('div');
+            eventDiv.className = 'event-item event-' + eventClass;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            const content = typeof data === 'string' ? data : JSON.stringify(data);
+            
+            eventDiv.innerHTML = '<strong>[' + timestamp + '] ' + type + ':</strong> ' + content;
+            
+            eventsContainer.appendChild(eventDiv);
+            eventsContainer.scrollTop = eventsContainer.scrollHeight;
+            
+            // Limit events to prevent memory issues
+            while (eventsContainer.children.length > 100) {
+                eventsContainer.removeChild(eventsContainer.firstChild);
+            }
+        }
+        
+        function clearEvents() {
+            document.getElementById('events').innerHTML = '';
+        }
+        
+        function broadcastMessage() {
+            const topic = document.getElementById('broadcast-topic').value;
+            const event = document.getElementById('broadcast-event').value;
+            const message = document.getElementById('broadcast-message').value;
+            
+            fetch('/broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    topic: topic,
+                    event: event,
+                    message: message
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                addEvent('broadcast_sent', 'Message sent to ' + topic + ' topic', 'info');
+            })
+            .catch(error => {
+                addEvent('broadcast_error', 'Failed to send message: ' + error, 'error');
+            });
+        }
+        
+        function getStats() {
+            fetch('/sse-stats')
+            .then(response => response.json())
+            .then(data => {
+                let html = '<h4>Server Statistics</h4>';
+                html += '<p>Total Clients: ' + data.total_clients + '</p>';
+                html += '<p>Total Topics: ' + data.total_topics + '</p>';
+                html += '<p>Server Uptime: ' + data.server_uptime + '</p>';
+                html += '<h5>Topic Subscribers:</h5>';
+                html += '<ul>';
+                for (let topic in data.topic_subscribers) {
+                    html += '<li>' + topic + ': ' + data.topic_subscribers[topic] + ' subscribers</li>';
+                }
+                html += '</ul>';
+                html += '<p><small>Last updated: ' + data.timestamp + '</small></p>';
+                
+                document.getElementById('stats-display').innerHTML = html;
+            })
+            .catch(error => {
+                document.getElementById('stats-display').innerHTML = 
+                    '<p style="color: red;">Error loading stats: ' + error + '</p>';
+            });
+        }
+        
+        function startStatsPolling() {
+            if (statsInterval) return;
+            
+            statsInterval = setInterval(getStats, 5000);
+            getStats(); // Initial load
+        }
+        
+        function stopStatsPolling() {
+            if (statsInterval) {
+                clearInterval(statsInterval);
+                statsInterval = null;
+            }
+        }
+        
+        // Auto-connect on page load
+        window.addEventListener('load', function() {
+            connect();
+        });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {
+            disconnect();
+        });
+        </script>
+    </body>
+    </html>`)
+}
+
+func main() {
+    startTime = time.Now()
+    sseManager = NewSSEManager()
+    
+    // Start background event generators
+    startEventGenerators()
+    
+    http.HandleFunc("/", sseDemoHandler)
+    http.HandleFunc("/sse", sseHandler)
+    http.HandleFunc("/broadcast", broadcastHandler)
+    http.HandleFunc("/sse-stats", sseStatsHandler)
+    
+    fmt.Println("=== Advanced Server-Sent Events Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Real-time event streaming with SSE")
+    fmt.Println("• Multiple event types and topics")
+    fmt.Println("• Client connection management")
+    fmt.Println("• Broadcasting to specific topics")
+    fmt.Println("• Automatic heartbeat and cleanup")
+    fmt.Println("• Connection statistics and monitoring")
+    fmt.Println()
+    fmt.Println("Event types:")
+    fmt.Println("• welcome - Client connection acknowledgment")
+    fmt.Println("• heartbeat - Keep-alive messages")
+    fmt.Println("• stock_update - Simulated stock prices")
+    fmt.Println("• news_update - Simulated news articles")
+    fmt.Println("• system_metrics - Server performance data")
+    fmt.Println("• message - Custom broadcast messages")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - SSE demo interface")
+    fmt.Println("  GET  /sse?topics=X - SSE event stream")
+    fmt.Println("  POST /broadcast - Send broadcast message")
+    fmt.Println("  GET  /sse-stats - Connection statistics")
+    
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+This advanced SSE example demonstrates comprehensive real-time streaming  
+including connection management, topic-based broadcasting, multiple event  
+types, and client lifecycle handling. SSE is perfect for real-time  
+applications like dashboards, notifications, and live data feeds.
+
+## HTTP request/response logging and debugging
+
+Comprehensive logging and debugging are essential for monitoring HTTP  
+applications and troubleshooting issues. This example demonstrates  
+advanced logging patterns, request tracing, and debugging utilities.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "os"
+    "runtime"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type LogLevel int
+
+const (
+    LogLevelDebug LogLevel = iota
+    LogLevelInfo
+    LogLevelWarn
+    LogLevelError
+)
+
+func (l LogLevel) String() string {
+    switch l {
+    case LogLevelDebug:
+        return "DEBUG"
+    case LogLevelInfo:
+        return "INFO"
+    case LogLevelWarn:
+        return "WARN"
+    case LogLevelError:
+        return "ERROR"
+    default:
+        return "UNKNOWN"
+    }
+}
+
+type HTTPLogger struct {
+    logger    *log.Logger
+    level     LogLevel
+    logBodies bool
+    maxBodySize int
+}
+
+func NewHTTPLogger(output io.Writer, level LogLevel) *HTTPLogger {
+    return &HTTPLogger{
+        logger:      log.New(output, "", 0),
+        level:       level,
+        logBodies:   true,
+        maxBodySize: 1024, // 1KB default
+    }
+}
+
+func (hl *HTTPLogger) SetLogBodies(enabled bool) {
+    hl.logBodies = enabled
+}
+
+func (hl *HTTPLogger) SetMaxBodySize(size int) {
+    hl.maxBodySize = size
+}
+
+func (hl *HTTPLogger) log(level LogLevel, format string, args ...interface{}) {
+    if level < hl.level {
+        return
+    }
+    
+    timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+    prefix := fmt.Sprintf("[%s] %s ", timestamp, level.String())
+    
+    message := fmt.Sprintf(format, args...)
+    hl.logger.Printf("%s%s", prefix, message)
+}
+
+func (hl *HTTPLogger) Debug(format string, args ...interface{}) {
+    hl.log(LogLevelDebug, format, args...)
+}
+
+func (hl *HTTPLogger) Info(format string, args ...interface{}) {
+    hl.log(LogLevelInfo, format, args...)
+}
+
+func (hl *HTTPLogger) Warn(format string, args ...interface{}) {
+    hl.log(LogLevelWarn, format, args...)
+}
+
+func (hl *HTTPLogger) Error(format string, args ...interface{}) {
+    hl.log(LogLevelError, format, args...)
+}
+
+type RequestLogEntry struct {
+    Timestamp    time.Time         `json:"timestamp"`
+    Method       string            `json:"method"`
+    URL          string            `json:"url"`
+    Proto        string            `json:"proto"`
+    Headers      map[string]string `json:"headers"`
+    Body         string            `json:"body,omitempty"`
+    RemoteAddr   string            `json:"remote_addr"`
+    UserAgent    string            `json:"user_agent"`
+    RequestSize  int64             `json:"request_size"`
+}
+
+type ResponseLogEntry struct {
+    Timestamp    time.Time         `json:"timestamp"`
+    StatusCode   int               `json:"status_code"`
+    Headers      map[string]string `json:"headers"`
+    Body         string            `json:"body,omitempty"`
+    ResponseSize int64             `json:"response_size"`
+    Duration     time.Duration     `json:"duration"`
+}
+
+type LoggingResponseWriter struct {
+    http.ResponseWriter
+    statusCode   int
+    body         *bytes.Buffer
+    size         int64
+}
+
+func NewLoggingResponseWriter(w http.ResponseWriter) *LoggingResponseWriter {
+    return &LoggingResponseWriter{
+        ResponseWriter: w,
+        statusCode:     200,
+        body:          new(bytes.Buffer),
+    }
+}
+
+func (lrw *LoggingResponseWriter) WriteHeader(statusCode int) {
+    lrw.statusCode = statusCode
+    lrw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (lrw *LoggingResponseWriter) Write(data []byte) (int, error) {
+    size, err := lrw.ResponseWriter.Write(data)
+    lrw.size += int64(size)
+    
+    // Capture response body for logging
+    lrw.body.Write(data)
+    
+    return size, err
+}
+
+func LoggingMiddleware(logger *HTTPLogger) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            start := time.Now()
+            
+            // Log request
+            requestEntry := hl.logRequest(r, logger)
+            
+            // Wrap response writer
+            lrw := NewLoggingResponseWriter(w)
+            
+            // Execute handler
+            next.ServeHTTP(lrw, r)
+            
+            // Log response
+            responseEntry := hl.logResponse(lrw, start, logger)
+            
+            // Log combined entry
+            hl.logCombinedEntry(requestEntry, responseEntry, logger)
+        })
+    }
+}
+
+func (hl *HTTPLogger) logRequest(r *http.Request, logger *HTTPLogger) *RequestLogEntry {
+    headers := make(map[string]string)
+    for name, values := range r.Header {
+        headers[name] = strings.Join(values, ", ")
+    }
+    
+    var body string
+    if hl.logBodies && r.Body != nil {
+        bodyBytes, err := io.ReadAll(r.Body)
+        if err == nil {
+            r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+            
+            if len(bodyBytes) <= hl.maxBodySize {
+                body = string(bodyBytes)
+            } else {
+                body = fmt.Sprintf("[Body too large: %d bytes]", len(bodyBytes))
+            }
+        }
+    }
+    
+    entry := &RequestLogEntry{
+        Timestamp:   time.Now(),
+        Method:      r.Method,
+        URL:         r.URL.String(),
+        Proto:       r.Proto,
+        Headers:     headers,
+        Body:        body,
+        RemoteAddr:  r.RemoteAddr,
+        UserAgent:   r.Header.Get("User-Agent"),
+        RequestSize: r.ContentLength,
+    }
+    
+    logger.Info("REQUEST: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+    if body != "" {
+        logger.Debug("Request body: %s", body)
+    }
+    
+    return entry
+}
+
+func (hl *HTTPLogger) logResponse(lrw *LoggingResponseWriter, start time.Time, logger *HTTPLogger) *ResponseLogEntry {
+    duration := time.Since(start)
+    
+    headers := make(map[string]string)
+    for name, values := range lrw.Header() {
+        headers[name] = strings.Join(values, ", ")
+    }
+    
+    var body string
+    if hl.logBodies && lrw.body.Len() > 0 {
+        if lrw.body.Len() <= hl.maxBodySize {
+            body = lrw.body.String()
+        } else {
+            body = fmt.Sprintf("[Body too large: %d bytes]", lrw.body.Len())
+        }
+    }
+    
+    entry := &ResponseLogEntry{
+        Timestamp:    time.Now(),
+        StatusCode:   lrw.statusCode,
+        Headers:      headers,
+        Body:         body,
+        ResponseSize: lrw.size,
+        Duration:     duration,
+    }
+    
+    statusLevel := LogLevelInfo
+    if lrw.statusCode >= 400 {
+        statusLevel = LogLevelWarn
+    }
+    if lrw.statusCode >= 500 {
+        statusLevel = LogLevelError
+    }
+    
+    logger.log(statusLevel, "RESPONSE: %d (%s) in %v", 
+              lrw.statusCode, http.StatusText(lrw.statusCode), duration)
+    
+    if body != "" {
+        logger.Debug("Response body: %s", body)
+    }
+    
+    return entry
+}
+
+func (hl *HTTPLogger) logCombinedEntry(req *RequestLogEntry, resp *ResponseLogEntry, logger *HTTPLogger) {
+    // Apache Combined Log Format
+    // LogFormat "%h %l %u %t \"%r\" %>s %O \"%{Referer}i\" \"%{User-Agent}i\"" combined
+    
+    timestamp := req.Timestamp.Format("02/Jan/2006:15:04:05 -0700")
+    referer := req.Headers["Referer"]
+    if referer == "" {
+        referer = "-"
+    }
+    
+    userAgent := req.UserAgent
+    if userAgent == "" {
+        userAgent = "-"
+    }
+    
+    combinedLog := fmt.Sprintf(`%s - - [%s] "%s %s %s" %d %d "%s" "%s"`,
+        req.RemoteAddr,
+        timestamp,
+        req.Method,
+        req.URL,
+        req.Proto,
+        resp.StatusCode,
+        resp.ResponseSize,
+        referer,
+        userAgent)
+    
+    logger.Info("COMBINED: %s", combinedLog)
+}
+
+// Debug utilities
+func debugHandler(w http.ResponseWriter, r *http.Request) {
+    debugInfo := map[string]interface{}{
+        "message":   "Hello there! Debug information",
+        "timestamp": time.Now().Format(time.RFC3339),
+        "request": map[string]interface{}{
+            "method":        r.Method,
+            "url":           r.URL.String(),
+            "proto":         r.Proto,
+            "content_length": r.ContentLength,
+            "remote_addr":   r.RemoteAddr,
+            "host":          r.Host,
+            "request_uri":   r.RequestURI,
+        },
+        "headers": r.Header,
+        "query_params": r.URL.Query(),
+        "server_info": map[string]interface{}{
+            "go_version":   runtime.Version(),
+            "num_cpu":      runtime.NumCPU(),
+            "num_goroutine": runtime.NumGoroutine(),
+        },
+    }
+    
+    // Add body if present
+    if r.Body != nil {
+        body, err := io.ReadAll(r.Body)
+        if err == nil {
+            r.Body = io.NopCloser(bytes.NewReader(body))
+            debugInfo["body"] = string(body)
+        }
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(debugInfo)
+}
+
+func slowHandler(w http.ResponseWriter, r *http.Request) {
+    delayParam := r.URL.Query().Get("delay")
+    delay := 1000 // Default 1 second
+    
+    if delayParam != "" {
+        if d, err := strconv.Atoi(delayParam); err == nil {
+            delay = d
+        }
+    }
+    
+    httpLogger.Info("Slow handler: sleeping for %dms", delay)
+    time.Sleep(time.Duration(delay) * time.Millisecond)
+    
+    response := map[string]interface{}{
+        "message":   "Hello there! Slow response completed",
+        "delay_ms":  delay,
+        "timestamp": time.Now().Format(time.RFC3339),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func errorHandler(w http.ResponseWriter, r *http.Request) {
+    errorCode := r.URL.Query().Get("code")
+    code := 500 // Default to internal server error
+    
+    if errorCode != "" {
+        if c, err := strconv.Atoi(errorCode); err == nil {
+            code = c
+        }
+    }
+    
+    httpLogger.Error("Intentional error response: %d", code)
+    
+    errorResponse := map[string]interface{}{
+        "error":      http.StatusText(code),
+        "code":       code,
+        "message":    "Hello there! This is an intentional error for testing",
+        "timestamp":  time.Now().Format(time.RFC3339),
+        "request_id": fmt.Sprintf("req_%d", time.Now().UnixNano()),
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(code)
+    json.NewEncoder(w).Encode(errorResponse)
+}
+
+func loggingDemoHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/html")
+    fmt.Fprint(w, `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>HTTP Logging and Debugging Demo</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .demo-section { background: #f8f9fa; padding: 20px; margin: 20px 0; border-radius: 5px; }
+            button { margin: 5px; padding: 10px 15px; }
+            .result { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 3px; }
+            textarea { width: 100%; height: 120px; }
+            input, select { margin: 5px; padding: 5px; }
+            pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 400px; }
+            .log-debug { color: #6c757d; }
+            .log-info { color: #007cba; }
+            .log-warn { color: #ffc107; }
+            .log-error { color: #dc3545; }
+        </style>
+    </head>
+    <body>
+        <h1>HTTP Logging and Debugging Demo</h1>
+        <p>Hello there! This demonstrates comprehensive HTTP logging and debugging.</p>
+        
+        <div class="demo-section">
+            <h2>Request Testing</h2>
+            <p>Test different types of requests to see logging in action:</p>
+            <button onclick="testDebugInfo()">Get Debug Info</button>
+            <button onclick="testSlowRequest()">Slow Request (2s)</button>
+            <button onclick="testError(400)">Client Error (400)</button>
+            <button onclick="testError(500)">Server Error (500)</button>
+            <div id="request-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>POST Request Testing</h2>
+            <p>Test POST requests with body logging:</p>
+            <textarea id="post-data" placeholder="Enter JSON data...">
+{
+  "name": "Alice Johnson",
+  "email": "alice@example.com",
+  "message": "Hello there! This is a test message."
+}
+            </textarea>
+            <br>
+            <button onclick="sendPostRequest()">Send POST Request</button>
+            <div id="post-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Custom Request Testing</h2>
+            <p>Customize request parameters:</p>
+            <select id="method">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="DELETE">DELETE</option>
+            </select>
+            <input type="text" id="path" placeholder="Path" value="/debug">
+            <input type="text" id="delay" placeholder="Delay (ms)" value="0">
+            <br>
+            <button onclick="sendCustomRequest()">Send Custom Request</button>
+            <div id="custom-result" class="result"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h2>Logging Information</h2>
+            <h4>Log Levels:</h4>
+            <ul>
+                <li><span class="log-debug">DEBUG</span> - Detailed information for debugging</li>
+                <li><span class="log-info">INFO</span> - General information about requests/responses</li>
+                <li><span class="log-warn">WARN</span> - Warning conditions (4xx responses)</li>
+                <li><span class="log-error">ERROR</span> - Error conditions (5xx responses)</li>
+            </ul>
+            
+            <h4>Logged Information:</h4>
+            <ul>
+                <li>Request: Method, URL, headers, body, remote address</li>
+                <li>Response: Status code, headers, body, response time</li>
+                <li>Combined: Apache combined log format</li>
+                <li>Debug: Server info, runtime statistics</li>
+            </ul>
+            
+            <h4>Console Output:</h4>
+            <p>Check the server console to see detailed logging output including:</p>
+            <ul>
+                <li>Request/response details</li>
+                <li>Timing information</li>
+                <li>Body content (if enabled)</li>
+                <li>Apache combined log format</li>
+                <li>Debug and error information</li>
+            </ul>
+        </div>
+        
+        <script>
+        function testDebugInfo() {
+            document.getElementById('request-result').innerHTML = 'Getting debug info...';
+            
+            fetch('/debug', {
+                headers: {
+                    'X-Custom-Header': 'debug-test',
+                    'X-Client-Info': 'Demo Client v1.0'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('request-result').innerHTML = 
+                    '<h4>Debug Information</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('request-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testSlowRequest() {
+            document.getElementById('request-result').innerHTML = 'Sending slow request...';
+            const start = Date.now();
+            
+            fetch('/slow?delay=2000')
+            .then(response => response.json())
+            .then(data => {
+                const duration = Date.now() - start;
+                document.getElementById('request-result').innerHTML = 
+                    '<h4>Slow Request Result</h4>' +
+                    '<p>Duration: ' + duration + 'ms</p>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('request-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function testError(code) {
+            document.getElementById('request-result').innerHTML = 'Testing error response...';
+            
+            fetch('/error?code=' + code)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('request-result').innerHTML = 
+                    '<h4>Error Response (Status: ' + data.code + ')</h4>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('request-result').innerHTML = 
+                    '<h4 style="color: red;">Request Error: ' + error + '</h4>';
+            });
+        }
+        
+        function sendPostRequest() {
+            const data = document.getElementById('post-data').value;
+            
+            try {
+                JSON.parse(data); // Validate JSON
+            } catch (e) {
+                document.getElementById('post-result').innerHTML = 
+                    '<h4 style="color: red;">Invalid JSON: ' + e.message + '</h4>';
+                return;
+            }
+            
+            document.getElementById('post-result').innerHTML = 'Sending POST request...';
+            
+            fetch('/debug', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Request-Type': 'demo-post'
+                },
+                body: data
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('post-result').innerHTML = 
+                    '<h4>POST Request Result</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('post-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        
+        function sendCustomRequest() {
+            const method = document.getElementById('method').value;
+            const path = document.getElementById('path').value;
+            const delay = document.getElementById('delay').value;
+            
+            let url = path;
+            if (delay && parseInt(delay) > 0) {
+                url += (path.includes('?') ? '&' : '?') + 'delay=' + delay;
+            }
+            
+            document.getElementById('custom-result').innerHTML = 'Sending ' + method + ' request...';
+            
+            const options = {
+                method: method,
+                headers: {
+                    'X-Custom-Test': 'true',
+                    'X-Method': method
+                }
+            };
+            
+            if (method === 'POST' || method === 'PUT') {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify({
+                    test: true,
+                    method: method,
+                    timestamp: new Date().toISOString()
+                });
+            }
+            
+            fetch(url, options)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('custom-result').innerHTML = 
+                    '<h4>Custom Request Result</h4><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('custom-result').innerHTML = 
+                    '<h4 style="color: red;">Error: ' + error + '</h4>';
+            });
+        }
+        </script>
+    </body>
+    </html>`)
+}
+
+var httpLogger *HTTPLogger
+
+func main() {
+    // Create HTTP logger
+    httpLogger = NewHTTPLogger(os.Stdout, LogLevelDebug)
+    httpLogger.SetLogBodies(true)
+    httpLogger.SetMaxBodySize(2048)
+    
+    // Routes with logging middleware
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", loggingDemoHandler)
+    mux.HandleFunc("/debug", debugHandler)
+    mux.HandleFunc("/slow", slowHandler)
+    mux.HandleFunc("/error", errorHandler)
+    
+    // Apply logging middleware
+    loggedMux := LoggingMiddleware(httpLogger)(mux)
+    
+    fmt.Println("=== HTTP Logging and Debugging Demo ===")
+    fmt.Println("Server starting on http://localhost:8080")
+    fmt.Println()
+    fmt.Println("Features demonstrated:")
+    fmt.Println("• Comprehensive request/response logging")
+    fmt.Println("• Multiple log levels (DEBUG, INFO, WARN, ERROR)")
+    fmt.Println("• Request and response body logging")
+    fmt.Println("• Apache combined log format")
+    fmt.Println("• Performance timing and metrics")
+    fmt.Println("• Debug information and server stats")
+    fmt.Println()
+    fmt.Println("Logging configuration:")
+    fmt.Println("• Log level: DEBUG (all messages)")
+    fmt.Println("• Body logging: Enabled")
+    fmt.Println("• Max body size: 2048 bytes")
+    fmt.Println("• Output: Console (stdout)")
+    fmt.Println()
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET  / - Logging demo interface")
+    fmt.Println("  GET  /debug - Debug information")
+    fmt.Println("  GET  /slow?delay=N - Slow response (N milliseconds)")
+    fmt.Println("  GET  /error?code=N - Error response (status code N)")
+    fmt.Println()
+    fmt.Println("Watch the console output for detailed logging information!")
+    
+    log.Fatal(http.ListenAndServe(":8080", loggedMux))
+}
+```
+
+This logging and debugging example demonstrates comprehensive HTTP monitoring  
+including request/response logging, multiple log levels, body capture, and  
+debug utilities. Proper logging is essential for monitoring application  
+behavior, troubleshooting issues, and maintaining system health.
