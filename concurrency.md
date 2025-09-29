@@ -2383,3 +2383,3298 @@ func errorHandlingPipeline() {
 Pipeline patterns enable efficient streaming data processing through multiple  
 stages. Each stage runs concurrently, allowing for high throughput and  
 natural parallelization of complex data transformation workflows.  
+
+## Context and cancellation
+
+Context provides a way to carry cancellation signals, deadlines, and values  
+across goroutine boundaries, enabling graceful shutdown and resource cleanup.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func longRunningTask(ctx context.Context, taskID int) {
+    fmt.Printf("Task %d: starting\n", taskID)
+    
+    for i := 1; i <= 10; i++ {
+        // Check for cancellation
+        select {
+        case <-ctx.Done():
+            fmt.Printf("Task %d: cancelled at step %d, reason: %v\n", 
+                      taskID, i, ctx.Err())
+            return
+        default:
+            // Continue with work
+        }
+        
+        fmt.Printf("Task %d: step %d\n", taskID, i)
+        time.Sleep(200 * time.Millisecond)
+    }
+    
+    fmt.Printf("Task %d: completed successfully\n", taskID)
+}
+
+func networkOperation(ctx context.Context, url string) error {
+    fmt.Printf("Starting network operation: %s\n", url)
+    
+    // Simulate network call with context timeout
+    select {
+    case <-time.After(800 * time.Millisecond):
+        fmt.Printf("Network operation completed: %s\n", url)
+        return nil
+    case <-ctx.Done():
+        fmt.Printf("Network operation cancelled: %s, reason: %v\n", url, ctx.Err())
+        return ctx.Err()
+    }
+}
+
+func main() {
+    // Example 1: Basic cancellation
+    fmt.Println("Example 1: Basic context cancellation")
+    
+    ctx, cancel := context.WithCancel(context.Background())
+    
+    go longRunningTask(ctx, 1)
+    go longRunningTask(ctx, 2)
+    
+    // Let tasks run for a while, then cancel
+    time.Sleep(1 * time.Second)
+    fmt.Println("Main: cancelling all tasks")
+    cancel()
+    
+    // Wait for tasks to handle cancellation
+    time.Sleep(500 * time.Millisecond)
+    
+    fmt.Println()
+    
+    // Example 2: Timeout context
+    fmt.Println("Example 2: Context with timeout")
+    
+    ctx2, cancel2 := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+    defer cancel2()
+    
+    go longRunningTask(ctx2, 3)
+    
+    // This task will timeout before completion
+    time.Sleep(2 * time.Second)
+    
+    fmt.Println()
+    
+    // Example 3: Deadline context
+    fmt.Println("Example 3: Context with deadline")
+    
+    deadline := time.Now().Add(1200 * time.Millisecond)
+    ctx3, cancel3 := context.WithDeadline(context.Background(), deadline)
+    defer cancel3()
+    
+    err := networkOperation(ctx3, "https://api.example.com/data")
+    if err != nil {
+        fmt.Printf("Network operation failed: %v\n", err)
+    }
+    
+    // This will timeout
+    err = networkOperation(ctx3, "https://slow-api.example.com/data")
+    if err != nil {
+        fmt.Printf("Slow network operation failed: %v\n", err)
+    }
+    
+    fmt.Println()
+    
+    // Example 4: Context value passing
+    fmt.Println("Example 4: Context with values")
+    
+    type contextKey string
+    const (
+        userIDKey    contextKey = "userID"
+        requestIDKey contextKey = "requestID"
+    )
+    
+    processRequest := func(ctx context.Context, operation string) {
+        userID := ctx.Value(userIDKey)
+        requestID := ctx.Value(requestIDKey)
+        
+        fmt.Printf("Processing %s - User: %v, Request: %v\n", 
+                  operation, userID, requestID)
+        
+        // Simulate work
+        select {
+        case <-time.After(300 * time.Millisecond):
+            fmt.Printf("Completed %s\n", operation)
+        case <-ctx.Done():
+            fmt.Printf("Cancelled %s: %v\n", operation, ctx.Err())
+        }
+    }
+    
+    // Create context with values
+    ctx4 := context.WithValue(context.Background(), userIDKey, "user123")
+    ctx4 = context.WithValue(ctx4, requestIDKey, "req456")
+    
+    // Add timeout to the context chain
+    ctx4, cancel4 := context.WithTimeout(ctx4, 2*time.Second)
+    defer cancel4()
+    
+    go processRequest(ctx4, "authenticate")
+    go processRequest(ctx4, "fetch-data")
+    go processRequest(ctx4, "process-payment")
+    
+    time.Sleep(1 * time.Second)
+    
+    fmt.Println("Context examples completed")
+}
+```
+
+Context enables clean cancellation propagation and resource management  
+across goroutine boundaries. It's essential for building robust services  
+that can handle timeouts, user cancellations, and graceful shutdowns.  
+
+## Context with HTTP-like server
+
+Context patterns are commonly used in server applications for request  
+handling, timeout management, and graceful service shutdown.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Simulated HTTP request
+type Request struct {
+    ID      string
+    Path    string
+    UserID  string
+    Timeout time.Duration
+}
+
+// Simulated HTTP response
+type Response struct {
+    RequestID  string
+    StatusCode int
+    Body       string
+    Error      error
+}
+
+// Database simulation
+func queryDatabase(ctx context.Context, query string) (string, error) {
+    fmt.Printf("Database: executing query: %s\n", query)
+    
+    // Simulate database work
+    select {
+    case <-time.After(400 * time.Millisecond):
+        return fmt.Sprintf("result for: %s", query), nil
+    case <-ctx.Done():
+        fmt.Printf("Database: query cancelled: %s\n", query)
+        return "", ctx.Err()
+    }
+}
+
+// External API simulation
+func callExternalAPI(ctx context.Context, endpoint string) (string, error) {
+    fmt.Printf("API: calling %s\n", endpoint)
+    
+    select {
+    case <-time.After(600 * time.Millisecond):
+        return fmt.Sprintf("response from %s", endpoint), nil
+    case <-ctx.Done():
+        fmt.Printf("API: call cancelled: %s\n", endpoint)
+        return "", ctx.Err()
+    }
+}
+
+// Request handler with context
+func handleRequest(ctx context.Context, req Request) Response {
+    fmt.Printf("Handler: processing request %s (%s)\n", req.ID, req.Path)
+    
+    // Add request-specific timeout
+    reqCtx, cancel := context.WithTimeout(ctx, req.Timeout)
+    defer cancel()
+    
+    // Add request ID to context
+    type contextKey string
+    const requestIDKey contextKey = "requestID"
+    reqCtx = context.WithValue(reqCtx, requestIDKey, req.ID)
+    
+    response := Response{RequestID: req.ID}
+    
+    switch req.Path {
+    case "/user":
+        // Database query for user data
+        dbResult, err := queryDatabase(reqCtx, fmt.Sprintf("SELECT * FROM users WHERE id='%s'", req.UserID))
+        if err != nil {
+            response.StatusCode = 500
+            response.Error = err
+            return response
+        }
+        
+        response.StatusCode = 200
+        response.Body = dbResult
+        
+    case "/profile":
+        // Multiple concurrent operations
+        var wg sync.WaitGroup
+        var mu sync.Mutex
+        var dbResult, apiResult string
+        var dbErr, apiErr error
+        
+        wg.Add(2)
+        
+        // Concurrent database query
+        go func() {
+            defer wg.Done()
+            result, err := queryDatabase(reqCtx, "SELECT profile FROM users")
+            mu.Lock()
+            dbResult, dbErr = result, err
+            mu.Unlock()
+        }()
+        
+        // Concurrent API call
+        go func() {
+            defer wg.Done()
+            result, err := callExternalAPI(reqCtx, "/external/preferences")
+            mu.Lock()
+            apiResult, apiErr = result, err
+            mu.Unlock()
+        }()
+        
+        // Wait for both operations
+        wg.Wait()
+        
+        if dbErr != nil || apiErr != nil {
+            response.StatusCode = 500
+            if dbErr != nil {
+                response.Error = dbErr
+            } else {
+                response.Error = apiErr
+            }
+            return response
+        }
+        
+        response.StatusCode = 200
+        response.Body = fmt.Sprintf("Combined: %s + %s", dbResult, apiResult)
+        
+    case "/slow":
+        // Intentionally slow operation to demonstrate timeout
+        select {
+        case <-time.After(2 * time.Second):
+            response.StatusCode = 200
+            response.Body = "slow operation completed"
+        case <-reqCtx.Done():
+            response.StatusCode = 408
+            response.Error = reqCtx.Err()
+        }
+        
+    default:
+        response.StatusCode = 404
+        response.Body = "not found"
+    }
+    
+    fmt.Printf("Handler: completed request %s (status: %d)\n", req.ID, response.StatusCode)
+    return response
+}
+
+// Server simulation
+func runServer(ctx context.Context, requests []Request) []Response {
+    fmt.Println("Server: starting request processing")
+    
+    responses := make([]Response, len(requests))
+    var wg sync.WaitGroup
+    
+    for i, req := range requests {
+        wg.Add(1)
+        go func(index int, request Request) {
+            defer wg.Done()
+            
+            // Check if server context is still active
+            select {
+            case <-ctx.Done():
+                responses[index] = Response{
+                    RequestID:  request.ID,
+                    StatusCode: 503,
+                    Error:      fmt.Errorf("server shutting down"),
+                }
+                return
+            default:
+            }
+            
+            responses[index] = handleRequest(ctx, request)
+        }(i, req)
+    }
+    
+    wg.Wait()
+    fmt.Println("Server: all requests processed")
+    return responses
+}
+
+func main() {
+    fmt.Println("Simulating HTTP-like server with context")
+    
+    // Create requests with different characteristics
+    requests := []Request{
+        {ID: "req1", Path: "/user", UserID: "user123", Timeout: 1 * time.Second},
+        {ID: "req2", Path: "/profile", UserID: "user456", Timeout: 2 * time.Second},
+        {ID: "req3", Path: "/slow", UserID: "user789", Timeout: 500 * time.Millisecond}, // Will timeout
+        {ID: "req4", Path: "/nonexistent", UserID: "user000", Timeout: 1 * time.Second},
+    }
+    
+    // Server context with overall timeout
+    serverCtx, serverCancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer serverCancel()
+    
+    // Process requests
+    responses := runServer(serverCtx, requests)
+    
+    // Display results
+    fmt.Println("\nServer Response Summary:")
+    for _, resp := range responses {
+        fmt.Printf("Request %s: Status %d", resp.RequestID, resp.StatusCode)
+        if resp.Error != nil {
+            fmt.Printf(", Error: %v", resp.Error)
+        } else if resp.Body != "" {
+            fmt.Printf(", Body: %s", resp.Body)
+        }
+        fmt.Println()
+    }
+    
+    fmt.Println()
+    
+    // Demonstrate server shutdown
+    fmt.Println("Demonstrating graceful server shutdown")
+    
+    // New server context with short timeout
+    shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+    defer shutdownCancel()
+    
+    slowRequests := []Request{
+        {ID: "slow1", Path: "/slow", UserID: "user1", Timeout: 3 * time.Second},
+        {ID: "slow2", Path: "/slow", UserID: "user2", Timeout: 3 * time.Second},
+    }
+    
+    shutdownResponses := runServer(shutdownCtx, slowRequests)
+    
+    fmt.Println("\nShutdown Response Summary:")
+    for _, resp := range shutdownResponses {
+        fmt.Printf("Request %s: Status %d", resp.RequestID, resp.StatusCode)
+        if resp.Error != nil {
+            fmt.Printf(", Error: %v", resp.Error)
+        }
+        fmt.Println()
+    }
+}
+```
+
+Context-aware servers can gracefully handle timeouts, cancellations, and  
+shutdowns. This pattern ensures proper resource cleanup and provides  
+consistent behavior under various failure and load conditions.  
+
+## Context best practices
+
+Context usage patterns and best practices for building robust concurrent  
+applications that properly handle cancellation and resource management.  
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Custom errors for better error handling
+var (
+    ErrServiceUnavailable = errors.New("service unavailable")
+    ErrTimeout           = errors.New("operation timeout")
+)
+
+// Service interface demonstrating context best practices
+type DataService struct {
+    name string
+}
+
+// Good practice: Accept context as first parameter
+func (s *DataService) FetchData(ctx context.Context, id string) (string, error) {
+    // Always check context at the beginning
+    if err := ctx.Err(); err != nil {
+        return "", err
+    }
+    
+    fmt.Printf("%s: starting fetch for ID: %s\n", s.name, id)
+    
+    // Simulate work with context checking
+    for i := 0; i < 5; i++ {
+        select {
+        case <-ctx.Done():
+            fmt.Printf("%s: fetch cancelled for ID: %s\n", s.name, id)
+            return "", ctx.Err()
+        case <-time.After(200 * time.Millisecond):
+            // Continue processing
+            fmt.Printf("%s: processing step %d for ID: %s\n", s.name, i+1, id)
+        }
+    }
+    
+    fmt.Printf("%s: fetch completed for ID: %s\n", s.name, id)
+    return fmt.Sprintf("data-%s", id), nil
+}
+
+// Good practice: Propagate context through call chain
+func (s *DataService) ProcessBatch(ctx context.Context, ids []string) (map[string]string, error) {
+    results := make(map[string]string)
+    var mu sync.Mutex
+    var wg sync.WaitGroup
+    
+    // Use errgroup pattern for better error handling
+    errChan := make(chan error, len(ids))
+    
+    for _, id := range ids {
+        wg.Add(1)
+        go func(itemID string) {
+            defer wg.Done()
+            
+            // Create child context for individual operations
+            childCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+            defer cancel()
+            
+            data, err := s.FetchData(childCtx, itemID)
+            if err != nil {
+                errChan <- fmt.Errorf("failed to fetch %s: %w", itemID, err)
+                return
+            }
+            
+            mu.Lock()
+            results[itemID] = data
+            mu.Unlock()
+        }(id)
+    }
+    
+    wg.Wait()
+    close(errChan)
+    
+    // Check for any errors
+    var errs []error
+    for err := range errChan {
+        errs = append(errs, err)
+    }
+    
+    if len(errs) > 0 {
+        return results, fmt.Errorf("batch processing errors: %v", errs)
+    }
+    
+    return results, nil
+}
+
+// Advanced context pattern: Context with custom values and keys
+type contextKey string
+
+const (
+    TraceIDKey   contextKey = "traceID"
+    UserIDKey    contextKey = "userID"
+    OperationKey contextKey = "operation"
+)
+
+func withTracing(ctx context.Context, traceID string) context.Context {
+    return context.WithValue(ctx, TraceIDKey, traceID)
+}
+
+func withUser(ctx context.Context, userID string) context.Context {
+    return context.WithValue(ctx, UserIDKey, userID)
+}
+
+func withOperation(ctx context.Context, operation string) context.Context {
+    return context.WithValue(ctx, OperationKey, operation)
+}
+
+func getTraceID(ctx context.Context) string {
+    if traceID, ok := ctx.Value(TraceIDKey).(string); ok {
+        return traceID
+    }
+    return "no-trace"
+}
+
+func tracedOperation(ctx context.Context, name string, duration time.Duration) error {
+    traceID := getTraceID(ctx)
+    userID := ctx.Value(UserIDKey)
+    
+    fmt.Printf("[%s] Starting %s for user %v\n", traceID, name, userID)
+    
+    select {
+    case <-time.After(duration):
+        fmt.Printf("[%s] Completed %s\n", traceID, name)
+        return nil
+    case <-ctx.Done():
+        fmt.Printf("[%s] Cancelled %s: %v\n", traceID, name, ctx.Err())
+        return ctx.Err()
+    }
+}
+
+// Pattern: Context middleware for common functionality
+func withLogging(ctx context.Context, operation string) (context.Context, func()) {
+    start := time.Now()
+    traceID := getTraceID(ctx)
+    
+    fmt.Printf("[%s] Operation started: %s\n", traceID, operation)
+    
+    cleanup := func() {
+        duration := time.Since(start)
+        if ctx.Err() != nil {
+            fmt.Printf("[%s] Operation cancelled: %s (after %v)\n", traceID, operation, duration)
+        } else {
+            fmt.Printf("[%s] Operation completed: %s (took %v)\n", traceID, operation, duration)
+        }
+    }
+    
+    return withOperation(ctx, operation), cleanup
+}
+
+func main() {
+    fmt.Println("Demonstrating Context Best Practices")
+    
+    // Example 1: Basic service usage with proper context handling
+    fmt.Println("\nExample 1: Proper context propagation")
+    
+    service := &DataService{name: "DataService"}
+    
+    ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel1()
+    
+    data, err := service.FetchData(ctx1, "item1")
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+    } else {
+        fmt.Printf("Success: %s\n", data)
+    }
+    
+    // Example 2: Batch processing with individual timeouts
+    fmt.Println("\nExample 2: Batch processing")
+    
+    ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel2()
+    
+    ids := []string{"batch1", "batch2", "batch3"}
+    results, err := service.ProcessBatch(ctx2, ids)
+    if err != nil {
+        fmt.Printf("Batch error: %v\n", err)
+    }
+    
+    fmt.Printf("Batch results: %v\n", results)
+    
+    // Example 3: Context with values and tracing
+    fmt.Println("\nExample 3: Context values and tracing")
+    
+    baseCtx := context.Background()
+    tracedCtx := withTracing(baseCtx, "trace-123")
+    userCtx := withUser(tracedCtx, "user-456")
+    
+    // Add timeout to the context chain
+    timedCtx, cancel3 := context.WithTimeout(userCtx, 3*time.Second)
+    defer cancel3()
+    
+    var wg sync.WaitGroup
+    
+    operations := []struct {
+        name     string
+        duration time.Duration
+    }{
+        {"validate-user", 300 * time.Millisecond},
+        {"load-preferences", 500 * time.Millisecond},
+        {"update-cache", 200 * time.Millisecond},
+    }
+    
+    for _, op := range operations {
+        wg.Add(1)
+        go func(name string, dur time.Duration) {
+            defer wg.Done()
+            
+            // Use middleware pattern for consistent logging
+            opCtx, cleanup := withLogging(timedCtx, name)
+            defer cleanup()
+            
+            err := tracedOperation(opCtx, name, dur)
+            if err != nil {
+                fmt.Printf("Operation %s failed: %v\n", name, err)
+            }
+        }(op.name, op.duration)
+    }
+    
+    wg.Wait()
+    
+    // Example 4: Context cancellation cascading
+    fmt.Println("\nExample 4: Cancellation cascading")
+    
+    parentCtx, parentCancel := context.WithCancel(context.Background())
+    childCtx1, child1Cancel := context.WithTimeout(parentCtx, 2*time.Second)
+    childCtx2, child2Cancel := context.WithTimeout(parentCtx, 3*time.Second)
+    
+    defer parentCancel()
+    defer child1Cancel()
+    defer child2Cancel()
+    
+    // Start operations with different contexts
+    wg.Add(2)
+    
+    go func() {
+        defer wg.Done()
+        err := tracedOperation(withTracing(childCtx1, "child1-trace"), "child1-op", 4*time.Second)
+        fmt.Printf("Child1 result: %v\n", err)
+    }()
+    
+    go func() {
+        defer wg.Done()
+        err := tracedOperation(withTracing(childCtx2, "child2-trace"), "child2-op", 4*time.Second)
+        fmt.Printf("Child2 result: %v\n", err)
+    }()
+    
+    // Cancel parent after 1 second - this should cascade to all children
+    time.Sleep(1 * time.Second)
+    fmt.Println("Cancelling parent context...")
+    parentCancel()
+    
+    wg.Wait()
+    
+    fmt.Println("Context best practices demonstration completed")
+}
+```
+
+Context best practices include accepting context as the first parameter,  
+checking cancellation regularly, propagating context through call chains,  
+and using context values judiciously for request-scoped data like trace IDs.  
+
+## Fan-in fan-out pattern
+
+Fan-in and fan-out patterns distribute work across multiple goroutines  
+and consolidate results, enabling scalable parallel processing architectures.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "math/rand"
+    "sync"
+    "time"
+)
+
+// Work item for processing
+type WorkItem struct {
+    ID       int
+    Data     string
+    Priority int
+}
+
+// Result from processing
+type Result struct {
+    WorkerID int
+    Item     WorkItem
+    Output   string
+    Duration time.Duration
+}
+
+// Fan-out: Distribute work to multiple workers
+func fanOut(input <-chan WorkItem, numWorkers int) []<-chan Result {
+    outputs := make([]<-chan Result, numWorkers)
+    
+    for i := 0; i < numWorkers; i++ {
+        output := make(chan Result)
+        outputs[i] = output
+        
+        go func(workerID int, workChan <-chan WorkItem, resultChan chan<- Result) {
+            defer close(resultChan)
+            
+            fmt.Printf("Worker %d: starting\n", workerID)
+            
+            for item := range workChan {
+                start := time.Now()
+                
+                fmt.Printf("Worker %d: processing item %d\n", workerID, item.ID)
+                
+                // Simulate work based on priority
+                processingTime := time.Duration(100+item.Priority*50) * time.Millisecond
+                time.Sleep(processingTime)
+                
+                result := Result{
+                    WorkerID: workerID,
+                    Item:     item,
+                    Output:   fmt.Sprintf("Processed-%s-by-worker-%d", item.Data, workerID),
+                    Duration: time.Since(start),
+                }
+                
+                resultChan <- result
+                fmt.Printf("Worker %d: completed item %d in %v\n", 
+                          workerID, item.ID, result.Duration)
+            }
+            
+            fmt.Printf("Worker %d: shutting down\n", workerID)
+        }(i+1, input, output)
+    }
+    
+    return outputs
+}
+
+// Fan-in: Combine results from multiple workers
+func fanIn(inputs ...<-chan Result) <-chan Result {
+    output := make(chan Result)
+    var wg sync.WaitGroup
+    
+    // Start a goroutine for each input channel
+    for i, input := range inputs {
+        wg.Add(1)
+        go func(workerOutput int, ch <-chan Result) {
+            defer wg.Done()
+            
+            for result := range ch {
+                fmt.Printf("Fan-in: collecting result from worker %d (item %d)\n", 
+                          result.WorkerID, result.Item.ID)
+                output <- result
+            }
+            
+            fmt.Printf("Fan-in: worker %d output drained\n", workerOutput+1)
+        }(i, input)
+    }
+    
+    // Close output when all inputs are drained
+    go func() {
+        wg.Wait()
+        close(output)
+        fmt.Println("Fan-in: all worker outputs collected")
+    }()
+    
+    return output
+}
+
+// Priority-based fan-out
+func priorityFanOut(input <-chan WorkItem, highPriorityWorkers, normalWorkers int) (high, normal <-chan Result) {
+    highPriorityChan := make(chan WorkItem, 10)
+    normalPriorityChan := make(chan WorkItem, 10)
+    
+    // Distribute work based on priority
+    go func() {
+        defer close(highPriorityChan)
+        defer close(normalPriorityChan)
+        
+        for item := range input {
+            if item.Priority >= 2 {
+                fmt.Printf("Router: sending high priority item %d\n", item.ID)
+                highPriorityChan <- item
+            } else {
+                fmt.Printf("Router: sending normal priority item %d\n", item.ID)
+                normalPriorityChan <- item
+            }
+        }
+        
+        fmt.Println("Router: finished distributing work")
+    }()
+    
+    // Create worker pools for each priority
+    highWorkers := fanOut(highPriorityChan, highPriorityWorkers)
+    normalWorkers := fanOut(normalPriorityChan, normalWorkers)
+    
+    // Fan-in results from each priority pool
+    high = fanIn(highWorkers...)
+    normal = fanIn(normalWorkers...)
+    
+    return high, normal
+}
+
+// Load balancing fan-out
+func loadBalancingFanOut(input <-chan WorkItem, numWorkers int) <-chan Result {
+    // Create individual channels for each worker
+    workerChannels := make([]chan WorkItem, numWorkers)
+    for i := range workerChannels {
+        workerChannels[i] = make(chan WorkItem, 5) // Small buffer per worker
+    }
+    
+    // Load balancer goroutine
+    go func() {
+        defer func() {
+            for _, ch := range workerChannels {
+                close(ch)
+            }
+        }()
+        
+        currentWorker := 0
+        for item := range input {
+            // Round-robin distribution
+            fmt.Printf("Load balancer: assigning item %d to worker %d\n", 
+                      item.ID, currentWorker+1)
+            workerChannels[currentWorker] <- item
+            currentWorker = (currentWorker + 1) % numWorkers
+        }
+        
+        fmt.Println("Load balancer: finished distributing work")
+    }()
+    
+    // Create workers for each channel
+    outputs := make([]<-chan Result, numWorkers)
+    for i, workChan := range workerChannels {
+        output := make(chan Result)
+        outputs[i] = output
+        
+        go func(workerID int, work <-chan WorkItem, results chan<- Result) {
+            defer close(results)
+            
+            for item := range work {
+                start := time.Now()
+                
+                // Variable processing time to show load balancing
+                processingTime := time.Duration(rand.Intn(200)+100) * time.Millisecond
+                time.Sleep(processingTime)
+                
+                results <- Result{
+                    WorkerID: workerID,
+                    Item:     item,
+                    Output:   fmt.Sprintf("LoadBalanced-%s", item.Data),
+                    Duration: time.Since(start),
+                }
+            }
+        }(i+1, workChan, output)
+    }
+    
+    return fanIn(outputs...)
+}
+
+func main() {
+    rand.Seed(time.Now().UnixNano())
+    
+    fmt.Println("Demonstrating Fan-in Fan-out Pattern")
+    
+    // Example 1: Basic fan-out fan-in
+    fmt.Println("\nExample 1: Basic fan-out fan-in")
+    
+    workItems := make(chan WorkItem, 10)
+    
+    // Generate work items
+    go func() {
+        defer close(workItems)
+        
+        for i := 1; i <= 8; i++ {
+            item := WorkItem{
+                ID:       i,
+                Data:     fmt.Sprintf("task-%d", i),
+                Priority: rand.Intn(3),
+            }
+            
+            fmt.Printf("Generator: created item %d (priority %d)\n", item.ID, item.Priority)
+            workItems <- item
+        }
+        
+        fmt.Println("Generator: finished creating work items")
+    }()
+    
+    // Fan-out to 3 workers, then fan-in
+    workerOutputs := fanOut(workItems, 3)
+    results := fanIn(workerOutputs...)
+    
+    // Collect all results
+    var allResults []Result
+    for result := range results {
+        allResults = append(allResults, result)
+        fmt.Printf("Main: collected result from worker %d for item %d\n", 
+                  result.WorkerID, result.Item.ID)
+    }
+    
+    fmt.Printf("Basic fan-out fan-in completed: %d results\n", len(allResults))
+    
+    fmt.Println()
+    
+    // Example 2: Priority-based processing
+    fmt.Println("Example 2: Priority-based fan-out")
+    
+    priorityWork := make(chan WorkItem, 15)
+    
+    go func() {
+        defer close(priorityWork)
+        
+        priorities := []int{0, 1, 2, 0, 2, 1, 2, 0, 2, 1}
+        for i, priority := range priorities {
+            item := WorkItem{
+                ID:       i + 1,
+                Data:     fmt.Sprintf("priority-task-%d", i+1),
+                Priority: priority,
+            }
+            priorityWork <- item
+        }
+    }()
+    
+    // Use priority-based fan-out
+    highPriorityResults, normalPriorityResults := priorityFanOut(priorityWork, 2, 3)
+    
+    // Collect results from both priority streams
+    var wg sync.WaitGroup
+    var highResults, normalResults []Result
+    var mu sync.Mutex
+    
+    wg.Add(2)
+    
+    go func() {
+        defer wg.Done()
+        for result := range highPriorityResults {
+            mu.Lock()
+            highResults = append(highResults, result)
+            mu.Unlock()
+            fmt.Printf("High priority result: item %d\n", result.Item.ID)
+        }
+    }()
+    
+    go func() {
+        defer wg.Done()
+        for result := range normalPriorityResults {
+            mu.Lock()
+            normalResults = append(normalResults, result)
+            mu.Unlock()
+            fmt.Printf("Normal priority result: item %d\n", result.Item.ID)
+        }
+    }()
+    
+    wg.Wait()
+    
+    fmt.Printf("Priority processing completed: %d high priority, %d normal priority\n", 
+              len(highResults), len(normalResults))
+    
+    fmt.Println()
+    
+    // Example 3: Load-balanced processing
+    fmt.Println("Example 3: Load-balanced fan-out")
+    
+    balancedWork := make(chan WorkItem, 12)
+    
+    go func() {
+        defer close(balancedWork)
+        
+        for i := 1; i <= 12; i++ {
+            item := WorkItem{
+                ID:       i,
+                Data:     fmt.Sprintf("balanced-task-%d", i),
+                Priority: 1,
+            }
+            balancedWork <- item
+        }
+    }()
+    
+    balancedResults := loadBalancingFanOut(balancedWork, 4)
+    
+    // Collect and analyze load distribution
+    workerLoad := make(map[int]int)
+    totalProcessingTime := time.Duration(0)
+    
+    for result := range balancedResults {
+        workerLoad[result.WorkerID]++
+        totalProcessingTime += result.Duration
+        fmt.Printf("Load balanced result: item %d processed by worker %d in %v\n", 
+                  result.Item.ID, result.WorkerID, result.Duration)
+    }
+    
+    fmt.Printf("Load balancing completed:\n")
+    for workerID, count := range workerLoad {
+        fmt.Printf("  Worker %d: processed %d items\n", workerID, count)
+    }
+    fmt.Printf("Total processing time across all workers: %v\n", totalProcessingTime)
+    
+    fmt.Println("Fan-in fan-out demonstration completed")
+}
+```
+
+Fan-in and fan-out patterns enable scalable parallel processing by distributing  
+work across multiple goroutines and efficiently collecting results. These  
+patterns are fundamental for building high-throughput concurrent systems.  
+
+## Semaphore pattern
+
+Semaphores limit the number of concurrent operations, providing flow control  
+and preventing resource exhaustion in high-load scenarios.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Semaphore implementation using buffered channel
+type Semaphore chan struct{}
+
+func NewSemaphore(capacity int) Semaphore {
+    return make(chan struct{}, capacity)
+}
+
+func (s Semaphore) Acquire() {
+    s <- struct{}{}
+}
+
+func (s Semaphore) Release() {
+    <-s
+}
+
+func (s Semaphore) TryAcquire() bool {
+    select {
+    case s <- struct{}{}:
+        return true
+    default:
+        return false
+    }
+}
+
+// Resource-intensive operation
+func processFile(filename string, sem Semaphore, wg *sync.WaitGroup) {
+    defer wg.Done()
+    
+    // Try to acquire semaphore
+    fmt.Printf("File %s: waiting for available slot...\n", filename)
+    sem.Acquire()
+    defer sem.Release()
+    
+    fmt.Printf("File %s: processing started\n", filename)
+    
+    // Simulate file processing
+    processingTime := time.Duration(300+len(filename)*10) * time.Millisecond
+    time.Sleep(processingTime)
+    
+    fmt.Printf("File %s: processing completed (%v)\n", filename, processingTime)
+}
+
+// Database connection pool simulation
+type ConnectionPool struct {
+    semaphore Semaphore
+    poolSize  int
+    activeOps int
+    mu        sync.Mutex
+}
+
+func NewConnectionPool(size int) *ConnectionPool {
+    return &ConnectionPool{
+        semaphore: NewSemaphore(size),
+        poolSize:  size,
+    }
+}
+
+func (pool *ConnectionPool) Execute(query string) error {
+    fmt.Printf("Query '%s': requesting connection...\n", query)
+    
+    pool.semaphore.Acquire()
+    defer pool.semaphore.Release()
+    
+    // Track active operations
+    pool.mu.Lock()
+    pool.activeOps++
+    currentActive := pool.activeOps
+    pool.mu.Unlock()
+    
+    defer func() {
+        pool.mu.Lock()
+        pool.activeOps--
+        pool.mu.Unlock()
+    }()
+    
+    fmt.Printf("Query '%s': connection acquired (active: %d/%d)\n", 
+              query, currentActive, pool.poolSize)
+    
+    // Simulate database operation
+    time.Sleep(time.Duration(200+len(query)*5) * time.Millisecond)
+    
+    fmt.Printf("Query '%s': executed successfully\n", query)
+    return nil
+}
+
+// Rate limiter using semaphore with time-based refill
+type RateLimiter struct {
+    semaphore Semaphore
+    refillRate time.Duration
+    capacity   int
+}
+
+func NewRateLimiter(capacity int, refillRate time.Duration) *RateLimiter {
+    rl := &RateLimiter{
+        semaphore:  NewSemaphore(capacity),
+        refillRate: refillRate,
+        capacity:   capacity,
+    }
+    
+    // Fill initial capacity
+    for i := 0; i < capacity; i++ {
+        rl.semaphore.Release()
+    }
+    
+    // Start refill goroutine
+    go rl.refill()
+    
+    return rl
+}
+
+func (rl *RateLimiter) refill() {
+    ticker := time.NewTicker(rl.refillRate)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        select {
+        case rl.semaphore <- struct{}{}:
+            // Token added
+        default:
+            // Semaphore full, skip
+        }
+    }
+}
+
+func (rl *RateLimiter) Allow() bool {
+    select {
+    case <-rl.semaphore:
+        return true
+    default:
+        return false
+    }
+}
+
+func (rl *RateLimiter) Wait() {
+    <-rl.semaphore
+}
+
+func main() {
+    fmt.Println("Demonstrating Semaphore Pattern")
+    
+    // Example 1: File processing with limited concurrency
+    fmt.Println("\nExample 1: File processing semaphore")
+    
+    // Allow only 3 concurrent file processing operations
+    fileSemaphore := NewSemaphore(3)
+    var wg sync.WaitGroup
+    
+    files := []string{
+        "document1.pdf", "image2.jpg", "video3.mp4", "archive4.zip",
+        "database5.db", "config6.yaml", "log7.txt", "backup8.tar.gz",
+    }
+    
+    fmt.Printf("Processing %d files with max 3 concurrent operations\n", len(files))
+    
+    for _, filename := range files {
+        wg.Add(1)
+        go processFile(filename, fileSemaphore, &wg)
+    }
+    
+    wg.Wait()
+    fmt.Println("All files processed")
+    
+    fmt.Println()
+    
+    // Example 2: Database connection pool
+    fmt.Println("Example 2: Database connection pool")
+    
+    pool := NewConnectionPool(2) // Only 2 concurrent connections
+    
+    queries := []string{
+        "SELECT * FROM users",
+        "UPDATE products SET price = 100",
+        "INSERT INTO orders (user_id) VALUES (1)",
+        "DELETE FROM temp_data",
+        "SELECT COUNT(*) FROM logs",
+    }
+    
+    wg = sync.WaitGroup{}
+    for _, query := range queries {
+        wg.Add(1)
+        go func(q string) {
+            defer wg.Done()
+            pool.Execute(q)
+        }(query)
+    }
+    
+    wg.Wait()
+    fmt.Println("All database queries completed")
+    
+    fmt.Println()
+    
+    // Example 3: Rate limiter
+    fmt.Println("Example 3: Rate limiter")
+    
+    // Allow 1 operation every 500ms, with burst capacity of 3
+    rateLimiter := NewRateLimiter(3, 500*time.Millisecond)
+    
+    // Simulate API requests
+    for i := 1; i <= 8; i++ {
+        go func(requestID int) {
+            if rateLimiter.Allow() {
+                fmt.Printf("Request %d: allowed immediately\n", requestID)
+            } else {
+                fmt.Printf("Request %d: rate limited, waiting...\n", requestID)
+                rateLimiter.Wait()
+                fmt.Printf("Request %d: allowed after waiting\n", requestID)
+            }
+            
+            // Simulate API processing
+            time.Sleep(100 * time.Millisecond)
+            fmt.Printf("Request %d: completed\n", requestID)
+        }(i)
+    }
+    
+    time.Sleep(6 * time.Second) // Let rate limiter demo complete
+    
+    fmt.Println()
+    
+    // Example 4: Advanced semaphore with priority
+    fmt.Println("Example 4: Priority semaphore")
+    prioritySemaphoreDemo()
+}
+
+func prioritySemaphoreDemo() {
+    type PriorityTask struct {
+        ID       int
+        Priority int // Higher number = higher priority
+        Name     string
+    }
+    
+    // Priority-aware semaphore using channels
+    highPriority := make(chan PriorityTask, 10)
+    normalPriority := make(chan PriorityTask, 10)
+    semaphore := NewSemaphore(2) // Allow 2 concurrent operations
+    
+    // Task dispatcher
+    go func() {
+        tasks := []PriorityTask{
+            {1, 1, "normal-task-1"},
+            {2, 3, "high-task-1"},
+            {3, 1, "normal-task-2"},
+            {4, 3, "high-task-2"},
+            {5, 2, "medium-task-1"},
+            {6, 1, "normal-task-3"},
+        }
+        
+        for _, task := range tasks {
+            if task.Priority >= 3 {
+                highPriority <- task
+            } else {
+                normalPriority <- task
+            }
+        }
+        
+        close(highPriority)
+        close(normalPriority)
+    }()
+    
+    // Priority processor
+    processTask := func(task PriorityTask) {
+        semaphore.Acquire()
+        defer semaphore.Release()
+        
+        fmt.Printf("Priority task %s (ID: %d, Priority: %d): started\n", 
+                  task.Name, task.ID, task.Priority)
+        
+        time.Sleep(time.Duration(200+task.Priority*50) * time.Millisecond)
+        
+        fmt.Printf("Priority task %s: completed\n", task.Name)
+    }
+    
+    var wg sync.WaitGroup
+    
+    // High priority worker
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        for task := range highPriority {
+            wg.Add(1)
+            go func(t PriorityTask) {
+                defer wg.Done()
+                processTask(t)
+            }(task)
+        }
+    }()
+    
+    // Normal priority worker (only processes when no high priority tasks)
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        for task := range normalPriority {
+            // Small delay to let high priority tasks be processed first
+            time.Sleep(50 * time.Millisecond)
+            
+            wg.Add(1)
+            go func(t PriorityTask) {
+                defer wg.Done()
+                processTask(t)
+            }(task)
+        }
+    }()
+    
+    wg.Wait()
+    fmt.Println("Priority semaphore demo completed")
+}
+```
+
+Semaphores provide essential flow control by limiting concurrent operations.  
+They're crucial for preventing resource exhaustion, implementing connection  
+pools, and managing system load under high-concurrency scenarios.  
+
+## Barrier synchronization
+
+Barriers synchronize multiple goroutines to wait for all participants  
+to reach a certain point before any can proceed further.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "math/rand"
+    "sync"
+    "time"
+)
+
+// Barrier implementation
+type Barrier struct {
+    n         int           // number of participants
+    count     int           // current count
+    mutex     sync.Mutex    // protects count
+    cond      *sync.Cond    // condition variable for waiting
+    generation int           // barrier generation (for reuse)
+}
+
+func NewBarrier(n int) *Barrier {
+    b := &Barrier{n: n}
+    b.cond = sync.NewCond(&b.mutex)
+    return b
+}
+
+func (b *Barrier) Wait() {
+    b.mutex.Lock()
+    defer b.mutex.Unlock()
+    
+    generation := b.generation
+    b.count++
+    
+    if b.count == b.n {
+        // Last goroutine reaches barrier - wake up all others
+        b.count = 0
+        b.generation++
+        b.cond.Broadcast()
+    } else {
+        // Wait until all goroutines reach the barrier
+        for b.generation == generation {
+            b.cond.Wait()
+        }
+    }
+}
+
+// Phased computation example
+func phasedWorker(workerID int, phases []string, barrier *Barrier, results chan<- string) {
+    for phaseNum, phase := range phases {
+        // Do work for this phase
+        workTime := time.Duration(rand.Intn(300)+100) * time.Millisecond
+        
+        fmt.Printf("Worker %d: starting phase %d (%s)\n", workerID, phaseNum+1, phase)
+        time.Sleep(workTime)
+        
+        result := fmt.Sprintf("Worker%d-Phase%d-Result", workerID, phaseNum+1)
+        results <- result
+        
+        fmt.Printf("Worker %d: completed phase %d, waiting at barrier\n", workerID, phaseNum+1)
+        
+        // Wait for all workers to complete this phase
+        barrier.Wait()
+        
+        fmt.Printf("Worker %d: barrier released, proceeding to next phase\n", workerID)
+    }
+    
+    fmt.Printf("Worker %d: all phases completed\n", workerID)
+}
+
+// Simulation phase synchronization
+type SimulationWorker struct {
+    ID       int
+    Position [2]float64 // x, y coordinates
+    Velocity [2]float64 // vx, vy
+}
+
+func (w *SimulationWorker) updatePosition(deltaTime float64) {
+    w.Position[0] += w.Velocity[0] * deltaTime
+    w.Position[1] += w.Velocity[1] * deltaTime
+}
+
+func (w *SimulationWorker) computeForces(others []*SimulationWorker) {
+    // Simple attraction/repulsion simulation
+    for _, other := range others {
+        if other.ID == w.ID {
+            continue
+        }
+        
+        dx := other.Position[0] - w.Position[0]
+        dy := other.Position[1] - w.Position[1]
+        
+        // Simple force calculation (artificial)
+        force := 0.01
+        w.Velocity[0] += dx * force
+        w.Velocity[1] += dy * force
+    }
+}
+
+func simulationStep(worker *SimulationWorker, others []*SimulationWorker, 
+                   stepBarrier, forceBarrier *Barrier, step int) {
+    
+    fmt.Printf("Sim Worker %d: step %d - computing forces\n", worker.ID, step)
+    
+    // Phase 1: Compute forces based on current positions
+    worker.computeForces(others)
+    
+    // Wait for all workers to finish force computation
+    fmt.Printf("Sim Worker %d: waiting at force barrier (step %d)\n", worker.ID, step)
+    forceBarrier.Wait()
+    
+    fmt.Printf("Sim Worker %d: step %d - updating position\n", worker.ID, step)
+    
+    // Phase 2: Update positions based on computed forces
+    worker.updatePosition(0.1) // deltaTime = 0.1
+    
+    // Wait for all workers to finish position update
+    fmt.Printf("Sim Worker %d: waiting at step barrier (step %d)\n", worker.ID, step)
+    stepBarrier.Wait()
+    
+    fmt.Printf("Sim Worker %d: step %d completed - pos(%.2f, %.2f)\n", 
+              worker.ID, step, worker.Position[0], worker.Position[1])
+}
+
+// Tournament-style computation
+func tournamentWorker(workerID int, data []int, barrier *Barrier, 
+                     results chan<- int, round int) int {
+    
+    fmt.Printf("Tournament Worker %d: round %d processing data %v\n", 
+              workerID, round, data)
+    
+    // Compute local result
+    localResult := 0
+    for _, value := range data {
+        localResult += value * value // Sum of squares
+    }
+    
+    processingTime := time.Duration(rand.Intn(200)+100) * time.Millisecond
+    time.Sleep(processingTime)
+    
+    fmt.Printf("Tournament Worker %d: round %d result = %d\n", 
+              workerID, round, localResult)
+    
+    results <- localResult
+    
+    // Wait for all workers in this round
+    fmt.Printf("Tournament Worker %d: waiting at round %d barrier\n", workerID, round)
+    barrier.Wait()
+    
+    return localResult
+}
+
+func main() {
+    rand.Seed(time.Now().UnixNano())
+    
+    fmt.Println("Demonstrating Barrier Synchronization")
+    
+    // Example 1: Phased computation
+    fmt.Println("\nExample 1: Phased computation with barriers")
+    
+    numWorkers := 4
+    phases := []string{"initialize", "compute", "validate", "finalize"}
+    barrier := NewBarrier(numWorkers)
+    results := make(chan string, numWorkers*len(phases))
+    
+    var wg sync.WaitGroup
+    
+    for i := 1; i <= numWorkers; i++ {
+        wg.Add(1)
+        go func(id int) {
+            defer wg.Done()
+            phasedWorker(id, phases, barrier, results)
+        }(i)
+    }
+    
+    // Collect results
+    go func() {
+        wg.Wait()
+        close(results)
+    }()
+    
+    var phaseResults []string
+    for result := range results {
+        phaseResults = append(phaseResults, result)
+    }
+    
+    fmt.Printf("Phased computation completed: %d results collected\n", len(phaseResults))
+    
+    fmt.Println()
+    
+    // Example 2: Parallel simulation with synchronized steps
+    fmt.Println("Example 2: Physics simulation with barrier synchronization")
+    
+    numSimWorkers := 3
+    numSteps := 4
+    
+    // Create simulation workers
+    simWorkers := make([]*SimulationWorker, numSimWorkers)
+    for i := 0; i < numSimWorkers; i++ {
+        simWorkers[i] = &SimulationWorker{
+            ID:       i + 1,
+            Position: [2]float64{rand.Float64() * 10, rand.Float64() * 10},
+            Velocity: [2]float64{rand.Float64() - 0.5, rand.Float64() - 0.5},
+        }
+    }
+    
+    stepBarrier := NewBarrier(numSimWorkers)
+    forceBarrier := NewBarrier(numSimWorkers)
+    
+    wg = sync.WaitGroup{}
+    
+    for _, worker := range simWorkers {
+        wg.Add(1)
+        go func(w *SimulationWorker) {
+            defer wg.Done()
+            
+            for step := 1; step <= numSteps; step++ {
+                simulationStep(w, simWorkers, stepBarrier, forceBarrier, step)
+            }
+        }(worker)
+    }
+    
+    wg.Wait()
+    
+    fmt.Println("Final simulation state:")
+    for _, worker := range simWorkers {
+        fmt.Printf("Worker %d: position(%.2f, %.2f), velocity(%.2f, %.2f)\n",
+                  worker.ID, worker.Position[0], worker.Position[1],
+                  worker.Velocity[0], worker.Velocity[1])
+    }
+    
+    fmt.Println()
+    
+    // Example 3: Tournament-style reduction
+    fmt.Println("Example 3: Tournament reduction with barriers")
+    
+    // Initial data for each worker
+    initialData := [][]int{
+        {1, 2, 3, 4},
+        {5, 6, 7, 8},
+        {9, 10, 11, 12},
+        {13, 14, 15, 16},
+    }
+    
+    currentWorkers := len(initialData)
+    round := 1
+    results = make(chan int, currentWorkers)
+    
+    for currentWorkers > 1 {
+        fmt.Printf("Tournament round %d: %d workers\n", round, currentWorkers)
+        
+        roundBarrier := NewBarrier(currentWorkers)
+        wg = sync.WaitGroup{}
+        
+        for i := 0; i < currentWorkers; i++ {
+            wg.Add(1)
+            go func(workerID int, data []int) {
+                defer wg.Done()
+                tournamentWorker(workerID+1, data, roundBarrier, results, round)
+            }(i, initialData[i])
+        }
+        
+        // Wait for round to complete and collect results
+        wg.Wait()
+        
+        // Collect results for next round
+        var nextRoundData [][]int
+        for i := 0; i < currentWorkers; i++ {
+            result := <-results
+            nextRoundData = append(nextRoundData, []int{result})
+        }
+        
+        // Combine adjacent results for next round
+        initialData = nil
+        for i := 0; i < len(nextRoundData); i += 2 {
+            if i+1 < len(nextRoundData) {
+                combined := append(nextRoundData[i], nextRoundData[i+1]...)
+                initialData = append(initialData, combined)
+            } else {
+                initialData = append(initialData, nextRoundData[i])
+            }
+        }
+        
+        currentWorkers = len(initialData)
+        round++
+    }
+    
+    if len(initialData) > 0 {
+        fmt.Printf("Tournament final result: %v\n", initialData[0])
+    }
+    
+    fmt.Println("Barrier synchronization demonstration completed")
+}
+```
+
+Barriers ensure that all participants in a parallel computation reach  
+synchronization points together. They're essential for phased algorithms,  
+simulations, and any scenario requiring lockstep execution coordination.  
+
+## Publisher-Subscriber pattern
+
+Pub-Sub enables decoupled communication where publishers send messages  
+to topics and subscribers receive messages based on their interests.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Message represents a published message
+type Message struct {
+    Topic     string
+    Content   interface{}
+    Timestamp time.Time
+    Publisher string
+}
+
+// Subscriber interface
+type Subscriber interface {
+    OnMessage(msg Message)
+    ID() string
+}
+
+// Simple subscriber implementation
+type SimpleSubscriber struct {
+    id       string
+    msgCount int
+    mu       sync.Mutex
+}
+
+func NewSimpleSubscriber(id string) *SimpleSubscriber {
+    return &SimpleSubscriber{id: id}
+}
+
+func (s *SimpleSubscriber) OnMessage(msg Message) {
+    s.mu.Lock()
+    s.msgCount++
+    count := s.msgCount
+    s.mu.Unlock()
+    
+    fmt.Printf("[%s] Received message #%d on topic '%s': %v (from %s)\n",
+               s.id, count, msg.Topic, msg.Content, msg.Publisher)
+}
+
+func (s *SimpleSubscriber) ID() string {
+    return s.id
+}
+
+func (s *SimpleSubscriber) MessageCount() int {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    return s.msgCount
+}
+
+// Topic-specific subscriber
+type TopicSubscriber struct {
+    id            string
+    interestedTopics []string
+    messageHistory   []Message
+    mu            sync.RWMutex
+}
+
+func NewTopicSubscriber(id string, topics ...string) *TopicSubscriber {
+    return &TopicSubscriber{
+        id:               id,
+        interestedTopics: topics,
+    }
+}
+
+func (ts *TopicSubscriber) OnMessage(msg Message) {
+    // Check if interested in this topic
+    interested := false
+    for _, topic := range ts.interestedTopics {
+        if topic == msg.Topic {
+            interested = true
+            break
+        }
+    }
+    
+    if !interested {
+        return
+    }
+    
+    ts.mu.Lock()
+    ts.messageHistory = append(ts.messageHistory, msg)
+    ts.mu.Unlock()
+    
+    fmt.Printf("[%s] Topic subscriber received '%s': %v\n", 
+               ts.id, msg.Topic, msg.Content)
+}
+
+func (ts *TopicSubscriber) ID() string {
+    return ts.id
+}
+
+func (ts *TopicSubscriber) GetHistory() []Message {
+    ts.mu.RLock()
+    defer ts.mu.RUnlock()
+    
+    history := make([]Message, len(ts.messageHistory))
+    copy(history, ts.messageHistory)
+    return history
+}
+
+// PubSub broker
+type PubSub struct {
+    subscribers map[string]map[string]Subscriber // topic -> subscriber_id -> subscriber
+    mu          sync.RWMutex
+}
+
+func NewPubSub() *PubSub {
+    return &PubSub{
+        subscribers: make(map[string]map[string]Subscriber),
+    }
+}
+
+func (ps *PubSub) Subscribe(topic string, subscriber Subscriber) {
+    ps.mu.Lock()
+    defer ps.mu.Unlock()
+    
+    if ps.subscribers[topic] == nil {
+        ps.subscribers[topic] = make(map[string]Subscriber)
+    }
+    
+    ps.subscribers[topic][subscriber.ID()] = subscriber
+    fmt.Printf("Subscriber '%s' subscribed to topic '%s'\n", subscriber.ID(), topic)
+}
+
+func (ps *PubSub) Unsubscribe(topic string, subscriberID string) {
+    ps.mu.Lock()
+    defer ps.mu.Unlock()
+    
+    if topicSubs, exists := ps.subscribers[topic]; exists {
+        delete(topicSubs, subscriberID)
+        if len(topicSubs) == 0 {
+            delete(ps.subscribers, topic)
+        }
+        fmt.Printf("Subscriber '%s' unsubscribed from topic '%s'\n", subscriberID, topic)
+    }
+}
+
+func (ps *PubSub) Publish(topic, publisher string, content interface{}) {
+    ps.mu.RLock()
+    topicSubs := ps.subscribers[topic]
+    ps.mu.RUnlock()
+    
+    if len(topicSubs) == 0 {
+        fmt.Printf("No subscribers for topic '%s'\n", topic)
+        return
+    }
+    
+    msg := Message{
+        Topic:     topic,
+        Content:   content,
+        Timestamp: time.Now(),
+        Publisher: publisher,
+    }
+    
+    fmt.Printf("Publishing to topic '%s': %v (publisher: %s)\n", 
+               topic, content, publisher)
+    
+    // Send message to all subscribers concurrently
+    var wg sync.WaitGroup
+    for _, subscriber := range topicSubs {
+        wg.Add(1)
+        go func(sub Subscriber) {
+            defer wg.Done()
+            sub.OnMessage(msg)
+        }(subscriber)
+    }
+    wg.Wait()
+}
+
+func (ps *PubSub) GetTopics() []string {
+    ps.mu.RLock()
+    defer ps.mu.RUnlock()
+    
+    topics := make([]string, 0, len(ps.subscribers))
+    for topic := range ps.subscribers {
+        topics = append(topics, topic)
+    }
+    return topics
+}
+
+func (ps *PubSub) GetSubscriberCount(topic string) int {
+    ps.mu.RLock()
+    defer ps.mu.RUnlock()
+    
+    if subs, exists := ps.subscribers[topic]; exists {
+        return len(subs)
+    }
+    return 0
+}
+
+// Advanced filtered subscriber
+type FilteredSubscriber struct {
+    id       string
+    filter   func(Message) bool
+    messages []Message
+    mu       sync.Mutex
+}
+
+func NewFilteredSubscriber(id string, filter func(Message) bool) *FilteredSubscriber {
+    return &FilteredSubscriber{
+        id:     id,
+        filter: filter,
+    }
+}
+
+func (fs *FilteredSubscriber) OnMessage(msg Message) {
+    if !fs.filter(msg) {
+        return
+    }
+    
+    fs.mu.Lock()
+    fs.messages = append(fs.messages, msg)
+    count := len(fs.messages)
+    fs.mu.Unlock()
+    
+    fmt.Printf("[%s] Filtered subscriber received message #%d: %v\n", 
+               fs.id, count, msg.Content)
+}
+
+func (fs *FilteredSubscriber) ID() string {
+    return fs.id
+}
+
+func (fs *FilteredSubscriber) GetMessages() []Message {
+    fs.mu.Lock()
+    defer fs.mu.Unlock()
+    
+    messages := make([]Message, len(fs.messages))
+    copy(messages, fs.messages)
+    return messages
+}
+
+func main() {
+    fmt.Println("Demonstrating Publisher-Subscriber Pattern")
+    
+    pubsub := NewPubSub()
+    
+    // Example 1: Basic pub-sub
+    fmt.Println("\nExample 1: Basic publish-subscribe")
+    
+    sub1 := NewSimpleSubscriber("subscriber-1")
+    sub2 := NewSimpleSubscriber("subscriber-2")
+    
+    pubsub.Subscribe("news", sub1)
+    pubsub.Subscribe("news", sub2)
+    pubsub.Subscribe("sports", sub1)
+    
+    pubsub.Publish("news", "NewsBot", "Breaking: Go 1.23 released!")
+    pubsub.Publish("sports", "SportsBot", "Team A wins championship!")
+    pubsub.Publish("news", "NewsBot", "New concurrency patterns discovered")
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    fmt.Printf("Subscriber 1 received %d messages\n", sub1.MessageCount())
+    fmt.Printf("Subscriber 2 received %d messages\n", sub2.MessageCount())
+    
+    fmt.Println()
+    
+    // Example 2: Topic-specific subscribers
+    fmt.Println("Example 2: Topic-specific subscribers")
+    
+    techSub := NewTopicSubscriber("tech-enthusiast", "technology", "programming")
+    businessSub := NewTopicSubscriber("business-reader", "business", "finance")
+    generalSub := NewTopicSubscriber("general-reader", "news", "technology", "business")
+    
+    pubsub.Subscribe("technology", techSub)
+    pubsub.Subscribe("programming", techSub)
+    pubsub.Subscribe("business", businessSub)
+    pubsub.Subscribe("finance", businessSub)
+    pubsub.Subscribe("news", generalSub)
+    pubsub.Subscribe("technology", generalSub)
+    pubsub.Subscribe("business", generalSub)
+    
+    // Publish to various topics
+    topics := []struct {
+        topic   string
+        content string
+    }{
+        {"technology", "New AI breakthrough announced"},
+        {"programming", "Go 1.23 features unveiled"},
+        {"business", "Market reaches new highs"},
+        {"finance", "Cryptocurrency trends analysis"},
+        {"news", "Global summit concludes successfully"},
+    }
+    
+    for _, item := range topics {
+        pubsub.Publish(item.topic, "ContentBot", item.content)
+        time.Sleep(50 * time.Millisecond)
+    }
+    
+    fmt.Println("\nMessage histories:")
+    for _, sub := range []*TopicSubscriber{techSub, businessSub, generalSub} {
+        history := sub.GetHistory()
+        fmt.Printf("%s received %d messages\n", sub.ID(), len(history))
+    }
+    
+    fmt.Println()
+    
+    // Example 3: Filtered subscribers
+    fmt.Println("Example 3: Filtered subscribers")
+    
+    // Filter for high-priority messages
+    highPriorityFilter := func(msg Message) bool {
+        if content, ok := msg.Content.(map[string]interface{}); ok {
+            if priority, exists := content["priority"]; exists {
+                if priorityStr, ok := priority.(string); ok {
+                    return priorityStr == "high" || priorityStr == "critical"
+                }
+            }
+        }
+        return false
+    }
+    
+    // Filter for specific publisher
+    techPublisherFilter := func(msg Message) bool {
+        return msg.Publisher == "TechNews"
+    }
+    
+    prioritySub := NewFilteredSubscriber("priority-alerts", highPriorityFilter)
+    techSub2 := NewFilteredSubscriber("tech-only", techPublisherFilter)
+    
+    pubsub.Subscribe("alerts", prioritySub)
+    pubsub.Subscribe("technology", techSub2)
+    pubsub.Subscribe("news", techSub2)
+    
+    // Publish messages with metadata
+    messages := []struct {
+        topic     string
+        publisher string
+        content   map[string]interface{}
+    }{
+        {"alerts", "SystemBot", map[string]interface{}{
+            "message":  "System maintenance scheduled",
+            "priority": "low",
+        }},
+        {"alerts", "SecurityBot", map[string]interface{}{
+            "message":  "Security breach detected",
+            "priority": "critical",
+        }},
+        {"technology", "TechNews", map[string]interface{}{
+            "message":  "New framework released",
+            "priority": "medium",
+        }},
+        {"news", "GeneralNews", map[string]interface{}{
+            "message":  "Weather update",
+            "priority": "low",
+        }},
+        {"news", "TechNews", map[string]interface{}{
+            "message":  "Tech conference announced",
+            "priority": "medium",
+        }},
+    }
+    
+    for _, msg := range messages {
+        pubsub.Publish(msg.topic, msg.publisher, msg.content)
+        time.Sleep(50 * time.Millisecond)
+    }
+    
+    fmt.Println("\nFiltered results:")
+    fmt.Printf("Priority subscriber received %d high-priority messages\n", 
+              len(prioritySub.GetMessages()))
+    fmt.Printf("Tech publisher subscriber received %d messages from TechNews\n", 
+              len(techSub2.GetMessages()))
+    
+    fmt.Println()
+    
+    // Example 4: Dynamic subscription management
+    fmt.Println("Example 4: Dynamic subscription management")
+    
+    dynamicSub := NewSimpleSubscriber("dynamic-subscriber")
+    
+    // Subscribe to multiple topics
+    topics2 := []string{"updates", "notifications", "alerts"}
+    for _, topic := range topics2 {
+        pubsub.Subscribe(topic, dynamicSub)
+    }
+    
+    // Publish some messages
+    pubsub.Publish("updates", "UpdateBot", "System updated")
+    pubsub.Publish("notifications", "NotifyBot", "New message received")
+    
+    time.Sleep(100 * time.Millisecond)
+    fmt.Printf("Dynamic subscriber received %d messages\n", dynamicSub.MessageCount())
+    
+    // Unsubscribe from some topics
+    pubsub.Unsubscribe("updates", dynamicSub.ID())
+    pubsub.Unsubscribe("alerts", dynamicSub.ID())
+    
+    // Publish more messages
+    pubsub.Publish("updates", "UpdateBot", "Another update")
+    pubsub.Publish("notifications", "NotifyBot", "Another notification")
+    pubsub.Publish("alerts", "AlertBot", "System alert")
+    
+    time.Sleep(100 * time.Millisecond)
+    fmt.Printf("After unsubscribing, dynamic subscriber received %d total messages\n", 
+              dynamicSub.MessageCount())
+    
+    // Show current topic statistics
+    fmt.Println("\nCurrent topic statistics:")
+    for _, topic := range pubsub.GetTopics() {
+        count := pubsub.GetSubscriberCount(topic)
+        fmt.Printf("Topic '%s': %d subscribers\n", topic, count)
+    }
+    
+    fmt.Println("Publisher-Subscriber pattern demonstration completed")
+}
+```
+
+The Publisher-Subscriber pattern enables loose coupling between message  
+producers and consumers. It's essential for event-driven architectures,  
+notification systems, and building scalable, decoupled applications.  
+
+## Circuit breaker pattern
+
+Circuit breakers prevent cascading failures by temporarily stopping calls  
+to failing services, allowing them time to recover before retrying.  
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// Circuit breaker states
+type State int
+
+const (
+    Closed State = iota
+    Open
+    HalfOpen
+)
+
+func (s State) String() string {
+    switch s {
+    case Closed:
+        return "CLOSED"
+    case Open:
+        return "OPEN"
+    case HalfOpen:
+        return "HALF_OPEN"
+    default:
+        return "UNKNOWN"
+    }
+}
+
+// Circuit breaker configuration
+type Config struct {
+    FailureThreshold int           // Number of failures to open circuit
+    RecoveryTimeout  time.Duration // Time to wait before trying half-open
+    SuccessThreshold int           // Consecutive successes to close circuit
+    Timeout          time.Duration // Request timeout
+}
+
+// Circuit breaker implementation
+type CircuitBreaker struct {
+    config       Config
+    state        State
+    failures     int
+    successes    int
+    lastFailTime time.Time
+    mu           sync.RWMutex
+}
+
+func NewCircuitBreaker(config Config) *CircuitBreaker {
+    return &CircuitBreaker{
+        config: config,
+        state:  Closed,
+    }
+}
+
+// Execute function with circuit breaker protection
+func (cb *CircuitBreaker) Execute(fn func() error) error {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+    
+    fmt.Printf("Circuit breaker: state=%s, failures=%d, successes=%d\n", 
+              cb.state, cb.failures, cb.successes)
+    
+    if cb.state == Open {
+        // Check if recovery timeout has passed
+        if time.Since(cb.lastFailTime) > cb.config.RecoveryTimeout {
+            fmt.Println("Circuit breaker: transitioning to HALF_OPEN")
+            cb.state = HalfOpen
+            cb.successes = 0
+        } else {
+            return errors.New("circuit breaker is OPEN")
+        }
+    }
+    
+    // Execute the function with timeout
+    resultChan := make(chan error, 1)
+    
+    go func() {
+        resultChan <- fn()
+    }()
+    
+    select {
+    case err := <-resultChan:
+        return cb.handleResult(err)
+    case <-time.After(cb.config.Timeout):
+        return cb.handleResult(errors.New("request timeout"))
+    }
+}
+
+func (cb *CircuitBreaker) handleResult(err error) error {
+    if err != nil {
+        cb.onFailure()
+        return err
+    }
+    
+    cb.onSuccess()
+    return nil
+}
+
+func (cb *CircuitBreaker) onFailure() {
+    cb.failures++
+    cb.lastFailTime = time.Now()
+    
+    fmt.Printf("Circuit breaker: failure recorded (total: %d)\n", cb.failures)
+    
+    if cb.state == HalfOpen || cb.failures >= cb.config.FailureThreshold {
+        fmt.Printf("Circuit breaker: opening circuit (threshold: %d)\n", 
+                  cb.config.FailureThreshold)
+        cb.state = Open
+        cb.successes = 0
+    }
+}
+
+func (cb *CircuitBreaker) onSuccess() {
+    cb.failures = 0
+    
+    if cb.state == HalfOpen {
+        cb.successes++
+        fmt.Printf("Circuit breaker: success in HALF_OPEN (count: %d)\n", cb.successes)
+        
+        if cb.successes >= cb.config.SuccessThreshold {
+            fmt.Println("Circuit breaker: closing circuit")
+            cb.state = Closed
+            cb.successes = 0
+        }
+    } else {
+        fmt.Println("Circuit breaker: success recorded")
+    }
+}
+
+func (cb *CircuitBreaker) GetState() State {
+    cb.mu.RLock()
+    defer cb.mu.RUnlock()
+    return cb.state
+}
+
+// Simulated service that can fail
+type UnreliableService struct {
+    name         string
+    failureRate  float64 // 0.0 to 1.0
+    responseTime time.Duration
+}
+
+func (s *UnreliableService) Call() error {
+    fmt.Printf("Service %s: processing request\n", s.name)
+    
+    // Simulate processing time
+    time.Sleep(s.responseTime)
+    
+    // Simulate random failures
+    if time.Now().UnixNano()%100 < int64(s.failureRate*100) {
+        return fmt.Errorf("service %s failed", s.name)
+    }
+    
+    fmt.Printf("Service %s: request successful\n", s.name)
+    return nil
+}
+
+// Multi-service circuit breaker manager
+type ServiceManager struct {
+    breakers map[string]*CircuitBreaker
+    mu       sync.RWMutex
+}
+
+func NewServiceManager() *ServiceManager {
+    return &ServiceManager{
+        breakers: make(map[string]*CircuitBreaker),
+    }
+}
+
+func (sm *ServiceManager) RegisterService(name string, config Config) {
+    sm.mu.Lock()
+    defer sm.mu.Unlock()
+    
+    sm.breakers[name] = NewCircuitBreaker(config)
+    fmt.Printf("Service manager: registered service '%s'\n", name)
+}
+
+func (sm *ServiceManager) CallService(serviceName string, fn func() error) error {
+    sm.mu.RLock()
+    breaker, exists := sm.breakers[serviceName]
+    sm.mu.RUnlock()
+    
+    if !exists {
+        return fmt.Errorf("service '%s' not registered", serviceName)
+    }
+    
+    return breaker.Execute(fn)
+}
+
+func (sm *ServiceManager) GetServiceStates() map[string]State {
+    sm.mu.RLock()
+    defer sm.mu.RUnlock()
+    
+    states := make(map[string]State)
+    for name, breaker := range sm.breakers {
+        states[name] = breaker.GetState()
+    }
+    return states
+}
+
+func main() {
+    fmt.Println("Demonstrating Circuit Breaker Pattern")
+    
+    // Example 1: Basic circuit breaker
+    fmt.Println("\nExample 1: Basic circuit breaker behavior")
+    
+    config := Config{
+        FailureThreshold: 3,
+        RecoveryTimeout:  2 * time.Second,
+        SuccessThreshold: 2,
+        Timeout:          500 * time.Millisecond,
+    }
+    
+    breaker := NewCircuitBreaker(config)
+    service := &UnreliableService{
+        name:         "TestService",
+        failureRate:  0.7, // 70% failure rate
+        responseTime: 100 * time.Millisecond,
+    }
+    
+    // Test circuit breaker behavior
+    fmt.Println("Testing circuit breaker with unreliable service (70% failure rate)")
+    
+    for i := 1; i <= 12; i++ {
+        fmt.Printf("\n--- Request %d ---\n", i)
+        
+        err := breaker.Execute(func() error {
+            return service.Call()
+        })
+        
+        if err != nil {
+            fmt.Printf("Request %d failed: %v\n", i, err)
+        } else {
+            fmt.Printf("Request %d succeeded\n", i)
+        }
+        
+        fmt.Printf("Circuit breaker state: %s\n", breaker.GetState())
+        time.Sleep(300 * time.Millisecond)
+    }
+    
+    fmt.Println()
+    
+    // Example 2: Service recovery simulation
+    fmt.Println("Example 2: Service recovery simulation")
+    
+    // Create a service that will recover after some time
+    recoveringService := &UnreliableService{
+        name:         "RecoveringService",
+        failureRate:  0.9, // Start with high failure rate
+        responseTime: 150 * time.Millisecond,
+    }
+    
+    config2 := Config{
+        FailureThreshold: 2,
+        RecoveryTimeout:  1 * time.Second,
+        SuccessThreshold: 3,
+        Timeout:          400 * time.Millisecond,
+    }
+    
+    breaker2 := NewCircuitBreaker(config2)
+    
+    // Goroutine to simulate service recovery
+    go func() {
+        time.Sleep(3 * time.Second)
+        fmt.Println("\n*** Service is recovering... ***")
+        recoveringService.failureRate = 0.1 // Improve to 90% success rate
+    }()
+    
+    // Test service with recovery
+    for i := 1; i <= 15; i++ {
+        fmt.Printf("\n--- Recovery Test %d ---\n", i)
+        
+        err := breaker2.Execute(func() error {
+            return recoveringService.Call()
+        })
+        
+        if err != nil {
+            fmt.Printf("Recovery test %d failed: %v\n", i, err)
+        } else {
+            fmt.Printf("Recovery test %d succeeded\n", i)
+        }
+        
+        time.Sleep(500 * time.Millisecond)
+    }
+    
+    fmt.Println()
+    
+    // Example 3: Multiple services with service manager
+    fmt.Println("Example 3: Multiple services with circuit breakers")
+    
+    manager := NewServiceManager()
+    
+    // Register different services with different configurations
+    services := map[string]Config{
+        "database": {
+            FailureThreshold: 5,
+            RecoveryTimeout:  3 * time.Second,
+            SuccessThreshold: 2,
+            Timeout:          1 * time.Second,
+        },
+        "cache": {
+            FailureThreshold: 2,
+            RecoveryTimeout:  1 * time.Second,
+            SuccessThreshold: 1,
+            Timeout:          200 * time.Millisecond,
+        },
+        "external_api": {
+            FailureThreshold: 3,
+            RecoveryTimeout:  5 * time.Second,
+            SuccessThreshold: 3,
+            Timeout:          800 * time.Millisecond,
+        },
+    }
+    
+    for serviceName, config := range services {
+        manager.RegisterService(serviceName, config)
+    }
+    
+    // Create service implementations
+    serviceImpls := map[string]*UnreliableService{
+        "database": {
+            name:         "Database",
+            failureRate:  0.3,
+            responseTime: 200 * time.Millisecond,
+        },
+        "cache": {
+            name:         "Cache",
+            failureRate:  0.1,
+            responseTime: 50 * time.Millisecond,
+        },
+        "external_api": {
+            name:         "ExternalAPI",
+            failureRate:  0.6,
+            responseTime: 400 * time.Millisecond,
+        },
+    }
+    
+    // Simulate concurrent requests to different services
+    var wg sync.WaitGroup
+    
+    for serviceName, serviceImpl := range serviceImpls {
+        wg.Add(1)
+        go func(svcName string, svc *UnreliableService) {
+            defer wg.Done()
+            
+            for i := 1; i <= 8; i++ {
+                err := manager.CallService(svcName, func() error {
+                    return svc.Call()
+                })
+                
+                if err != nil {
+                    fmt.Printf("Service %s request %d failed: %v\n", svcName, i, err)
+                } else {
+                    fmt.Printf("Service %s request %d succeeded\n", svcName, i)
+                }
+                
+                time.Sleep(400 * time.Millisecond)
+            }
+        }(serviceName, serviceImpl)
+    }
+    
+    wg.Wait()
+    
+    // Display final service states
+    fmt.Println("\nFinal service circuit breaker states:")
+    states := manager.GetServiceStates()
+    for serviceName, state := range states {
+        fmt.Printf("Service '%s': %s\n", serviceName, state)
+    }
+    
+    fmt.Println("Circuit breaker pattern demonstration completed")
+}
+```
+
+Circuit breakers protect distributed systems from cascading failures.  
+They monitor service health and prevent calls to failing services,  
+allowing systems to gracefully degrade and recover automatically.  
+
+## Real-world web crawler
+
+A concurrent web crawler demonstrates practical application of goroutines,  
+channels, rate limiting, and coordination in a realistic scenario.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "math/rand"
+    "sync"
+    "time"
+)
+
+// URL represents a web page to crawl
+type URL struct {
+    Address string
+    Depth   int
+}
+
+// Page represents crawled content
+type Page struct {
+    URL       string
+    Content   string
+    Links     []string
+    Error     error
+    Timestamp time.Time
+}
+
+// Crawler configuration
+type CrawlerConfig struct {
+    MaxWorkers    int
+    MaxDepth      int
+    MaxPages      int
+    RateLimit     time.Duration
+    RequestTimeout time.Duration
+}
+
+// Web crawler implementation
+type WebCrawler struct {
+    config      CrawlerConfig
+    urlQueue    chan URL
+    results     chan Page
+    visited     map[string]bool
+    visitedMu   sync.RWMutex
+    semaphore   chan struct{}
+    pageCount   int
+    pageCountMu sync.Mutex
+    wg          sync.WaitGroup
+    done        chan struct{}
+}
+
+func NewWebCrawler(config CrawlerConfig) *WebCrawler {
+    return &WebCrawler{
+        config:    config,
+        urlQueue:  make(chan URL, config.MaxWorkers*2),
+        results:   make(chan Page, config.MaxWorkers),
+        visited:   make(map[string]bool),
+        semaphore: make(chan struct{}, config.MaxWorkers),
+        done:      make(chan struct{}),
+    }
+}
+
+// Simulate fetching a web page
+func (wc *WebCrawler) fetchPage(url string) Page {
+    fmt.Printf("Crawler: fetching %s\n", url)
+    
+    // Simulate network delay
+    time.Sleep(wc.config.RateLimit)
+    
+    // Simulate random failures
+    if rand.Float64() < 0.1 { // 10% failure rate
+        return Page{
+            URL:       url,
+            Error:     fmt.Errorf("failed to fetch %s", url),
+            Timestamp: time.Now(),
+        }
+    }
+    
+    // Generate mock content and links
+    content := fmt.Sprintf("Content from %s - fetched at %v", 
+                           url, time.Now().Format("15:04:05"))
+    
+    var links []string
+    numLinks := rand.Intn(5) + 1 // 1-5 links per page
+    for i := 0; i < numLinks; i++ {
+        link := fmt.Sprintf("%s/page-%d", url, rand.Intn(10)+1)
+        links = append(links, link)
+    }
+    
+    return Page{
+        URL:       url,
+        Content:   content,
+        Links:     links,
+        Timestamp: time.Now(),
+    }
+}
+
+// Worker goroutine
+func (wc *WebCrawler) worker(workerID int) {
+    defer wc.wg.Done()
+    
+    fmt.Printf("Worker %d: starting\n", workerID)
+    
+    for {
+        select {
+        case url := <-wc.urlQueue:
+            // Check if we should stop
+            select {
+            case <-wc.done:
+                return
+            default:
+            }
+            
+            // Check if already visited
+            wc.visitedMu.Lock()
+            if wc.visited[url.Address] {
+                wc.visitedMu.Unlock()
+                continue
+            }
+            wc.visited[url.Address] = true
+            wc.visitedMu.Unlock()
+            
+            // Check page limit
+            wc.pageCountMu.Lock()
+            if wc.pageCount >= wc.config.MaxPages {
+                wc.pageCountMu.Unlock()
+                return
+            }
+            wc.pageCount++
+            currentCount := wc.pageCount
+            wc.pageCountMu.Unlock()
+            
+            fmt.Printf("Worker %d: processing %s (page %d/%d, depth %d)\n", 
+                      workerID, url.Address, currentCount, 
+                      wc.config.MaxPages, url.Depth)
+            
+            // Fetch the page
+            page := wc.fetchPage(url.Address)
+            
+            // Send result
+            wc.results <- page
+            
+            // Add new URLs if within depth limit
+            if url.Depth < wc.config.MaxDepth && page.Error == nil {
+                for _, link := range page.Links {
+                    select {
+                    case wc.urlQueue <- URL{Address: link, Depth: url.Depth + 1}:
+                    case <-wc.done:
+                        return
+                    default:
+                        // Queue full, skip this link
+                    }
+                }
+            }
+            
+        case <-wc.done:
+            fmt.Printf("Worker %d: stopping\n", workerID)
+            return
+        }
+    }
+}
+
+// Start crawling
+func (wc *WebCrawler) Start(startURLs []string) <-chan Page {
+    // Add initial URLs
+    for _, url := range startURLs {
+        wc.urlQueue <- URL{Address: url, Depth: 0}
+    }
+    
+    // Start workers
+    for i := 1; i <= wc.config.MaxWorkers; i++ {
+        wc.wg.Add(1)
+        go wc.worker(i)
+    }
+    
+    // Monitor completion
+    go func() {
+        defer close(wc.results)
+        
+        ticker := time.NewTicker(2 * time.Second)
+        defer ticker.Stop()
+        
+        for {
+            select {
+            case <-ticker.C:
+                wc.pageCountMu.Lock()
+                count := wc.pageCount
+                wc.pageCountMu.Unlock()
+                
+                if count >= wc.config.MaxPages {
+                    fmt.Printf("Crawler: reached page limit (%d), stopping...\n", count)
+                    close(wc.done)
+                    wc.wg.Wait()
+                    return
+                }
+                
+                // Check if queue is empty and no more work
+                if len(wc.urlQueue) == 0 {
+                    fmt.Println("Crawler: no more URLs to process, stopping...")
+                    close(wc.done)
+                    wc.wg.Wait()
+                    return
+                }
+                
+            case <-time.After(10 * time.Second):
+                fmt.Println("Crawler: timeout reached, stopping...")
+                close(wc.done)
+                wc.wg.Wait()
+                return
+            }
+        }
+    }()
+    
+    return wc.results
+}
+
+// Crawler statistics
+type CrawlStats struct {
+    TotalPages      int
+    SuccessfulPages int
+    FailedPages     int
+    UniqueURLs      int
+    CrawlDuration   time.Duration
+    PagesPerSecond  float64
+}
+
+// Result collector
+func collectResults(results <-chan Page) CrawlStats {
+    startTime := time.Now()
+    stats := CrawlStats{}
+    
+    urlSet := make(map[string]bool)
+    
+    for page := range results {
+        stats.TotalPages++
+        urlSet[page.URL] = true
+        
+        if page.Error != nil {
+            stats.FailedPages++
+            fmt.Printf("Results: ERROR - %s: %v\n", page.URL, page.Error)
+        } else {
+            stats.SuccessfulPages++
+            fmt.Printf("Results: SUCCESS - %s (%d links found)\n", 
+                      page.URL, len(page.Links))
+        }
+    }
+    
+    stats.UniqueURLs = len(urlSet)
+    stats.CrawlDuration = time.Since(startTime)
+    stats.PagesPerSecond = float64(stats.TotalPages) / stats.CrawlDuration.Seconds()
+    
+    return stats
+}
+
+func main() {
+    rand.Seed(time.Now().UnixNano())
+    
+    fmt.Println("Demonstrating Real-world Web Crawler")
+    
+    // Example 1: Basic web crawling
+    fmt.Println("\nExample 1: Basic web crawler")
+    
+    config := CrawlerConfig{
+        MaxWorkers:     3,
+        MaxDepth:       2,
+        MaxPages:       15,
+        RateLimit:      200 * time.Millisecond,
+        RequestTimeout: 2 * time.Second,
+    }
+    
+    crawler := NewWebCrawler(config)
+    
+    startURLs := []string{
+        "https://example.com",
+        "https://test.com",
+    }
+    
+    fmt.Printf("Starting crawl with %d workers, max depth %d, max pages %d\n",
+              config.MaxWorkers, config.MaxDepth, config.MaxPages)
+    
+    results := crawler.Start(startURLs)
+    stats := collectResults(results)
+    
+    fmt.Printf("\nCrawl completed:\n")
+    fmt.Printf("  Total pages: %d\n", stats.TotalPages)
+    fmt.Printf("  Successful: %d\n", stats.SuccessfulPages)
+    fmt.Printf("  Failed: %d\n", stats.FailedPages)
+    fmt.Printf("  Unique URLs: %d\n", stats.UniqueURLs)
+    fmt.Printf("  Duration: %v\n", stats.CrawlDuration)
+    fmt.Printf("  Pages/second: %.2f\n", stats.PagesPerSecond)
+    
+    fmt.Println()
+    
+    // Example 2: High-throughput crawling
+    fmt.Println("Example 2: High-throughput web crawler")
+    
+    config2 := CrawlerConfig{
+        MaxWorkers:     8,
+        MaxDepth:       3,
+        MaxPages:       25,
+        RateLimit:      100 * time.Millisecond,
+        RequestTimeout: 1 * time.Second,
+    }
+    
+    crawler2 := NewWebCrawler(config2)
+    
+    startURLs2 := []string{
+        "https://site1.com",
+        "https://site2.com",
+        "https://site3.com",
+    }
+    
+    fmt.Printf("High-throughput crawl: %d workers, max depth %d, max pages %d\n",
+              config2.MaxWorkers, config2.MaxDepth, config2.MaxPages)
+    
+    results2 := crawler2.Start(startURLs2)
+    stats2 := collectResults(results2)
+    
+    fmt.Printf("\nHigh-throughput crawl completed:\n")
+    fmt.Printf("  Total pages: %d\n", stats2.TotalPages)
+    fmt.Printf("  Successful: %d\n", stats2.SuccessfulPages)
+    fmt.Printf("  Failed: %d\n", stats2.FailedPages)
+    fmt.Printf("  Duration: %v\n", stats2.CrawlDuration)
+    fmt.Printf("  Pages/second: %.2f\n", stats2.PagesPerSecond)
+    
+    fmt.Println()
+    
+    // Example 3: Comparison of different configurations
+    fmt.Println("Example 3: Configuration comparison")
+    
+    configs := []struct {
+        name   string
+        config CrawlerConfig
+    }{
+        {
+            "Conservative",
+            CrawlerConfig{MaxWorkers: 2, MaxDepth: 2, MaxPages: 10, RateLimit: 500 * time.Millisecond},
+        },
+        {
+            "Balanced",
+            CrawlerConfig{MaxWorkers: 4, MaxDepth: 2, MaxPages: 10, RateLimit: 250 * time.Millisecond},
+        },
+        {
+            "Aggressive",
+            CrawlerConfig{MaxWorkers: 6, MaxDepth: 2, MaxPages: 10, RateLimit: 100 * time.Millisecond},
+        },
+    }
+    
+    for _, cfg := range configs {
+        fmt.Printf("\nTesting %s configuration:\n", cfg.name)
+        
+        crawler := NewWebCrawler(cfg.config)
+        startTime := time.Now()
+        
+        results := crawler.Start([]string{"https://benchmark.com"})
+        stats := collectResults(results)
+        
+        fmt.Printf("%s results: %d pages in %v (%.2f pages/sec)\n",
+                  cfg.name, stats.TotalPages, stats.CrawlDuration, stats.PagesPerSecond)
+    }
+    
+    fmt.Println("Web crawler demonstration completed")
+}
+```
+
+This web crawler demonstrates real-world concurrency patterns including  
+worker pools, rate limiting, graceful shutdown, and coordination between  
+multiple goroutines processing a shared queue of work items.  
+
+## Performance monitoring system
+
+A monitoring system showcases advanced concurrency patterns for collecting,  
+aggregating, and reporting metrics from multiple sources concurrently.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "math/rand"
+    "sort"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+// Metric represents a single measurement
+type Metric struct {
+    Name      string
+    Value     float64
+    Tags      map[string]string
+    Timestamp time.Time
+    Source    string
+}
+
+// MetricCollector interface for different metric sources
+type MetricCollector interface {
+    Name() string
+    Collect() []Metric
+    Start(chan<- []Metric)
+    Stop()
+}
+
+// CPU usage collector
+type CPUCollector struct {
+    name     string
+    interval time.Duration
+    stop     chan struct{}
+    wg       sync.WaitGroup
+}
+
+func NewCPUCollector(interval time.Duration) *CPUCollector {
+    return &CPUCollector{
+        name:     "cpu",
+        interval: interval,
+        stop:     make(chan struct{}),
+    }
+}
+
+func (c *CPUCollector) Name() string {
+    return c.name
+}
+
+func (c *CPUCollector) Collect() []Metric {
+    // Simulate CPU metrics collection
+    return []Metric{
+        {
+            Name:      "cpu.usage.percent",
+            Value:     rand.Float64() * 100,
+            Tags:      map[string]string{"core": "0"},
+            Timestamp: time.Now(),
+            Source:    c.name,
+        },
+        {
+            Name:      "cpu.usage.percent", 
+            Value:     rand.Float64() * 100,
+            Tags:      map[string]string{"core": "1"},
+            Timestamp: time.Now(),
+            Source:    c.name,
+        },
+    }
+}
+
+func (c *CPUCollector) Start(output chan<- []Metric) {
+    c.wg.Add(1)
+    go func() {
+        defer c.wg.Done()
+        
+        ticker := time.NewTicker(c.interval)
+        defer ticker.Stop()
+        
+        fmt.Printf("CPUCollector: started (interval: %v)\n", c.interval)
+        
+        for {
+            select {
+            case <-ticker.C:
+                metrics := c.Collect()
+                select {
+                case output <- metrics:
+                    fmt.Printf("CPUCollector: sent %d metrics\n", len(metrics))
+                case <-c.stop:
+                    return
+                }
+            case <-c.stop:
+                fmt.Println("CPUCollector: stopping")
+                return
+            }
+        }
+    }()
+}
+
+func (c *CPUCollector) Stop() {
+    close(c.stop)
+    c.wg.Wait()
+}
+
+// Memory usage collector
+type MemoryCollector struct {
+    name     string
+    interval time.Duration
+    stop     chan struct{}
+    wg       sync.WaitGroup
+}
+
+func NewMemoryCollector(interval time.Duration) *MemoryCollector {
+    return &MemoryCollector{
+        name:     "memory",
+        interval: interval,
+        stop:     make(chan struct{}),
+    }
+}
+
+func (m *MemoryCollector) Name() string {
+    return m.name
+}
+
+func (m *MemoryCollector) Collect() []Metric {
+    // Simulate memory metrics
+    totalMem := 8 * 1024 * 1024 * 1024 // 8GB
+    usedMem := rand.Float64() * float64(totalMem) * 0.8 // Up to 80% usage
+    
+    return []Metric{
+        {
+            Name:      "memory.used.bytes",
+            Value:     usedMem,
+            Tags:      map[string]string{"type": "physical"},
+            Timestamp: time.Now(),
+            Source:    m.name,
+        },
+        {
+            Name:      "memory.usage.percent",
+            Value:     (usedMem / float64(totalMem)) * 100,
+            Tags:      map[string]string{"type": "physical"},
+            Timestamp: time.Now(),
+            Source:    m.name,
+        },
+    }
+}
+
+func (m *MemoryCollector) Start(output chan<- []Metric) {
+    m.wg.Add(1)
+    go func() {
+        defer m.wg.Done()
+        
+        ticker := time.NewTicker(m.interval)
+        defer ticker.Stop()
+        
+        fmt.Printf("MemoryCollector: started (interval: %v)\n", m.interval)
+        
+        for {
+            select {
+            case <-ticker.C:
+                metrics := m.Collect()
+                select {
+                case output <- metrics:
+                    fmt.Printf("MemoryCollector: sent %d metrics\n", len(metrics))
+                case <-m.stop:
+                    return
+                }
+            case <-m.stop:
+                fmt.Println("MemoryCollector: stopping")
+                return
+            }
+        }
+    }()
+}
+
+func (m *MemoryCollector) Stop() {
+    close(m.stop)
+    m.wg.Wait()
+}
+
+// Disk I/O collector
+type DiskCollector struct {
+    name     string
+    interval time.Duration
+    stop     chan struct{}
+    wg       sync.WaitGroup
+}
+
+func NewDiskCollector(interval time.Duration) *DiskCollector {
+    return &DiskCollector{
+        name:     "disk",
+        interval: interval,
+        stop:     make(chan struct{}),
+    }
+}
+
+func (d *DiskCollector) Name() string {
+    return d.name
+}
+
+func (d *DiskCollector) Collect() []Metric {
+    // Simulate disk metrics
+    return []Metric{
+        {
+            Name:      "disk.read.bytes_per_sec",
+            Value:     rand.Float64() * 1000000, // Up to 1MB/s
+            Tags:      map[string]string{"device": "sda1"},
+            Timestamp: time.Now(),
+            Source:    d.name,
+        },
+        {
+            Name:      "disk.write.bytes_per_sec",
+            Value:     rand.Float64() * 500000, // Up to 500KB/s
+            Tags:      map[string]string{"device": "sda1"},
+            Timestamp: time.Now(),
+            Source:    d.name,
+        },
+    }
+}
+
+func (d *DiskCollector) Start(output chan<- []Metric) {
+    d.wg.Add(1)
+    go func() {
+        defer d.wg.Done()
+        
+        ticker := time.NewTicker(d.interval)
+        defer ticker.Stop()
+        
+        fmt.Printf("DiskCollector: started (interval: %v)\n", d.interval)
+        
+        for {
+            select {
+            case <-ticker.C:
+                metrics := d.Collect()
+                select {
+                case output <- metrics:
+                    fmt.Printf("DiskCollector: sent %d metrics\n", len(metrics))
+                case <-d.stop:
+                    return
+                }
+            case <-d.stop:
+                fmt.Println("DiskCollector: stopping")
+                return
+            }
+        }
+    }()
+}
+
+func (d *DiskCollector) Stop() {
+    close(d.stop)
+    d.wg.Wait()
+}
+
+// Metric aggregator
+type MetricAggregator struct {
+    metrics    []Metric
+    mu         sync.RWMutex
+    totalCount int64
+}
+
+func NewMetricAggregator() *MetricAggregator {
+    return &MetricAggregator{}
+}
+
+func (ma *MetricAggregator) AddMetrics(metrics []Metric) {
+    ma.mu.Lock()
+    defer ma.mu.Unlock()
+    
+    ma.metrics = append(ma.metrics, metrics...)
+    atomic.AddInt64(&ma.totalCount, int64(len(metrics)))
+    
+    fmt.Printf("Aggregator: added %d metrics (total: %d)\n", 
+              len(metrics), atomic.LoadInt64(&ma.totalCount))
+}
+
+func (ma *MetricAggregator) GetMetricsByName(name string) []Metric {
+    ma.mu.RLock()
+    defer ma.mu.RUnlock()
+    
+    var result []Metric
+    for _, metric := range ma.metrics {
+        if metric.Name == name {
+            result = append(result, metric)
+        }
+    }
+    
+    return result
+}
+
+func (ma *MetricAggregator) GetSummary() map[string]interface{} {
+    ma.mu.RLock()
+    defer ma.mu.RUnlock()
+    
+    metricCounts := make(map[string]int)
+    sourceCounts := make(map[string]int)
+    
+    for _, metric := range ma.metrics {
+        metricCounts[metric.Name]++
+        sourceCounts[metric.Source]++
+    }
+    
+    return map[string]interface{}{
+        "total_metrics": len(ma.metrics),
+        "metric_types":  metricCounts,
+        "source_counts": sourceCounts,
+    }
+}
+
+// Performance monitoring system
+type MonitoringSystem struct {
+    collectors []MetricCollector
+    aggregator *MetricAggregator
+    input      chan []Metric
+    stop       chan struct{}
+    wg         sync.WaitGroup
+}
+
+func NewMonitoringSystem() *MonitoringSystem {
+    return &MonitoringSystem{
+        aggregator: NewMetricAggregator(),
+        input:      make(chan []Metric, 100),
+        stop:       make(chan struct{}),
+    }
+}
+
+func (ms *MonitoringSystem) AddCollector(collector MetricCollector) {
+    ms.collectors = append(ms.collectors, collector)
+    fmt.Printf("MonitoringSystem: added collector '%s'\n", collector.Name())
+}
+
+func (ms *MonitoringSystem) Start() {
+    fmt.Println("MonitoringSystem: starting all collectors")
+    
+    // Start metric aggregation goroutine
+    ms.wg.Add(1)
+    go func() {
+        defer ms.wg.Done()
+        
+        for {
+            select {
+            case metrics := <-ms.input:
+                ms.aggregator.AddMetrics(metrics)
+            case <-ms.stop:
+                fmt.Println("MonitoringSystem: stopping aggregation")
+                return
+            }
+        }
+    }()
+    
+    // Start all collectors
+    for _, collector := range ms.collectors {
+        collector.Start(ms.input)
+    }
+    
+    // Start reporting goroutine
+    ms.wg.Add(1)
+    go ms.reportingLoop()
+}
+
+func (ms *MonitoringSystem) reportingLoop() {
+    defer ms.wg.Done()
+    
+    ticker := time.NewTicker(3 * time.Second)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ticker.C:
+            ms.generateReport()
+        case <-ms.stop:
+            fmt.Println("MonitoringSystem: stopping reporting")
+            return
+        }
+    }
+}
+
+func (ms *MonitoringSystem) generateReport() {
+    summary := ms.aggregator.GetSummary()
+    
+    fmt.Println("\n=== MONITORING REPORT ===")
+    fmt.Printf("Total metrics collected: %v\n", summary["total_metrics"])
+    
+    if metricTypes, ok := summary["metric_types"].(map[string]int); ok {
+        fmt.Println("Metric types:")
+        
+        // Sort metric names for consistent output
+        var names []string
+        for name := range metricTypes {
+            names = append(names, name)
+        }
+        sort.Strings(names)
+        
+        for _, name := range names {
+            count := metricTypes[name]
+            
+            // Get recent values for this metric
+            metrics := ms.aggregator.GetMetricsByName(name)
+            if len(metrics) > 0 {
+                latest := metrics[len(metrics)-1]
+                fmt.Printf("  %s: %d samples, latest=%.2f\n", 
+                          name, count, latest.Value)
+            }
+        }
+    }
+    
+    if sourceCounts, ok := summary["source_counts"].(map[string]int); ok {
+        fmt.Println("Sources:")
+        for source, count := range sourceCounts {
+            fmt.Printf("  %s: %d metrics\n", source, count)
+        }
+    }
+    
+    fmt.Println("========================\n")
+}
+
+func (ms *MonitoringSystem) Stop() {
+    fmt.Println("MonitoringSystem: initiating shutdown")
+    
+    // Stop all collectors
+    for _, collector := range ms.collectors {
+        collector.Stop()
+    }
+    
+    // Stop internal goroutines
+    close(ms.stop)
+    ms.wg.Wait()
+    
+    fmt.Println("MonitoringSystem: shutdown complete")
+}
+
+func main() {
+    rand.Seed(time.Now().UnixNano())
+    
+    fmt.Println("Demonstrating Performance Monitoring System")
+    
+    // Create monitoring system
+    system := NewMonitoringSystem()
+    
+    // Add collectors with different intervals
+    system.AddCollector(NewCPUCollector(1 * time.Second))
+    system.AddCollector(NewMemoryCollector(2 * time.Second))
+    system.AddCollector(NewDiskCollector(1500 * time.Millisecond))
+    
+    // Start the monitoring system
+    system.Start()
+    
+    fmt.Println("Monitoring system running... (will run for 15 seconds)")
+    
+    // Let the system run
+    time.Sleep(15 * time.Second)
+    
+    // Stop the system
+    system.Stop()
+    
+    // Final report
+    fmt.Println("Generating final summary report...")
+    system.generateReport()
+    
+    fmt.Println("Performance monitoring system demonstration completed")
+}
+```
+
+This monitoring system demonstrates enterprise-grade concurrency patterns  
+including multiple data collectors, metric aggregation, concurrent processing,  
+and coordinated shutdown - essential patterns for production systems.  
+
+## Conclusion
+
+Go's concurrency model provides powerful primitives for building scalable,  
+efficient concurrent applications. The examples demonstrate fundamental  
+patterns from basic goroutines to sophisticated real-world systems.  
+
+Key takeaways:
+- Goroutines enable lightweight concurrent execution
+- Channels provide safe communication between goroutines  
+- Select statements enable sophisticated coordination patterns
+- Synchronization primitives complement channel-based communication
+- Context enables cancellation and deadline management
+- Real-world systems combine multiple patterns effectively
+
+These patterns form the foundation for building robust, concurrent Go  
+applications that can handle high loads and complex coordination requirements  
+while maintaining code clarity and correctness.  
