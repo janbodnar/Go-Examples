@@ -20,5 +20,5 @@ Be consistent with existing documents in the repository.
 
 Each example builds on the previous one, progressing from simpler to more complex concepts.  
 Do not number section titles for examples such as Example 1: Basic types, use only simple title such as  
-Basic types. Follow Go best practices.
+Basic types. Follow Go best practices. Use modern Go features up to the latest version.  
 Do not use Hello Word messages in the examples, this is overused on the net. Use hello there when necessary.  
