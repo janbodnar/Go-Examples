@@ -10949,3 +10949,1007 @@ func main() {
 This example demonstrates a comprehensive A/B testing framework for  
 configuration experiments with statistical analysis, confidence calculations,  
 and data-driven recommendations for configuration optimization.  
+
+## Configuration internationalization (i18n)
+
+Configuration internationalization enables applications to adapt settings  
+and behavior based on locale and regional requirements.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "strings"
+    "time"
+)
+
+// LocalizedConfig represents locale-specific configuration
+type LocalizedConfig struct {
+    Locale   string            `json:"locale"`
+    Language string            `json:"language"`
+    Country  string            `json:"country"`
+    Currency string            `json:"currency"`
+    Timezone string            `json:"timezone"`
+    Messages map[string]string `json:"messages"`
+    Formats  FormatConfig      `json:"formats"`
+    Features LocaleFeatures    `json:"features"`
+}
+
+type FormatConfig struct {
+    DateFormat     string `json:"date_format"`
+    TimeFormat     string `json:"time_format"`
+    NumberFormat   string `json:"number_format"`
+    CurrencyFormat string `json:"currency_format"`
+    DecimalSep     string `json:"decimal_separator"`
+    ThousandsSep   string `json:"thousands_separator"`
+}
+
+type LocaleFeatures struct {
+    RTLSupport     bool     `json:"rtl_support"`
+    PluralRules    []string `json:"plural_rules"`
+    SortOrder      string   `json:"sort_order"`
+    FirstDayOfWeek int      `json:"first_day_of_week"`
+    WeekendDays    []int    `json:"weekend_days"`
+}
+
+// I18nConfigManager manages internationalized configurations
+type I18nConfigManager struct {
+    defaultLocale string
+    configs       map[string]*LocalizedConfig
+    fallbackChain map[string][]string
+}
+
+func NewI18nConfigManager(defaultLocale string) *I18nConfigManager {
+    return &I18nConfigManager{
+        defaultLocale: defaultLocale,
+        configs:       make(map[string]*LocalizedConfig),
+        fallbackChain: make(map[string][]string),
+    }
+}
+
+func (icm *I18nConfigManager) LoadLocaleConfig(locale string, config *LocalizedConfig) {
+    icm.configs[locale] = config
+}
+
+func (icm *I18nConfigManager) SetFallbackChain(locale string, fallbacks []string) {
+    icm.fallbackChain[locale] = fallbacks
+}
+
+func (icm *I18nConfigManager) GetConfig(locale string) *LocalizedConfig {
+    // Try exact match first
+    if config, exists := icm.configs[locale]; exists {
+        return config
+    }
+    
+    // Try fallback chain
+    if fallbacks, exists := icm.fallbackChain[locale]; exists {
+        for _, fallback := range fallbacks {
+            if config, exists := icm.configs[fallback]; exists {
+                return config
+            }
+        }
+    }
+    
+    // Try language part of locale (e.g., "en" from "en-US")
+    if parts := strings.Split(locale, "-"); len(parts) > 1 {
+        if config, exists := icm.configs[parts[0]]; exists {
+            return config
+        }
+    }
+    
+    // Return default locale configuration
+    if config, exists := icm.configs[icm.defaultLocale]; exists {
+        return config
+    }
+    
+    return nil
+}
+
+func (icm *I18nConfigManager) GetMessage(locale, key string) string {
+    config := icm.GetConfig(locale)
+    if config == nil {
+        return key // Return key if no config found
+    }
+    
+    if message, exists := config.Messages[key]; exists {
+        return message
+    }
+    
+    return key // Return key if message not found
+}
+
+func (icm *I18nConfigManager) FormatDate(locale string, t time.Time) string {
+    config := icm.GetConfig(locale)
+    if config == nil {
+        return t.Format("2006-01-02")
+    }
+    
+    // Convert Go time format
+    format := strings.ReplaceAll(config.Formats.DateFormat, "DD", "02")
+    format = strings.ReplaceAll(format, "MM", "01")
+    format = strings.ReplaceAll(format, "YYYY", "2006")
+    
+    return t.Format(format)
+}
+
+func (icm *I18nConfigManager) FormatNumber(locale string, number float64) string {
+    config := icm.GetConfig(locale)
+    if config == nil {
+        return fmt.Sprintf("%.2f", number)
+    }
+    
+    // Simple number formatting based on locale
+    numberStr := fmt.Sprintf("%.2f", number)
+    
+    if config.Formats.DecimalSep != "." {
+        numberStr = strings.ReplaceAll(numberStr, ".", config.Formats.DecimalSep)
+    }
+    
+    return numberStr
+}
+
+func DetectLocaleFromEnvironment() string {
+    // Check various environment variables
+    for _, env := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+        if locale := os.Getenv(env); locale != "" {
+            // Extract locale part (before any encoding suffix)
+            if idx := strings.Index(locale, "."); idx > 0 {
+                locale = locale[:idx]
+            }
+            return locale
+        }
+    }
+    return "en-US" // Default fallback
+}
+
+func main() {
+    fmt.Println("=== Configuration Internationalization Example ===")
+    
+    manager := NewI18nConfigManager("en-US")
+    
+    // Load English (US) configuration
+    enUSConfig := &LocalizedConfig{
+        Locale:   "en-US",
+        Language: "English",
+        Country:  "United States",
+        Currency: "USD",
+        Timezone: "America/New_York",
+        Messages: map[string]string{
+            "welcome":     "Welcome",
+            "goodbye":     "Goodbye",
+            "hello_user":  "Hello, %s!",
+            "save_success": "Data saved successfully",
+            "error_occurred": "An error occurred",
+        },
+        Formats: FormatConfig{
+            DateFormat:     "MM/DD/YYYY",
+            TimeFormat:     "HH:mm:ss",
+            NumberFormat:   "#,##0.00",
+            CurrencyFormat: "$#,##0.00",
+            DecimalSep:     ".",
+            ThousandsSep:   ",",
+        },
+        Features: LocaleFeatures{
+            RTLSupport:     false,
+            PluralRules:    []string{"one", "other"},
+            SortOrder:      "alphabetical",
+            FirstDayOfWeek: 0, // Sunday
+            WeekendDays:    []int{0, 6}, // Sunday, Saturday
+        },
+    }
+    
+    // Load German configuration
+    deConfig := &LocalizedConfig{
+        Locale:   "de-DE",
+        Language: "Deutsch",
+        Country:  "Deutschland",
+        Currency: "EUR",
+        Timezone: "Europe/Berlin",
+        Messages: map[string]string{
+            "welcome":     "Willkommen",
+            "goodbye":     "Auf Wiedersehen",
+            "hello_user":  "Hallo, %s!",
+            "save_success": "Daten erfolgreich gespeichert",
+            "error_occurred": "Ein Fehler ist aufgetreten",
+        },
+        Formats: FormatConfig{
+            DateFormat:     "DD.MM.YYYY",
+            TimeFormat:     "HH:mm:ss",
+            NumberFormat:   "#.##0,00",
+            CurrencyFormat: "#.##0,00 €",
+            DecimalSep:     ",",
+            ThousandsSep:   ".",
+        },
+        Features: LocaleFeatures{
+            RTLSupport:     false,
+            PluralRules:    []string{"one", "other"},
+            SortOrder:      "alphabetical",
+            FirstDayOfWeek: 1, // Monday
+            WeekendDays:    []int{0, 6}, // Sunday, Saturday
+        },
+    }
+    
+    // Load Japanese configuration
+    jaConfig := &LocalizedConfig{
+        Locale:   "ja-JP",
+        Language: "日本語",
+        Country:  "日本",
+        Currency: "JPY",
+        Timezone: "Asia/Tokyo",
+        Messages: map[string]string{
+            "welcome":     "いらっしゃいませ",
+            "goodbye":     "さようなら",
+            "hello_user":  "こんにちは、%sさん！",
+            "save_success": "データが正常に保存されました",
+            "error_occurred": "エラーが発生しました",
+        },
+        Formats: FormatConfig{
+            DateFormat:     "YYYY/MM/DD",
+            TimeFormat:     "HH:mm:ss",
+            NumberFormat:   "#,##0",
+            CurrencyFormat: "¥#,##0",
+            DecimalSep:     ".",
+            ThousandsSep:   ",",
+        },
+        Features: LocaleFeatures{
+            RTLSupport:     false,
+            PluralRules:    []string{"other"},
+            SortOrder:      "kana",
+            FirstDayOfWeek: 0, // Sunday
+            WeekendDays:    []int{0, 6}, // Sunday, Saturday
+        },
+    }
+    
+    // Register configurations
+    manager.LoadLocaleConfig("en-US", enUSConfig)
+    manager.LoadLocaleConfig("de-DE", deConfig)
+    manager.LoadLocaleConfig("ja-JP", jaConfig)
+    
+    // Set up fallback chains
+    manager.SetFallbackChain("en-GB", []string{"en-US"})
+    manager.SetFallbackChain("de-AT", []string{"de-DE"})
+    manager.SetFallbackChain("ja", []string{"ja-JP"})
+    
+    // Detect locale from environment
+    detectedLocale := DetectLocaleFromEnvironment()
+    fmt.Printf("Detected locale: %s\n", detectedLocale)
+    
+    // Test different locales
+    locales := []string{"en-US", "de-DE", "ja-JP", "en-GB", "de-AT", "fr-FR"}
+    
+    for _, locale := range locales {
+        fmt.Printf("\n=== Locale: %s ===\n", locale)
+        
+        config := manager.GetConfig(locale)
+        if config == nil {
+            fmt.Printf("No configuration available for %s\n", locale)
+            continue
+        }
+        
+        fmt.Printf("Language: %s\n", config.Language)
+        fmt.Printf("Country: %s\n", config.Country)
+        fmt.Printf("Currency: %s\n", config.Currency)
+        
+        // Test message localization
+        fmt.Printf("Welcome message: %s\n", manager.GetMessage(locale, "welcome"))
+        fmt.Printf("Goodbye message: %s\n", manager.GetMessage(locale, "goodbye"))
+        fmt.Printf("Success message: %s\n", manager.GetMessage(locale, "save_success"))
+        
+        // Test date formatting
+        now := time.Now()
+        fmt.Printf("Formatted date: %s\n", manager.FormatDate(locale, now))
+        
+        // Test number formatting
+        number := 1234.56
+        fmt.Printf("Formatted number: %s\n", manager.FormatNumber(locale, number))
+        
+        // Display locale features
+        fmt.Printf("RTL Support: %v\n", config.Features.RTLSupport)
+        fmt.Printf("First day of week: %d\n", config.Features.FirstDayOfWeek)
+        fmt.Printf("Weekend days: %v\n", config.Features.WeekendDays)
+    }
+    
+    // Test fallback behavior
+    fmt.Println("\n=== Fallback Testing ===")
+    
+    // Try unsupported locale
+    unsupportedLocale := "ar-SA"
+    config := manager.GetConfig(unsupportedLocale)
+    if config != nil {
+        fmt.Printf("Fallback for %s: %s\n", unsupportedLocale, config.Locale)
+    } else {
+        fmt.Printf("No fallback available for %s\n", unsupportedLocale)
+    }
+    
+    // Test partial locale match
+    partialLocale := "de"
+    config = manager.GetConfig(partialLocale)
+    if config != nil {
+        fmt.Printf("Partial match for %s: %s\n", partialLocale, config.Locale)
+    }
+    
+    fmt.Println("\n=== Internationalization Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive internationalization configuration with  
+locale-specific settings, message localization, format customization, fallback  
+chains, and environment-based locale detection for global applications.  
+
+## Configuration microservices orchestration
+
+Configuration orchestration in microservices enables centralized management  
+and coordination of configurations across distributed service architectures.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// ServiceConfig represents configuration for a microservice
+type ServiceConfig struct {
+    ServiceName    string                 `json:"service_name"`
+    Version        string                 `json:"version"`
+    Environment    string                 `json:"environment"`
+    Dependencies   []ServiceDependency    `json:"dependencies"`
+    Resources      ResourceConfig         `json:"resources"`
+    Networking     NetworkConfig          `json:"networking"`
+    Monitoring     MonitoringConfig       `json:"monitoring"`
+    Security       SecurityConfig         `json:"security"`
+    CustomConfig   map[string]interface{} `json:"custom_config"`
+    LastUpdated    time.Time              `json:"last_updated"`
+    ConfigVersion  int64                  `json:"config_version"`
+}
+
+type ServiceDependency struct {
+    ServiceName    string            `json:"service_name"`
+    Version        string            `json:"version"`
+    Endpoint       string            `json:"endpoint"`
+    HealthCheck    string            `json:"health_check"`
+    Timeout        time.Duration     `json:"timeout"`
+    RetryPolicy    RetryPolicy       `json:"retry_policy"`
+    CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker"`
+}
+
+type RetryPolicy struct {
+    MaxAttempts int           `json:"max_attempts"`
+    BaseDelay   time.Duration `json:"base_delay"`
+    MaxDelay    time.Duration `json:"max_delay"`
+    Multiplier  float64       `json:"multiplier"`
+}
+
+type CircuitBreakerConfig struct {
+    Enabled               bool          `json:"enabled"`
+    FailureThreshold      int           `json:"failure_threshold"`
+    RecoveryTimeout       time.Duration `json:"recovery_timeout"`
+    HalfOpenMaxCalls      int           `json:"half_open_max_calls"`
+    HalfOpenSuccessThreshold int        `json:"half_open_success_threshold"`
+}
+
+type ResourceConfig struct {
+    CPU    ResourceLimits `json:"cpu"`
+    Memory ResourceLimits `json:"memory"`
+    Disk   ResourceLimits `json:"disk"`
+}
+
+type ResourceLimits struct {
+    Request string `json:"request"`
+    Limit   string `json:"limit"`
+}
+
+type NetworkConfig struct {
+    Port            int               `json:"port"`
+    HealthCheckPort int               `json:"health_check_port"`
+    MetricsPort     int               `json:"metrics_port"`
+    Protocol        string            `json:"protocol"`
+    LoadBalancer    LoadBalancerConfig `json:"load_balancer"`
+}
+
+type LoadBalancerConfig struct {
+    Algorithm    string        `json:"algorithm"`
+    HealthCheck  string        `json:"health_check"`
+    Timeout      time.Duration `json:"timeout"`
+    MaxFails     int           `json:"max_fails"`
+    FailTimeout  time.Duration `json:"fail_timeout"`
+}
+
+type MonitoringConfig struct {
+    Metrics   MetricsConfig   `json:"metrics"`
+    Logging   LoggingConfig   `json:"logging"`
+    Tracing   TracingConfig   `json:"tracing"`
+    Alerting  AlertingConfig  `json:"alerting"`
+}
+
+type MetricsConfig struct {
+    Enabled    bool     `json:"enabled"`
+    Endpoint   string   `json:"endpoint"`
+    Interval   time.Duration `json:"interval"`
+    Labels     map[string]string `json:"labels"`
+}
+
+type LoggingConfig struct {
+    Level      string `json:"level"`
+    Format     string `json:"format"`
+    Output     string `json:"output"`
+    Structured bool   `json:"structured"`
+}
+
+type TracingConfig struct {
+    Enabled     bool    `json:"enabled"`
+    SampleRate  float64 `json:"sample_rate"`
+    Endpoint    string  `json:"endpoint"`
+    ServiceName string  `json:"service_name"`
+}
+
+type AlertingConfig struct {
+    Enabled   bool              `json:"enabled"`
+    Rules     []AlertRule       `json:"rules"`
+    Channels  []string          `json:"channels"`
+}
+
+type AlertRule struct {
+    Name        string        `json:"name"`
+    Condition   string        `json:"condition"`
+    Threshold   float64       `json:"threshold"`
+    Duration    time.Duration `json:"duration"`
+    Severity    string        `json:"severity"`
+}
+
+type SecurityConfig struct {
+    TLS            TLSConfig            `json:"tls"`
+    Authentication AuthenticationConfig `json:"authentication"`
+    Authorization  AuthorizationConfig  `json:"authorization"`
+    RateLimit      RateLimitConfig      `json:"rate_limit"`
+}
+
+type TLSConfig struct {
+    Enabled  bool   `json:"enabled"`
+    CertFile string `json:"cert_file"`
+    KeyFile  string `json:"key_file"`
+    CAFile   string `json:"ca_file"`
+}
+
+type AuthenticationConfig struct {
+    Enabled  bool              `json:"enabled"`
+    Provider string            `json:"provider"`
+    Config   map[string]string `json:"config"`
+}
+
+type AuthorizationConfig struct {
+    Enabled bool              `json:"enabled"`
+    Model   string            `json:"model"`
+    Policies []string         `json:"policies"`
+}
+
+type RateLimitConfig struct {
+    Enabled    bool          `json:"enabled"`
+    Requests   int           `json:"requests"`
+    Window     time.Duration `json:"window"`
+    BurstSize  int           `json:"burst_size"`
+}
+
+// ConfigOrchestrator manages configurations across microservices
+type ConfigOrchestrator struct {
+    services        map[string]*ServiceConfig
+    dependencies    map[string][]string
+    updateChannels  map[string]chan *ServiceConfig
+    globalConfig    map[string]interface{}
+    mutex           sync.RWMutex
+    subscribers     []chan ConfigUpdate
+    running         bool
+}
+
+type ConfigUpdate struct {
+    ServiceName string         `json:"service_name"`
+    ConfigType  string         `json:"config_type"`
+    OldConfig   *ServiceConfig `json:"old_config"`
+    NewConfig   *ServiceConfig `json:"new_config"`
+    Timestamp   time.Time      `json:"timestamp"`
+}
+
+func NewConfigOrchestrator() *ConfigOrchestrator {
+    return &ConfigOrchestrator{
+        services:       make(map[string]*ServiceConfig),
+        dependencies:   make(map[string][]string),
+        updateChannels: make(map[string]chan *ServiceConfig),
+        globalConfig:   make(map[string]interface{}),
+        subscribers:    make([]chan ConfigUpdate, 0),
+    }
+}
+
+func (co *ConfigOrchestrator) RegisterService(config *ServiceConfig) {
+    co.mutex.Lock()
+    defer co.mutex.Unlock()
+    
+    oldConfig := co.services[config.ServiceName]
+    config.LastUpdated = time.Now()
+    config.ConfigVersion++
+    
+    co.services[config.ServiceName] = config
+    co.updateChannels[config.ServiceName] = make(chan *ServiceConfig, 10)
+    
+    // Update dependency graph
+    deps := make([]string, 0)
+    for _, dep := range config.Dependencies {
+        deps = append(deps, dep.ServiceName)
+    }
+    co.dependencies[config.ServiceName] = deps
+    
+    // Notify subscribers
+    update := ConfigUpdate{
+        ServiceName: config.ServiceName,
+        ConfigType:  "service_registration",
+        OldConfig:   oldConfig,
+        NewConfig:   config,
+        Timestamp:   time.Now(),
+    }
+    
+    co.notifySubscribers(update)
+    
+    fmt.Printf("Registered service: %s v%s\n", config.ServiceName, config.Version)
+}
+
+func (co *ConfigOrchestrator) UpdateServiceConfig(serviceName string, updates map[string]interface{}) error {
+    co.mutex.Lock()
+    defer co.mutex.Unlock()
+    
+    config, exists := co.services[serviceName]
+    if !exists {
+        return fmt.Errorf("service not found: %s", serviceName)
+    }
+    
+    oldConfig := *config
+    
+    // Apply updates to custom config
+    for key, value := range updates {
+        config.CustomConfig[key] = value
+    }
+    
+    config.LastUpdated = time.Now()
+    config.ConfigVersion++
+    
+    // Notify subscribers
+    update := ConfigUpdate{
+        ServiceName: serviceName,
+        ConfigType:  "service_update",
+        OldConfig:   &oldConfig,
+        NewConfig:   config,
+        Timestamp:   time.Now(),
+    }
+    
+    co.notifySubscribers(update)
+    
+    // Propagate to dependent services
+    co.propagateConfigChange(serviceName)
+    
+    fmt.Printf("Updated configuration for service: %s\n", serviceName)
+    return nil
+}
+
+func (co *ConfigOrchestrator) propagateConfigChange(serviceName string) {
+    // Find services that depend on the updated service
+    for service, deps := range co.dependencies {
+        for _, dep := range deps {
+            if dep == serviceName {
+                // Notify dependent service of configuration change
+                if channel, exists := co.updateChannels[service]; exists {
+                    select {
+                    case channel <- co.services[serviceName]:
+                        fmt.Printf("Notified %s of %s configuration change\n", service, serviceName)
+                    default:
+                        fmt.Printf("Failed to notify %s (channel full)\n", service)
+                    }
+                }
+            }
+        }
+    }
+}
+
+func (co *ConfigOrchestrator) GetServiceConfig(serviceName string) (*ServiceConfig, error) {
+    co.mutex.RLock()
+    defer co.mutex.RUnlock()
+    
+    config, exists := co.services[serviceName]
+    if !exists {
+        return nil, fmt.Errorf("service not found: %s", serviceName)
+    }
+    
+    return config, nil
+}
+
+func (co *ConfigOrchestrator) GetServiceDependencies(serviceName string) ([]*ServiceConfig, error) {
+    co.mutex.RLock()
+    defer co.mutex.RUnlock()
+    
+    deps, exists := co.dependencies[serviceName]
+    if !exists {
+        return nil, fmt.Errorf("service not found: %s", serviceName)
+    }
+    
+    var dependencies []*ServiceConfig
+    for _, depName := range deps {
+        if depConfig, exists := co.services[depName]; exists {
+            dependencies = append(dependencies, depConfig)
+        }
+    }
+    
+    return dependencies, nil
+}
+
+func (co *ConfigOrchestrator) ValidateConfiguration() []string {
+    co.mutex.RLock()
+    defer co.mutex.RUnlock()
+    
+    var issues []string
+    
+    // Check for circular dependencies
+    if circularDeps := co.detectCircularDependencies(); len(circularDeps) > 0 {
+        issues = append(issues, fmt.Sprintf("Circular dependencies detected: %v", circularDeps))
+    }
+    
+    // Check for missing dependencies
+    for serviceName, deps := range co.dependencies {
+        for _, dep := range deps {
+            if _, exists := co.services[dep]; !exists {
+                issues = append(issues, fmt.Sprintf("Service %s depends on missing service: %s", serviceName, dep))
+            }
+        }
+    }
+    
+    // Check for port conflicts
+    portUsage := make(map[int][]string)
+    for serviceName, config := range co.services {
+        if config.Networking.Port > 0 {
+            portUsage[config.Networking.Port] = append(portUsage[config.Networking.Port], serviceName)
+        }
+    }
+    
+    for port, services := range portUsage {
+        if len(services) > 1 {
+            issues = append(issues, fmt.Sprintf("Port %d is used by multiple services: %v", port, services))
+        }
+    }
+    
+    return issues
+}
+
+func (co *ConfigOrchestrator) detectCircularDependencies() []string {
+    visited := make(map[string]bool)
+    recursionStack := make(map[string]bool)
+    var circular []string
+    
+    var dfs func(string) bool
+    dfs = func(service string) bool {
+        visited[service] = true
+        recursionStack[service] = true
+        
+        for _, dep := range co.dependencies[service] {
+            if !visited[dep] {
+                if dfs(dep) {
+                    return true
+                }
+            } else if recursionStack[dep] {
+                circular = append(circular, fmt.Sprintf("%s -> %s", service, dep))
+                return true
+            }
+        }
+        
+        recursionStack[service] = false
+        return false
+    }
+    
+    for service := range co.services {
+        if !visited[service] {
+            if dfs(service) {
+                break
+            }
+        }
+    }
+    
+    return circular
+}
+
+func (co *ConfigOrchestrator) Subscribe() chan ConfigUpdate {
+    co.mutex.Lock()
+    defer co.mutex.Unlock()
+    
+    updateChan := make(chan ConfigUpdate, 10)
+    co.subscribers = append(co.subscribers, updateChan)
+    return updateChan
+}
+
+func (co *ConfigOrchestrator) notifySubscribers(update ConfigUpdate) {
+    for _, subscriber := range co.subscribers {
+        select {
+        case subscriber <- update:
+        default:
+            // Subscriber channel full, skip
+        }
+    }
+}
+
+func (co *ConfigOrchestrator) GetSystemOverview() map[string]interface{} {
+    co.mutex.RLock()
+    defer co.mutex.RUnlock()
+    
+    overview := map[string]interface{}{
+        "total_services":    len(co.services),
+        "total_dependencies": len(co.dependencies),
+        "services":          make([]map[string]interface{}, 0),
+    }
+    
+    for serviceName, config := range co.services {
+        serviceInfo := map[string]interface{}{
+            "name":            serviceName,
+            "version":         config.Version,
+            "environment":     config.Environment,
+            "dependencies":    len(config.Dependencies),
+            "last_updated":    config.LastUpdated,
+            "config_version":  config.ConfigVersion,
+        }
+        overview["services"] = append(overview["services"].([]map[string]interface{}), serviceInfo)
+    }
+    
+    return overview
+}
+
+func main() {
+    fmt.Println("=== Configuration Microservices Orchestration Example ===")
+    
+    orchestrator := NewConfigOrchestrator()
+    
+    // Subscribe to configuration updates
+    updates := orchestrator.Subscribe()
+    go func() {
+        for update := range updates {
+            fmt.Printf("Config Update: %s - %s at %s\n", 
+                update.ServiceName, update.ConfigType, 
+                update.Timestamp.Format("15:04:05"))
+        }
+    }()
+    
+    // Register API Gateway service
+    apiGateway := &ServiceConfig{
+        ServiceName: "api-gateway",
+        Version:     "1.2.0",
+        Environment: "production",
+        Dependencies: []ServiceDependency{
+            {
+                ServiceName: "auth-service",
+                Version:     "1.0.0",
+                Endpoint:    "http://auth-service:8081",
+                HealthCheck: "/health",
+                Timeout:     5 * time.Second,
+                RetryPolicy: RetryPolicy{
+                    MaxAttempts: 3,
+                    BaseDelay:   100 * time.Millisecond,
+                    MaxDelay:    1 * time.Second,
+                    Multiplier:  2.0,
+                },
+                CircuitBreaker: CircuitBreakerConfig{
+                    Enabled:                  true,
+                    FailureThreshold:         5,
+                    RecoveryTimeout:          30 * time.Second,
+                    HalfOpenMaxCalls:         3,
+                    HalfOpenSuccessThreshold: 2,
+                },
+            },
+            {
+                ServiceName: "user-service",
+                Version:     "2.1.0",
+                Endpoint:    "http://user-service:8082",
+                HealthCheck: "/health",
+                Timeout:     3 * time.Second,
+                RetryPolicy: RetryPolicy{
+                    MaxAttempts: 2,
+                    BaseDelay:   50 * time.Millisecond,
+                    MaxDelay:    500 * time.Millisecond,
+                    Multiplier:  1.5,
+                },
+            },
+        },
+        Resources: ResourceConfig{
+            CPU:    ResourceLimits{Request: "500m", Limit: "1000m"},
+            Memory: ResourceLimits{Request: "512Mi", Limit: "1Gi"},
+            Disk:   ResourceLimits{Request: "1Gi", Limit: "5Gi"},
+        },
+        Networking: NetworkConfig{
+            Port:            8080,
+            HealthCheckPort: 8090,
+            MetricsPort:     9090,
+            Protocol:        "HTTP",
+            LoadBalancer: LoadBalancerConfig{
+                Algorithm:   "round_robin",
+                HealthCheck: "/health",
+                Timeout:     30 * time.Second,
+                MaxFails:    3,
+                FailTimeout: 10 * time.Second,
+            },
+        },
+        Monitoring: MonitoringConfig{
+            Metrics: MetricsConfig{
+                Enabled:  true,
+                Endpoint: "/metrics",
+                Interval: 15 * time.Second,
+                Labels:   map[string]string{"service": "api-gateway", "tier": "gateway"},
+            },
+            Logging: LoggingConfig{
+                Level:      "info",
+                Format:     "json",
+                Output:     "stdout",
+                Structured: true,
+            },
+            Tracing: TracingConfig{
+                Enabled:     true,
+                SampleRate:  0.1,
+                Endpoint:    "http://jaeger:14268/api/traces",
+                ServiceName: "api-gateway",
+            },
+            Alerting: AlertingConfig{
+                Enabled:  true,
+                Rules: []AlertRule{
+                    {
+                        Name:      "high_response_time",
+                        Condition: "avg_response_time > threshold",
+                        Threshold: 1.0,
+                        Duration:  5 * time.Minute,
+                        Severity:  "warning",
+                    },
+                },
+                Channels: []string{"slack", "email"},
+            },
+        },
+        Security: SecurityConfig{
+            TLS: TLSConfig{
+                Enabled:  true,
+                CertFile: "/etc/certs/server.crt",
+                KeyFile:  "/etc/certs/server.key",
+                CAFile:   "/etc/certs/ca.crt",
+            },
+            Authentication: AuthenticationConfig{
+                Enabled:  true,
+                Provider: "jwt",
+                Config:   map[string]string{"issuer": "auth-service", "audience": "api-gateway"},
+            },
+            Authorization: AuthorizationConfig{
+                Enabled:  true,
+                Model:    "rbac",
+                Policies: []string{"admin_policy", "user_policy"},
+            },
+            RateLimit: RateLimitConfig{
+                Enabled:   true,
+                Requests:  1000,
+                Window:    1 * time.Minute,
+                BurstSize: 100,
+            },
+        },
+        CustomConfig: map[string]interface{}{
+            "max_request_size": "10MB",
+            "cors_enabled":     true,
+            "allowed_origins":  []string{"https://app.example.com"},
+        },
+    }
+    
+    // Register services
+    orchestrator.RegisterService(apiGateway)
+    
+    // Register auth service
+    authService := &ServiceConfig{
+        ServiceName: "auth-service",
+        Version:     "1.0.0",
+        Environment: "production",
+        Dependencies: []ServiceDependency{
+            {
+                ServiceName: "database",
+                Version:     "1.0.0",
+                Endpoint:    "postgres://db:5432/auth",
+                Timeout:     10 * time.Second,
+            },
+        },
+        Resources: ResourceConfig{
+            CPU:    ResourceLimits{Request: "200m", Limit: "500m"},
+            Memory: ResourceLimits{Request: "256Mi", Limit: "512Mi"},
+        },
+        Networking: NetworkConfig{
+            Port:            8081,
+            HealthCheckPort: 8091,
+            MetricsPort:     9091,
+            Protocol:        "HTTP",
+        },
+        CustomConfig: map[string]interface{}{
+            "jwt_expiry":    "24h",
+            "refresh_token": true,
+        },
+    }
+    
+    orchestrator.RegisterService(authService)
+    
+    // Register user service
+    userService := &ServiceConfig{
+        ServiceName: "user-service",
+        Version:     "2.1.0",
+        Environment: "production",
+        Dependencies: []ServiceDependency{
+            {
+                ServiceName: "database",
+                Version:     "1.0.0",
+                Endpoint:    "postgres://db:5432/users",
+                Timeout:     10 * time.Second,
+            },
+        },
+        Resources: ResourceConfig{
+            CPU:    ResourceLimits{Request: "300m", Limit: "600m"},
+            Memory: ResourceLimits{Request: "512Mi", Limit: "1Gi"},
+        },
+        Networking: NetworkConfig{
+            Port:            8082,
+            HealthCheckPort: 8092,
+            MetricsPort:     9092,
+            Protocol:        "HTTP",
+        },
+        CustomConfig: map[string]interface{}{
+            "pagination_limit": 100,
+            "cache_ttl":       "1h",
+        },
+    }
+    
+    orchestrator.RegisterService(userService)
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    // Validate configuration
+    fmt.Println("\n=== Configuration Validation ===")
+    if issues := orchestrator.ValidateConfiguration(); len(issues) > 0 {
+        fmt.Println("Configuration issues found:")
+        for _, issue := range issues {
+            fmt.Printf("  - %s\n", issue)
+        }
+    } else {
+        fmt.Println("✓ All configurations are valid")
+    }
+    
+    // Display system overview
+    fmt.Println("\n=== System Overview ===")
+    overview := orchestrator.GetSystemOverview()
+    overviewJSON, _ := json.MarshalIndent(overview, "", "  ")
+    fmt.Println(string(overviewJSON))
+    
+    // Update configuration
+    fmt.Println("\n=== Configuration Updates ===")
+    updates_config := map[string]interface{}{
+        "max_request_size": "20MB",
+        "feature_flags": map[string]bool{
+            "new_auth_flow": true,
+            "beta_features": false,
+        },
+    }
+    
+    if err := orchestrator.UpdateServiceConfig("api-gateway", updates_config); err != nil {
+        fmt.Printf("Error updating configuration: %v\n", err)
+    }
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    // Show dependencies
+    fmt.Println("\n=== Service Dependencies ===")
+    deps, _ := orchestrator.GetServiceDependencies("api-gateway")
+    fmt.Printf("API Gateway depends on %d services:\n", len(deps))
+    for _, dep := range deps {
+        fmt.Printf("  - %s v%s\n", dep.ServiceName, dep.Version)
+    }
+    
+    fmt.Println("\n=== Microservices Orchestration Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive microservices configuration  
+orchestration with service registration, dependency management, configuration  
+validation, propagation, and centralized coordination across distributed  
+service architectures.  
