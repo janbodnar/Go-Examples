@@ -4320,3 +4320,6632 @@ This example demonstrates comprehensive configuration schema definition with
 automatic documentation generation and validation. The pattern provides  
 self-documenting configuration with IDE support and prevents configuration  
 errors through schema-based validation and clear constraint definitions.  
+
+## Configuration migration patterns
+
+Configuration migration enables smooth transitions between configuration  
+versions while maintaining backward compatibility and data integrity.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "strconv"
+    "time"
+)
+
+// ConfigMigrator handles configuration version migrations
+type ConfigMigrator struct {
+    migrations []Migration
+}
+
+type Migration interface {
+    Version() int
+    Description() string
+    Up(config map[string]interface{}) error
+    Down(config map[string]interface{}) error
+}
+
+// V1ToV2Migration migrates from version 1 to version 2
+type V1ToV2Migration struct{}
+
+func (m *V1ToV2Migration) Version() int {
+    return 2
+}
+
+func (m *V1ToV2Migration) Description() string {
+    return "Restructure server configuration and add new fields"
+}
+
+func (m *V1ToV2Migration) Up(config map[string]interface{}) error {
+    fmt.Println("Migrating to version 2: restructuring server configuration")
+    
+    // Migrate flat server config to nested structure
+    if host, exists := config["host"]; exists {
+        delete(config, "host")
+        if _, hasServer := config["server"]; !hasServer {
+            config["server"] = make(map[string]interface{})
+        }
+        config["server"].(map[string]interface{})["host"] = host
+    }
+    
+    if port, exists := config["port"]; exists {
+        delete(config, "port")
+        if _, hasServer := config["server"]; !hasServer {
+            config["server"] = make(map[string]interface{})
+        }
+        config["server"].(map[string]interface{})["port"] = port
+    }
+    
+    // Add default timeout if server section exists
+    if server, hasServer := config["server"]; hasServer {
+        serverMap := server.(map[string]interface{})
+        if _, hasTimeout := serverMap["timeout"]; !hasTimeout {
+            serverMap["timeout"] = "30s"
+        }
+    }
+    
+    // Add new logging section with defaults
+    if _, hasLogging := config["logging"]; !hasLogging {
+        config["logging"] = map[string]interface{}{
+            "level":  "info",
+            "format": "text",
+        }
+    }
+    
+    return nil
+}
+
+func (m *V1ToV2Migration) Down(config map[string]interface{}) error {
+    fmt.Println("Rolling back to version 1: flattening server configuration")
+    
+    // Move server config back to top level
+    if server, exists := config["server"]; exists {
+        serverMap := server.(map[string]interface{})
+        if host, hasHost := serverMap["host"]; hasHost {
+            config["host"] = host
+        }
+        if port, hasPort := serverMap["port"]; hasPort {
+            config["port"] = port
+        }
+        delete(config, "server")
+    }
+    
+    // Remove logging section (didn't exist in v1)
+    delete(config, "logging")
+    
+    return nil
+}
+
+// V2ToV3Migration migrates from version 2 to version 3
+type V2ToV3Migration struct{}
+
+func (m *V2ToV3Migration) Version() int {
+    return 3
+}
+
+func (m *V2ToV3Migration) Description() string {
+    return "Add database configuration and feature flags"
+}
+
+func (m *V2ToV3Migration) Up(config map[string]interface{}) error {
+    fmt.Println("Migrating to version 3: adding database and features")
+    
+    // Add database configuration with defaults
+    if _, hasDatabase := config["database"]; !hasDatabase {
+        config["database"] = map[string]interface{}{
+            "driver": "postgres",
+            "host":   "localhost",
+            "port":   5432,
+            "name":   "app",
+        }
+    }
+    
+    // Add feature flags section
+    if _, hasFeatures := config["features"]; !hasFeatures {
+        config["features"] = map[string]interface{}{
+            "metrics": false,
+            "tracing": false,
+        }
+    }
+    
+    // Migrate old debug flag to features.debug if it exists
+    if debug, hasDebug := config["debug"]; hasDebug {
+        features := config["features"].(map[string]interface{})
+        features["debug"] = debug
+        delete(config, "debug")
+    }
+    
+    return nil
+}
+
+func (m *V2ToV3Migration) Down(config map[string]interface{}) error {
+    fmt.Println("Rolling back to version 2: removing database and features")
+    
+    // Restore debug flag if it exists in features
+    if features, hasFeatures := config["features"]; hasFeatures {
+        featuresMap := features.(map[string]interface{})
+        if debug, hasDebug := featuresMap["debug"]; hasDebug {
+            config["debug"] = debug
+        }
+    }
+    
+    // Remove new sections
+    delete(config, "database")
+    delete(config, "features")
+    
+    return nil
+}
+
+func NewConfigMigrator() *ConfigMigrator {
+    return &ConfigMigrator{
+        migrations: []Migration{
+            &V1ToV2Migration{},
+            &V2ToV3Migration{},
+        },
+    }
+}
+
+func (cm *ConfigMigrator) GetCurrentVersion(config map[string]interface{}) int {
+    if version, exists := config["_version"]; exists {
+        switch v := version.(type) {
+        case int:
+            return v
+        case float64:
+            return int(v)
+        case string:
+            if parsed, err := strconv.Atoi(v); err == nil {
+                return parsed
+            }
+        }
+    }
+    return 1 // Default to version 1 if no version field
+}
+
+func (cm *ConfigMigrator) GetLatestVersion() int {
+    maxVersion := 1
+    for _, migration := range cm.migrations {
+        if migration.Version() > maxVersion {
+            maxVersion = migration.Version()
+        }
+    }
+    return maxVersion
+}
+
+func (cm *ConfigMigrator) MigrateToLatest(config map[string]interface{}) error {
+    currentVersion := cm.GetCurrentVersion(config)
+    latestVersion := cm.GetLatestVersion()
+    
+    fmt.Printf("Current configuration version: %d\n", currentVersion)
+    fmt.Printf("Latest configuration version: %d\n", latestVersion)
+    
+    if currentVersion == latestVersion {
+        fmt.Println("Configuration is already at the latest version")
+        return nil
+    }
+    
+    if currentVersion > latestVersion {
+        return fmt.Errorf("configuration version %d is newer than supported version %d", 
+            currentVersion, latestVersion)
+    }
+    
+    // Apply migrations in order
+    for targetVersion := currentVersion + 1; targetVersion <= latestVersion; targetVersion++ {
+        migration := cm.findMigration(targetVersion)
+        if migration == nil {
+            return fmt.Errorf("no migration found for version %d", targetVersion)
+        }
+        
+        fmt.Printf("Applying migration to version %d: %s\n", 
+            targetVersion, migration.Description())
+        
+        if err := migration.Up(config); err != nil {
+            return fmt.Errorf("migration to version %d failed: %w", targetVersion, err)
+        }
+        
+        // Update version
+        config["_version"] = targetVersion
+        fmt.Printf("Successfully migrated to version %d\n", targetVersion)
+    }
+    
+    return nil
+}
+
+func (cm *ConfigMigrator) MigrateToVersion(config map[string]interface{}, targetVersion int) error {
+    currentVersion := cm.GetCurrentVersion(config)
+    
+    if currentVersion == targetVersion {
+        fmt.Printf("Configuration is already at version %d\n", targetVersion)
+        return nil
+    }
+    
+    if currentVersion < targetVersion {
+        // Migrate up
+        for version := currentVersion + 1; version <= targetVersion; version++ {
+            migration := cm.findMigration(version)
+            if migration == nil {
+                return fmt.Errorf("no migration found for version %d", version)
+            }
+            
+            if err := migration.Up(config); err != nil {
+                return fmt.Errorf("migration to version %d failed: %w", version, err)
+            }
+            config["_version"] = version
+        }
+    } else {
+        // Migrate down
+        for version := currentVersion; version > targetVersion; version-- {
+            migration := cm.findMigration(version)
+            if migration == nil {
+                return fmt.Errorf("no migration found for version %d", version)
+            }
+            
+            if err := migration.Down(config); err != nil {
+                return fmt.Errorf("rollback from version %d failed: %w", version, err)
+            }
+            config["_version"] = version - 1
+        }
+    }
+    
+    return nil
+}
+
+func (cm *ConfigMigrator) findMigration(version int) Migration {
+    for _, migration := range cm.migrations {
+        if migration.Version() == version {
+            return migration
+        }
+    }
+    return nil
+}
+
+func (cm *ConfigMigrator) CreateBackup(config map[string]interface{}, filename string) error {
+    // Add backup metadata
+    backup := map[string]interface{}{
+        "backup_timestamp": time.Now().Unix(),
+        "backup_version":   cm.GetCurrentVersion(config),
+        "config":          config,
+    }
+    
+    data, err := json.MarshalIndent(backup, "", "  ")
+    if err != nil {
+        return fmt.Errorf("failed to marshal backup: %w", err)
+    }
+    
+    if err := os.WriteFile(filename, data, 0644); err != nil {
+        return fmt.Errorf("failed to write backup file: %w", err)
+    }
+    
+    fmt.Printf("Configuration backup created: %s\n", filename)
+    return nil
+}
+
+func (cm *ConfigMigrator) RestoreFromBackup(filename string) (map[string]interface{}, error) {
+    data, err := os.ReadFile(filename)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read backup file: %w", err)
+    }
+    
+    var backup map[string]interface{}
+    if err := json.Unmarshal(data, &backup); err != nil {
+        return nil, fmt.Errorf("failed to parse backup file: %w", err)
+    }
+    
+    config, ok := backup["config"].(map[string]interface{})
+    if !ok {
+        return nil, fmt.Errorf("invalid backup file format")
+    }
+    
+    if timestamp, hasTimestamp := backup["backup_timestamp"]; hasTimestamp {
+        if ts, ok := timestamp.(float64); ok {
+            backupTime := time.Unix(int64(ts), 0)
+            fmt.Printf("Restoring backup from: %s\n", backupTime.Format(time.RFC3339))
+        }
+    }
+    
+    return config, nil
+}
+
+func printConfig(config map[string]interface{}, title string) {
+    fmt.Printf("\n=== %s ===\n", title)
+    data, _ := json.MarshalIndent(config, "", "  ")
+    fmt.Println(string(data))
+}
+
+func main() {
+    fmt.Println("=== Configuration Migration Example ===")
+    
+    // Create version 1 configuration
+    v1Config := map[string]interface{}{
+        "_version": 1,
+        "app_name": "MigrationDemo",
+        "host":     "localhost",
+        "port":     8080,
+        "debug":    true,
+    }
+    
+    printConfig(v1Config, "Version 1 Configuration")
+    
+    migrator := NewConfigMigrator()
+    
+    // Create backup before migration
+    backupFile := "/tmp/config_backup.json"
+    if err := migrator.CreateBackup(v1Config, backupFile); err != nil {
+        fmt.Printf("Error creating backup: %v\n", err)
+        return
+    }
+    
+    // Migrate to latest version
+    fmt.Println("\n=== Starting Migration Process ===")
+    if err := migrator.MigrateToLatest(v1Config); err != nil {
+        fmt.Printf("Migration failed: %v\n", err)
+        return
+    }
+    
+    printConfig(v1Config, "Latest Version Configuration")
+    
+    // Demonstrate rollback to version 2
+    fmt.Println("\n=== Demonstrating Rollback ===")
+    if err := migrator.MigrateToVersion(v1Config, 2); err != nil {
+        fmt.Printf("Rollback failed: %v\n", err)
+        return
+    }
+    
+    printConfig(v1Config, "Rolled Back to Version 2")
+    
+    // Migrate back to latest
+    fmt.Println("\n=== Migrating Back to Latest ===")
+    if err := migrator.MigrateToLatest(v1Config); err != nil {
+        fmt.Printf("Migration failed: %v\n", err)
+        return
+    }
+    
+    printConfig(v1Config, "Back to Latest Version")
+    
+    // Demonstrate backup restoration
+    fmt.Println("\n=== Demonstrating Backup Restoration ===")
+    restoredConfig, err := migrator.RestoreFromBackup(backupFile)
+    if err != nil {
+        fmt.Printf("Backup restoration failed: %v\n", err)
+        return
+    }
+    
+    printConfig(restoredConfig, "Restored from Backup")
+    
+    // Clean up
+    os.Remove(backupFile)
+    
+    fmt.Println("\n=== Migration Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration migration patterns  
+including versioning, backup/restore, rollback capabilities, and data  
+transformation. The pattern ensures safe configuration evolution while  
+maintaining backward compatibility and providing recovery options.  
+
+## Configuration templating with variables
+
+Configuration templating enables dynamic configuration generation with  
+variable substitution and conditional logic for different environments.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "regexp"
+    "strconv"
+    "strings"
+    "text/template"
+    "time"
+)
+
+// ConfigTemplateEngine handles configuration template processing
+type ConfigTemplateEngine struct {
+    variables map[string]interface{}
+    functions template.FuncMap
+}
+
+func NewConfigTemplateEngine() *ConfigTemplateEngine {
+    return &ConfigTemplateEngine{
+        variables: make(map[string]interface{}),
+        functions: template.FuncMap{
+            "env":           getEnvWithDefault,
+            "envRequired":   getEnvRequired,
+            "default":       defaultValue,
+            "upper":         strings.ToUpper,
+            "lower":         strings.ToLower,
+            "replace":       strings.ReplaceAll,
+            "contains":      strings.Contains,
+            "hasPrefix":     strings.HasPrefix,
+            "hasSuffix":     strings.HasSuffix,
+            "split":         strings.Split,
+            "join":          strings.Join,
+            "now":           time.Now,
+            "formatTime":    formatTime,
+            "add":           add,
+            "sub":           sub,
+            "mul":           mul,
+            "div":           div,
+            "mod":           mod,
+            "toString":      toString,
+            "toInt":         toInt,
+            "toBool":        toBool,
+            "toFloat":       toFloat,
+            "json":          toJSON,
+            "indent":        indent,
+        },
+    }
+}
+
+func (cte *ConfigTemplateEngine) SetVariable(key string, value interface{}) {
+    cte.variables[key] = value
+}
+
+func (cte *ConfigTemplateEngine) SetVariables(vars map[string]interface{}) {
+    for key, value := range vars {
+        cte.variables[key] = value
+    }
+}
+
+func (cte *ConfigTemplateEngine) ProcessTemplate(templateContent string) (string, error) {
+    tmpl, err := template.New("config").Funcs(cte.functions).Parse(templateContent)
+    if err != nil {
+        return "", fmt.Errorf("failed to parse template: %w", err)
+    }
+    
+    var result strings.Builder
+    if err := tmpl.Execute(&result, cte.variables); err != nil {
+        return "", fmt.Errorf("failed to execute template: %w", err)
+    }
+    
+    return result.String(), nil
+}
+
+func (cte *ConfigTemplateEngine) ProcessTemplateFile(templatePath, outputPath string) error {
+    templateContent, err := os.ReadFile(templatePath)
+    if err != nil {
+        return fmt.Errorf("failed to read template file: %w", err)
+    }
+    
+    result, err := cte.ProcessTemplate(string(templateContent))
+    if err != nil {
+        return err
+    }
+    
+    if err := os.WriteFile(outputPath, []byte(result), 0644); err != nil {
+        return fmt.Errorf("failed to write output file: %w", err)
+    }
+    
+    return nil
+}
+
+// SimpleVariableSubstitutor handles simple ${VAR} style substitution
+type SimpleVariableSubstitutor struct {
+    variables map[string]string
+}
+
+func NewSimpleVariableSubstitutor() *SimpleVariableSubstitutor {
+    return &SimpleVariableSubstitutor{
+        variables: make(map[string]string),
+    }
+}
+
+func (svs *SimpleVariableSubstitutor) SetVariable(key, value string) {
+    svs.variables[key] = value
+}
+
+func (svs *SimpleVariableSubstitutor) LoadFromEnvironment(prefix string) {
+    for _, env := range os.Environ() {
+        if strings.HasPrefix(env, prefix) {
+            parts := strings.SplitN(env, "=", 2)
+            if len(parts) == 2 {
+                key := strings.TrimPrefix(parts[0], prefix)
+                svs.variables[key] = parts[1]
+            }
+        }
+    }
+}
+
+func (svs *SimpleVariableSubstitutor) Substitute(content string) string {
+    // Pattern for ${VAR} or ${VAR:default}
+    pattern := regexp.MustCompile(`\$\{([^}:]+)(?::([^}]*))?\}`)
+    
+    return pattern.ReplaceAllStringFunc(content, func(match string) string {
+        // Extract variable name and default value
+        submatches := pattern.FindStringSubmatch(match)
+        if len(submatches) < 2 {
+            return match
+        }
+        
+        varName := submatches[1]
+        defaultValue := ""
+        if len(submatches) > 2 {
+            defaultValue = submatches[2]
+        }
+        
+        // Look for variable value
+        if value, exists := svs.variables[varName]; exists {
+            return value
+        }
+        
+        // Check environment
+        if value := os.Getenv(varName); value != "" {
+            return value
+        }
+        
+        // Return default value
+        return defaultValue
+    })
+}
+
+// Template function implementations
+func getEnvWithDefault(key, defaultValue string) string {
+    if value := os.Getenv(key); value != "" {
+        return value
+    }
+    return defaultValue
+}
+
+func getEnvRequired(key string) (string, error) {
+    value := os.Getenv(key)
+    if value == "" {
+        return "", fmt.Errorf("required environment variable %s is not set", key)
+    }
+    return value, nil
+}
+
+func defaultValue(value, defaultVal interface{}) interface{} {
+    if value == nil || value == "" {
+        return defaultVal
+    }
+    return value
+}
+
+func formatTime(format string, t time.Time) string {
+    return t.Format(format)
+}
+
+func add(a, b int) int { return a + b }
+func sub(a, b int) int { return a - b }
+func mul(a, b int) int { return a * b }
+func div(a, b int) int { return a / b }
+func mod(a, b int) int { return a % b }
+
+func toString(v interface{}) string {
+    return fmt.Sprintf("%v", v)
+}
+
+func toInt(v interface{}) (int, error) {
+    switch val := v.(type) {
+    case int:
+        return val, nil
+    case float64:
+        return int(val), nil
+    case string:
+        return strconv.Atoi(val)
+    default:
+        return 0, fmt.Errorf("cannot convert %T to int", v)
+    }
+}
+
+func toBool(v interface{}) (bool, error) {
+    switch val := v.(type) {
+    case bool:
+        return val, nil
+    case string:
+        return strconv.ParseBool(val)
+    default:
+        return false, fmt.Errorf("cannot convert %T to bool", v)
+    }
+}
+
+func toFloat(v interface{}) (float64, error) {
+    switch val := v.(type) {
+    case float64:
+        return val, nil
+    case int:
+        return float64(val), nil
+    case string:
+        return strconv.ParseFloat(val, 64)
+    default:
+        return 0, fmt.Errorf("cannot convert %T to float64", v)
+    }
+}
+
+func toJSON(v interface{}) (string, error) {
+    data, err := json.Marshal(v)
+    if err != nil {
+        return "", err
+    }
+    return string(data), nil
+}
+
+func indent(spaces int, text string) string {
+    indentation := strings.Repeat(" ", spaces)
+    lines := strings.Split(text, "\n")
+    for i, line := range lines {
+        if line != "" {
+            lines[i] = indentation + line
+        }
+    }
+    return strings.Join(lines, "\n")
+}
+
+func main() {
+    fmt.Println("=== Configuration Templating Example ===")
+    
+    // Set environment variables for demonstration
+    os.Setenv("ENVIRONMENT", "production")
+    os.Setenv("DB_PASSWORD", "secret-db-password")
+    os.Setenv("API_KEY", "sk-1234567890abcdef")
+    os.Setenv("REPLICA_COUNT", "3")
+    os.Setenv("ENABLE_METRICS", "true")
+    
+    // Example 1: Go template engine
+    fmt.Println("\n=== Go Template Engine ===")
+    
+    templateContent := `{
+  "app": {
+    "name": "{{.AppName}}",
+    "version": "{{.Version}}",
+    "environment": "{{env "ENVIRONMENT" "development"}}",
+    "debug": {{if eq (env "ENVIRONMENT") "development"}}true{{else}}false{{end}},
+    "instance_id": "{{.AppName}}-{{env "HOSTNAME" "unknown"}}-{{now.Unix}}"
+  },
+  "server": {
+    "host": "{{default .ServerHost "0.0.0.0"}}",
+    "port": {{.ServerPort}},
+    "workers": {{mul (toInt (env "REPLICA_COUNT" "1")) 2}},
+    "timeout": "{{.Timeout}}"
+  },
+  "database": {
+    "driver": "postgres",
+    "host": "{{.DatabaseHost}}",
+    "port": 5432,
+    "name": "{{.AppName | lower}}_{{env "ENVIRONMENT"}}",
+    "user": "{{.AppName | lower}}_user",
+    "password": "{{envRequired "DB_PASSWORD"}}"
+  },
+  "external": {
+    "api_key": "{{env "API_KEY"}}",
+    "endpoints": [
+      {{range $i, $endpoint := .Endpoints}}{{if $i}},{{end}}
+      "{{$endpoint}}"
+      {{end}}
+    ]
+  },
+  "features": {
+    "metrics": {{env "ENABLE_METRICS" "false" | toBool}},
+    "tracing": {{if eq (env "ENVIRONMENT") "production"}}true{{else}}false{{end}},
+    "caching": true
+  },
+  "generated": {
+    "timestamp": "{{now.Format "2006-01-02T15:04:05Z07:00"}}",
+    "config_version": "{{.ConfigVersion}}"
+  }
+}`
+    
+    engine := NewConfigTemplateEngine()
+    engine.SetVariables(map[string]interface{}{
+        "AppName":      "TemplateApp",
+        "Version":      "2.1.0",
+        "ServerHost":   "api.example.com",
+        "ServerPort":   8080,
+        "Timeout":      "30s",
+        "DatabaseHost": "db.example.com",
+        "Endpoints": []string{
+            "https://api1.example.com",
+            "https://api2.example.com",
+            "https://api3.example.com",
+        },
+        "ConfigVersion": "1.0",
+    })
+    
+    result, err := engine.ProcessTemplate(templateContent)
+    if err != nil {
+        fmt.Printf("Template processing failed: %v\n", err)
+        return
+    }
+    
+    fmt.Println("Generated configuration:")
+    fmt.Println(result)
+    
+    // Example 2: Simple variable substitution
+    fmt.Println("\n=== Simple Variable Substitution ===")
+    
+    simpleTemplate := `{
+  "service": {
+    "name": "${SERVICE_NAME:myapp}",
+    "port": ${PORT:8080},
+    "environment": "${ENVIRONMENT:development}"
+  },
+  "database": {
+    "url": "postgres://${DB_USER:postgres}:${DB_PASSWORD}@${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:myapp}",
+    "max_connections": ${DB_MAX_CONNECTIONS:10}
+  },
+  "cache": {
+    "type": "${CACHE_TYPE:memory}",
+    "url": "${CACHE_URL:}"
+  },
+  "security": {
+    "jwt_secret": "${JWT_SECRET}",
+    "allowed_origins": "${ALLOWED_ORIGINS:*}"
+  }
+}`
+    
+    substitutor := NewSimpleVariableSubstitutor()
+    substitutor.SetVariable("SERVICE_NAME", "SimpleApp")
+    substitutor.SetVariable("PORT", "9000")
+    substitutor.SetVariable("DB_USER", "app_user")
+    substitutor.SetVariable("DB_HOST", "prod-db.example.com")
+    substitutor.SetVariable("DB_NAME", "production")
+    substitutor.SetVariable("JWT_SECRET", "super-secret-jwt-key")
+    substitutor.LoadFromEnvironment("CONFIG_")
+    
+    simpleResult := substitutor.Substitute(simpleTemplate)
+    
+    fmt.Println("Simple substitution result:")
+    fmt.Println(simpleResult)
+    
+    // Example 3: Environment-specific templates
+    fmt.Println("\n=== Environment-Specific Templates ===")
+    
+    environments := []string{"development", "staging", "production"}
+    
+    for _, env := range environments {
+        os.Setenv("ENVIRONMENT", env)
+        
+        envTemplate := `{
+  "environment": "{{env "ENVIRONMENT"}}",
+  "log_level": "{{if eq (env "ENVIRONMENT") "development"}}debug{{else if eq (env "ENVIRONMENT") "staging"}}info{{else}}warn{{end}}",
+  "database": {
+    "pool_size": {{if eq (env "ENVIRONMENT") "production"}}20{{else if eq (env "ENVIRONMENT") "staging"}}10{{else}}5{{end}},
+    "ssl_mode": "{{if eq (env "ENVIRONMENT") "production"}}require{{else}}disable{{end}}"
+  },
+  "features": {
+    "debug_mode": {{if eq (env "ENVIRONMENT") "development"}}true{{else}}false{{end}},
+    "profiling": {{if ne (env "ENVIRONMENT") "production"}}true{{else}}false{{end}}
+  }
+}`
+        
+        envResult, err := engine.ProcessTemplate(envTemplate)
+        if err != nil {
+            fmt.Printf("Error processing %s template: %v\n", env, err)
+            continue
+        }
+        
+        fmt.Printf("\n%s configuration:\n", strings.Title(env))
+        fmt.Println(envResult)
+    }
+    
+    // Example 4: Save template to file
+    fmt.Println("\n=== File Template Processing ===")
+    
+    templateFile := "/tmp/config_template.json"
+    outputFile := "/tmp/generated_config.json"
+    
+    if err := os.WriteFile(templateFile, []byte(templateContent), 0644); err != nil {
+        fmt.Printf("Error writing template file: %v\n", err)
+        return
+    }
+    
+    if err := engine.ProcessTemplateFile(templateFile, outputFile); err != nil {
+        fmt.Printf("Error processing template file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Template processed successfully!\n")
+    fmt.Printf("Template file: %s\n", templateFile)
+    fmt.Printf("Output file: %s\n", outputFile)
+    
+    // Verify generated file
+    if generatedContent, err := os.ReadFile(outputFile); err == nil {
+        var config map[string]interface{}
+        if err := json.Unmarshal(generatedContent, &config); err == nil {
+            fmt.Println("Generated configuration is valid JSON")
+        } else {
+            fmt.Printf("Generated configuration is invalid JSON: %v\n", err)
+        }
+    }
+    
+    // Clean up
+    os.Remove(templateFile)
+    os.Remove(outputFile)
+    
+    fmt.Println("\n=== Templating Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration templating including  
+Go templates with custom functions, simple variable substitution, environment-  
+specific configuration generation, and file-based template processing. The  
+pattern enables dynamic configuration generation while maintaining type safety  
+and validation capabilities.  
+
+## Configuration observability and monitoring
+
+Configuration observability provides visibility into configuration usage,  
+changes, and health to support operational debugging and compliance.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+)
+
+// ConfigObserver defines the interface for configuration observation
+type ConfigObserver interface {
+    OnConfigLoad(source string, config map[string]interface{})
+    OnConfigChange(field string, oldValue, newValue interface{})
+    OnConfigError(source string, err error)
+    OnConfigAccess(field string, value interface{})
+}
+
+// ConfigMetrics tracks configuration usage and health metrics
+type ConfigMetrics struct {
+    LoadCount       int64                    `json:"load_count"`
+    ChangeCount     int64                    `json:"change_count"`
+    ErrorCount      int64                    `json:"error_count"`
+    AccessCount     map[string]int64         `json:"access_count"`
+    LastLoaded      time.Time                `json:"last_loaded"`
+    LastChanged     time.Time                `json:"last_changed"`
+    LastError       time.Time                `json:"last_error"`
+    FieldUsage      map[string]time.Time     `json:"field_usage"`
+    ConfigSources   map[string]int64         `json:"config_sources"`
+    HealthStatus    string                   `json:"health_status"`
+    ValidationErrors []string                `json:"validation_errors"`
+    mutex           sync.RWMutex
+}
+
+func NewConfigMetrics() *ConfigMetrics {
+    return &ConfigMetrics{
+        AccessCount:   make(map[string]int64),
+        FieldUsage:    make(map[string]time.Time),
+        ConfigSources: make(map[string]int64),
+        HealthStatus:  "healthy",
+        ValidationErrors: make([]string, 0),
+    }
+}
+
+func (cm *ConfigMetrics) RecordLoad(source string) {
+    cm.mutex.Lock()
+    defer cm.mutex.Unlock()
+    
+    cm.LoadCount++
+    cm.LastLoaded = time.Now()
+    cm.ConfigSources[source]++
+    
+    if cm.ErrorCount == 0 {
+        cm.HealthStatus = "healthy"
+    }
+}
+
+func (cm *ConfigMetrics) RecordChange(field string) {
+    cm.mutex.Lock()
+    defer cm.mutex.Unlock()
+    
+    cm.ChangeCount++
+    cm.LastChanged = time.Now()
+    cm.FieldUsage[field] = time.Now()
+}
+
+func (cm *ConfigMetrics) RecordError(source string, err error) {
+    cm.mutex.Lock()
+    defer cm.mutex.Unlock()
+    
+    cm.ErrorCount++
+    cm.LastError = time.Now()
+    cm.HealthStatus = "degraded"
+    cm.ValidationErrors = append(cm.ValidationErrors, fmt.Sprintf("%s: %v", source, err))
+    
+    // Keep only last 10 errors
+    if len(cm.ValidationErrors) > 10 {
+        cm.ValidationErrors = cm.ValidationErrors[len(cm.ValidationErrors)-10:]
+    }
+}
+
+func (cm *ConfigMetrics) RecordAccess(field string) {
+    cm.mutex.Lock()
+    defer cm.mutex.Unlock()
+    
+    cm.AccessCount[field]++
+    cm.FieldUsage[field] = time.Now()
+}
+
+func (cm *ConfigMetrics) GetSnapshot() ConfigMetrics {
+    cm.mutex.RLock()
+    defer cm.mutex.RUnlock()
+    
+    // Create a deep copy
+    snapshot := ConfigMetrics{
+        LoadCount:        cm.LoadCount,
+        ChangeCount:      cm.ChangeCount,
+        ErrorCount:       cm.ErrorCount,
+        LastLoaded:       cm.LastLoaded,
+        LastChanged:      cm.LastChanged,
+        LastError:        cm.LastError,
+        HealthStatus:     cm.HealthStatus,
+        AccessCount:      make(map[string]int64),
+        FieldUsage:       make(map[string]time.Time),
+        ConfigSources:    make(map[string]int64),
+        ValidationErrors: make([]string, len(cm.ValidationErrors)),
+    }
+    
+    for k, v := range cm.AccessCount {
+        snapshot.AccessCount[k] = v
+    }
+    for k, v := range cm.FieldUsage {
+        snapshot.FieldUsage[k] = v
+    }
+    for k, v := range cm.ConfigSources {
+        snapshot.ConfigSources[k] = v
+    }
+    copy(snapshot.ValidationErrors, cm.ValidationErrors)
+    
+    return snapshot
+}
+
+// AuditLogger logs configuration changes for compliance and debugging
+type AuditLogger struct {
+    logFile   *os.File
+    formatter AuditFormatter
+}
+
+type AuditFormatter interface {
+    Format(event AuditEvent) string
+}
+
+type AuditEvent struct {
+    Timestamp time.Time   `json:"timestamp"`
+    Type      string      `json:"type"`
+    Source    string      `json:"source"`
+    Field     string      `json:"field,omitempty"`
+    OldValue  interface{} `json:"old_value,omitempty"`
+    NewValue  interface{} `json:"new_value,omitempty"`
+    Error     string      `json:"error,omitempty"`
+    User      string      `json:"user,omitempty"`
+    Context   map[string]interface{} `json:"context,omitempty"`
+}
+
+type JSONAuditFormatter struct{}
+
+func (f *JSONAuditFormatter) Format(event AuditEvent) string {
+    data, _ := json.Marshal(event)
+    return string(data)
+}
+
+func NewAuditLogger(filename string) (*AuditLogger, error) {
+    file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    if err != nil {
+        return nil, fmt.Errorf("failed to open audit log file: %w", err)
+    }
+    
+    return &AuditLogger{
+        logFile:   file,
+        formatter: &JSONAuditFormatter{},
+    }, nil
+}
+
+func (al *AuditLogger) LogLoad(source string, config map[string]interface{}) {
+    event := AuditEvent{
+        Timestamp: time.Now(),
+        Type:      "config_load",
+        Source:    source,
+        Context: map[string]interface{}{
+            "field_count": len(config),
+        },
+    }
+    al.writeEvent(event)
+}
+
+func (al *AuditLogger) LogChange(field string, oldValue, newValue interface{}) {
+    event := AuditEvent{
+        Timestamp: time.Now(),
+        Type:      "config_change",
+        Field:     field,
+        OldValue:  al.sanitizeValue(oldValue),
+        NewValue:  al.sanitizeValue(newValue),
+    }
+    al.writeEvent(event)
+}
+
+func (al *AuditLogger) LogError(source string, err error) {
+    event := AuditEvent{
+        Timestamp: time.Now(),
+        Type:      "config_error",
+        Source:    source,
+        Error:     err.Error(),
+    }
+    al.writeEvent(event)
+}
+
+func (al *AuditLogger) LogAccess(field string, value interface{}) {
+    event := AuditEvent{
+        Timestamp: time.Now(),
+        Type:      "config_access",
+        Field:     field,
+        NewValue:  al.sanitizeValue(value),
+    }
+    al.writeEvent(event)
+}
+
+func (al *AuditLogger) sanitizeValue(value interface{}) interface{} {
+    if str, ok := value.(string); ok {
+        // Mask potential secrets
+        if len(str) > 8 && containsSecretKeywords(str) {
+            return "[REDACTED]"
+        }
+    }
+    return value
+}
+
+func containsSecretKeywords(str string) bool {
+    keywords := []string{"password", "secret", "key", "token", "credential"}
+    lowerStr := fmt.Sprintf("%v", str)
+    for _, keyword := range keywords {
+        if len(lowerStr) > 10 && len(lowerStr) < 200 {
+            return true // Likely a secret based on length
+        }
+    }
+    return false
+}
+
+func (al *AuditLogger) writeEvent(event AuditEvent) {
+    logLine := al.formatter.Format(event) + "\n"
+    al.logFile.WriteString(logLine)
+    al.logFile.Sync()
+}
+
+func (al *AuditLogger) Close() error {
+    return al.logFile.Close()
+}
+
+// ObservableConfig wraps configuration with observability features
+type ObservableConfig struct {
+    config    map[string]interface{}
+    metrics   *ConfigMetrics
+    auditor   *AuditLogger
+    observers []ConfigObserver
+    mutex     sync.RWMutex
+}
+
+func NewObservableConfig(auditLogPath string) (*ObservableConfig, error) {
+    auditor, err := NewAuditLogger(auditLogPath)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &ObservableConfig{
+        config:    make(map[string]interface{}),
+        metrics:   NewConfigMetrics(),
+        auditor:   auditor,
+        observers: make([]ConfigObserver, 0),
+    }, nil
+}
+
+func (oc *ObservableConfig) AddObserver(observer ConfigObserver) {
+    oc.observers = append(oc.observers, observer)
+}
+
+func (oc *ObservableConfig) LoadConfig(source string, config map[string]interface{}) error {
+    oc.mutex.Lock()
+    defer oc.mutex.Unlock()
+    
+    // Record metrics
+    oc.metrics.RecordLoad(source)
+    
+    // Log audit event
+    oc.auditor.LogLoad(source, config)
+    
+    // Notify observers
+    for _, observer := range oc.observers {
+        observer.OnConfigLoad(source, config)
+    }
+    
+    // Store config
+    for key, value := range config {
+        if oldValue, exists := oc.config[key]; exists && oldValue != value {
+            oc.metrics.RecordChange(key)
+            oc.auditor.LogChange(key, oldValue, value)
+            
+            for _, observer := range oc.observers {
+                observer.OnConfigChange(key, oldValue, value)
+            }
+        }
+        oc.config[key] = value
+    }
+    
+    return nil
+}
+
+func (oc *ObservableConfig) Get(key string) (interface{}, bool) {
+    oc.mutex.RLock()
+    defer oc.mutex.RUnlock()
+    
+    value, exists := oc.config[key]
+    if exists {
+        oc.metrics.RecordAccess(key)
+        oc.auditor.LogAccess(key, value)
+        
+        for _, observer := range oc.observers {
+            observer.OnConfigAccess(key, value)
+        }
+    }
+    
+    return value, exists
+}
+
+func (oc *ObservableConfig) GetString(key, defaultValue string) string {
+    if value, exists := oc.Get(key); exists {
+        if str, ok := value.(string); ok {
+            return str
+        }
+    }
+    return defaultValue
+}
+
+func (oc *ObservableConfig) GetInt(key string, defaultValue int) int {
+    if value, exists := oc.Get(key); exists {
+        switch v := value.(type) {
+        case int:
+            return v
+        case float64:
+            return int(v)
+        }
+    }
+    return defaultValue
+}
+
+func (oc *ObservableConfig) GetBool(key string, defaultValue bool) bool {
+    if value, exists := oc.Get(key); exists {
+        if b, ok := value.(bool); ok {
+            return b
+        }
+    }
+    return defaultValue
+}
+
+func (oc *ObservableConfig) GetMetrics() ConfigMetrics {
+    return oc.metrics.GetSnapshot()
+}
+
+func (oc *ObservableConfig) GetHealthStatus() string {
+    metrics := oc.GetMetrics()
+    return metrics.HealthStatus
+}
+
+func (oc *ObservableConfig) Close() error {
+    return oc.auditor.Close()
+}
+
+// ConsoleObserver prints configuration events to the console
+type ConsoleObserver struct {
+    verbose bool
+}
+
+func NewConsoleObserver(verbose bool) *ConsoleObserver {
+    return &ConsoleObserver{verbose: verbose}
+}
+
+func (co *ConsoleObserver) OnConfigLoad(source string, config map[string]interface{}) {
+    fmt.Printf("Config loaded from %s (%d fields)\n", source, len(config))
+}
+
+func (co *ConsoleObserver) OnConfigChange(field string, oldValue, newValue interface{}) {
+    if co.verbose {
+        fmt.Printf("Config changed: %s = %v -> %v\n", field, oldValue, newValue)
+    } else {
+        fmt.Printf("Config changed: %s\n", field)
+    }
+}
+
+func (co *ConsoleObserver) OnConfigError(source string, err error) {
+    fmt.Printf("Config error from %s: %v\n", source, err)
+}
+
+func (co *ConsoleObserver) OnConfigAccess(field string, value interface{}) {
+    if co.verbose {
+        fmt.Printf("Config accessed: %s = %v\n", field, value)
+    }
+}
+
+func main() {
+    fmt.Println("=== Configuration Observability Example ===")
+    
+    // Create observable configuration
+    auditLogPath := "/tmp/config_audit.log"
+    observableConfig, err := NewObservableConfig(auditLogPath)
+    if err != nil {
+        fmt.Printf("Error creating observable config: %v\n", err)
+        return
+    }
+    defer observableConfig.Close()
+    
+    // Add console observer
+    observer := NewConsoleObserver(false) // Set to true for verbose output
+    observableConfig.AddObserver(observer)
+    
+    // Load initial configuration
+    fmt.Println("\n=== Loading Initial Configuration ===")
+    initialConfig := map[string]interface{}{
+        "app.name":         "ObservableApp",
+        "app.version":      "1.0.0",
+        "server.host":      "localhost",
+        "server.port":      8080,
+        "database.url":     "postgres://localhost:5432/app",
+        "database.password": "secret123",
+        "logging.level":    "info",
+        "features.metrics": true,
+    }
+    
+    observableConfig.LoadConfig("file:/etc/app/config.json", initialConfig)
+    
+    // Simulate configuration access
+    fmt.Println("\n=== Accessing Configuration Values ===")
+    appName := observableConfig.GetString("app.name", "unknown")
+    serverPort := observableConfig.GetInt("server.port", 8080)
+    metricsEnabled := observableConfig.GetBool("features.metrics", false)
+    
+    fmt.Printf("App: %s on port %d (metrics: %v)\n", appName, serverPort, metricsEnabled)
+    
+    // Simulate configuration changes
+    fmt.Println("\n=== Simulating Configuration Changes ===")
+    updatedConfig := map[string]interface{}{
+        "server.port":      9090,
+        "logging.level":    "debug",
+        "features.tracing": true,
+        "cache.type":       "redis",
+    }
+    
+    observableConfig.LoadConfig("env:APP_", updatedConfig)
+    
+    // Access updated values
+    newPort := observableConfig.GetInt("server.port", 8080)
+    logLevel := observableConfig.GetString("logging.level", "info")
+    
+    fmt.Printf("Updated port: %d, log level: %s\n", newPort, logLevel)
+    
+    // Get metrics snapshot
+    fmt.Println("\n=== Configuration Metrics ===")
+    metrics := observableConfig.GetMetrics()
+    fmt.Printf("Load count: %d\n", metrics.LoadCount)
+    fmt.Printf("Change count: %d\n", metrics.ChangeCount)
+    fmt.Printf("Error count: %d\n", metrics.ErrorCount)
+    fmt.Printf("Health status: %s\n", metrics.HealthStatus)
+    fmt.Printf("Last loaded: %s\n", metrics.LastLoaded.Format(time.RFC3339))
+    
+    if len(metrics.AccessCount) > 0 {
+        fmt.Println("Field access counts:")
+        for field, count := range metrics.AccessCount {
+            fmt.Printf("  %s: %d\n", field, count)
+        }
+    }
+    
+    if len(metrics.ConfigSources) > 0 {
+        fmt.Println("Configuration sources:")
+        for source, count := range metrics.ConfigSources {
+            fmt.Printf("  %s: %d loads\n", source, count)
+        }
+    }
+    
+    // Simulate error
+    fmt.Println("\n=== Simulating Configuration Error ===")
+    for _, observer := range observableConfig.observers {
+        observer.OnConfigError("file:/invalid/path.json", fmt.Errorf("file not found"))
+    }
+    
+    // Check health after error
+    fmt.Printf("Health status after error: %s\n", observableConfig.GetHealthStatus())
+    
+    // Show audit log contents
+    fmt.Println("\n=== Audit Log Contents ===")
+    if auditData, err := os.ReadFile(auditLogPath); err == nil {
+        fmt.Printf("Audit log (%s):\n", auditLogPath)
+        fmt.Println(string(auditData))
+    } else {
+        fmt.Printf("Error reading audit log: %v\n", err)
+    }
+    
+    // Performance metrics
+    fmt.Println("\n=== Performance Test ===")
+    start := time.Now()
+    
+    for i := 0; i < 1000; i++ {
+        observableConfig.GetString("app.name", "default")
+        observableConfig.GetInt("server.port", 8080)
+    }
+    
+    duration := time.Since(start)
+    fmt.Printf("1000 config accesses took: %v\n", duration)
+    fmt.Printf("Average per access: %v\n", duration/1000)
+    
+    // Final metrics
+    finalMetrics := observableConfig.GetMetrics()
+    fmt.Printf("Total accesses: %d\n", finalMetrics.AccessCount["app.name"]+finalMetrics.AccessCount["server.port"])
+    
+    // Clean up
+    os.Remove(auditLogPath)
+    
+    fmt.Println("\n=== Observability Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration observability including  
+metrics collection, audit logging, observer patterns, and health monitoring.  
+The pattern provides visibility into configuration usage and changes while  
+maintaining performance and security through proper data sanitization.  
+
+## Configuration caching and performance optimization
+
+Configuration caching improves application performance by reducing I/O  
+operations and providing fast access to frequently used configuration values.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "sync"
+    "time"
+)
+
+// CacheEntry represents a cached configuration value
+type CacheEntry struct {
+    Value     interface{}
+    Timestamp time.Time
+    TTL       time.Duration
+    AccessCount int64
+    LastAccess  time.Time
+}
+
+func (ce *CacheEntry) IsExpired() bool {
+    if ce.TTL == 0 {
+        return false // No expiration
+    }
+    return time.Since(ce.Timestamp) > ce.TTL
+}
+
+func (ce *CacheEntry) Touch() {
+    ce.AccessCount++
+    ce.LastAccess = time.Now()
+}
+
+// ConfigCache provides caching capabilities for configuration values
+type ConfigCache struct {
+    entries   map[string]*CacheEntry
+    mutex     sync.RWMutex
+    defaultTTL time.Duration
+    maxSize   int
+    hitCount  int64
+    missCount int64
+    evictions int64
+}
+
+func NewConfigCache(defaultTTL time.Duration, maxSize int) *ConfigCache {
+    cache := &ConfigCache{
+        entries:    make(map[string]*CacheEntry),
+        defaultTTL: defaultTTL,
+        maxSize:    maxSize,
+    }
+    
+    // Start cleanup goroutine
+    go cache.cleanupExpired()
+    
+    return cache
+}
+
+func (cc *ConfigCache) Set(key string, value interface{}, ttl time.Duration) {
+    cc.mutex.Lock()
+    defer cc.mutex.Unlock()
+    
+    if ttl == 0 {
+        ttl = cc.defaultTTL
+    }
+    
+    // Check if we need to evict entries
+    if len(cc.entries) >= cc.maxSize {
+        cc.evictLRU()
+    }
+    
+    cc.entries[key] = &CacheEntry{
+        Value:      value,
+        Timestamp:  time.Now(),
+        TTL:        ttl,
+        AccessCount: 0,
+        LastAccess:  time.Now(),
+    }
+}
+
+func (cc *ConfigCache) Get(key string) (interface{}, bool) {
+    cc.mutex.Lock()
+    defer cc.mutex.Unlock()
+    
+    entry, exists := cc.entries[key]
+    if !exists {
+        cc.missCount++
+        return nil, false
+    }
+    
+    if entry.IsExpired() {
+        delete(cc.entries, key)
+        cc.missCount++
+        return nil, false
+    }
+    
+    entry.Touch()
+    cc.hitCount++
+    return entry.Value, true
+}
+
+func (cc *ConfigCache) Delete(key string) {
+    cc.mutex.Lock()
+    defer cc.mutex.Unlock()
+    delete(cc.entries, key)
+}
+
+func (cc *ConfigCache) Clear() {
+    cc.mutex.Lock()
+    defer cc.mutex.Unlock()
+    cc.entries = make(map[string]*CacheEntry)
+}
+
+func (cc *ConfigCache) evictLRU() {
+    if len(cc.entries) == 0 {
+        return
+    }
+    
+    var oldestKey string
+    var oldestTime time.Time
+    
+    for key, entry := range cc.entries {
+        if oldestKey == "" || entry.LastAccess.Before(oldestTime) {
+            oldestKey = key
+            oldestTime = entry.LastAccess
+        }
+    }
+    
+    if oldestKey != "" {
+        delete(cc.entries, oldestKey)
+        cc.evictions++
+    }
+}
+
+func (cc *ConfigCache) cleanupExpired() {
+    ticker := time.NewTicker(1 * time.Minute)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        cc.mutex.Lock()
+        for key, entry := range cc.entries {
+            if entry.IsExpired() {
+                delete(cc.entries, key)
+            }
+        }
+        cc.mutex.Unlock()
+    }
+}
+
+func (cc *ConfigCache) GetStats() CacheStats {
+    cc.mutex.RLock()
+    defer cc.mutex.RUnlock()
+    
+    total := cc.hitCount + cc.missCount
+    hitRatio := float64(0)
+    if total > 0 {
+        hitRatio = float64(cc.hitCount) / float64(total)
+    }
+    
+    return CacheStats{
+        Size:      len(cc.entries),
+        MaxSize:   cc.maxSize,
+        HitCount:  cc.hitCount,
+        MissCount: cc.missCount,
+        HitRatio:  hitRatio,
+        Evictions: cc.evictions,
+    }
+}
+
+type CacheStats struct {
+    Size      int     `json:"size"`
+    MaxSize   int     `json:"max_size"`
+    HitCount  int64   `json:"hit_count"`
+    MissCount int64   `json:"miss_count"`
+    HitRatio  float64 `json:"hit_ratio"`
+    Evictions int64   `json:"evictions"`
+}
+
+// PerformantConfigManager combines configuration management with caching
+type PerformantConfigManager struct {
+    cache       *ConfigCache
+    configFiles map[string]string
+    lastLoaded  map[string]time.Time
+    watchers    map[string]*time.Ticker
+    mutex       sync.RWMutex
+    loadCount   int64
+}
+
+func NewPerformantConfigManager(cacheSize int, defaultTTL time.Duration) *PerformantConfigManager {
+    return &PerformantConfigManager{
+        cache:       NewConfigCache(defaultTTL, cacheSize),
+        configFiles: make(map[string]string),
+        lastLoaded:  make(map[string]time.Time),
+        watchers:    make(map[string]*time.Ticker),
+    }
+}
+
+func (pcm *PerformantConfigManager) LoadConfigFile(key, filename string, refreshInterval time.Duration) error {
+    // Load initial configuration
+    if err := pcm.loadFromFile(key, filename); err != nil {
+        return err
+    }
+    
+    pcm.mutex.Lock()
+    pcm.configFiles[key] = filename
+    pcm.mutex.Unlock()
+    
+    // Start auto-refresh if specified
+    if refreshInterval > 0 {
+        pcm.startAutoRefresh(key, filename, refreshInterval)
+    }
+    
+    return nil
+}
+
+func (pcm *PerformantConfigManager) loadFromFile(key, filename string) error {
+    data, err := os.ReadFile(filename)
+    if err != nil {
+        return fmt.Errorf("failed to read config file %s: %w", filename, err)
+    }
+    
+    var config map[string]interface{}
+    if err := json.Unmarshal(data, &config); err != nil {
+        return fmt.Errorf("failed to parse config file %s: %w", filename, err)
+    }
+    
+    // Cache configuration values with different TTLs based on type
+    for configKey, value := range config {
+        fullKey := fmt.Sprintf("%s.%s", key, configKey)
+        ttl := pcm.getTTLForKey(configKey)
+        pcm.cache.Set(fullKey, value, ttl)
+    }
+    
+    pcm.mutex.Lock()
+    pcm.lastLoaded[key] = time.Now()
+    pcm.loadCount++
+    pcm.mutex.Unlock()
+    
+    fmt.Printf("Loaded configuration %s from %s (%d keys)\n", key, filename, len(config))
+    return nil
+}
+
+func (pcm *PerformantConfigManager) getTTLForKey(key string) time.Duration {
+    // Different TTL strategies based on key patterns
+    switch {
+    case key == "version" || key == "app_name":
+        return 1 * time.Hour // Static values, long TTL
+    case key == "debug" || key == "log_level":
+        return 10 * time.Minute // Development settings, medium TTL
+    case key == "feature_flags" || key == "rate_limits":
+        return 30 * time.Second // Dynamic settings, short TTL
+    default:
+        return 5 * time.Minute // Default TTL
+    }
+}
+
+func (pcm *PerformantConfigManager) startAutoRefresh(key, filename string, interval time.Duration) {
+    pcm.mutex.Lock()
+    defer pcm.mutex.Unlock()
+    
+    // Stop existing watcher if any
+    if ticker, exists := pcm.watchers[key]; exists {
+        ticker.Stop()
+    }
+    
+    ticker := time.NewTicker(interval)
+    pcm.watchers[key] = ticker
+    
+    go func() {
+        for range ticker.C {
+            pcm.mutex.RLock()
+            currentFile, exists := pcm.configFiles[key]
+            pcm.mutex.RUnlock()
+            
+            if !exists || currentFile != filename {
+                return // Configuration removed or changed
+            }
+            
+            if err := pcm.loadFromFile(key, filename); err != nil {
+                fmt.Printf("Auto-refresh failed for %s: %v\n", key, err)
+            }
+        }
+    }()
+}
+
+func (pcm *PerformantConfigManager) GetString(key, defaultValue string) string {
+    if value, exists := pcm.cache.Get(key); exists {
+        if str, ok := value.(string); ok {
+            return str
+        }
+    }
+    return defaultValue
+}
+
+func (pcm *PerformantConfigManager) GetInt(key string, defaultValue int) int {
+    if value, exists := pcm.cache.Get(key); exists {
+        switch v := value.(type) {
+        case int:
+            return v
+        case float64:
+            return int(v)
+        }
+    }
+    return defaultValue
+}
+
+func (pcm *PerformantConfigManager) GetBool(key string, defaultValue bool) bool {
+    if value, exists := pcm.cache.Get(key); exists {
+        if b, ok := value.(bool); ok {
+            return b
+        }
+    }
+    return defaultValue
+}
+
+func (pcm *PerformantConfigManager) GetFloat(key string, defaultValue float64) float64 {
+    if value, exists := pcm.cache.Get(key); exists {
+        switch v := value.(type) {
+        case float64:
+            return v
+        case int:
+            return float64(v)
+        }
+    }
+    return defaultValue
+}
+
+func (pcm *PerformantConfigManager) InvalidateKey(key string) {
+    pcm.cache.Delete(key)
+}
+
+func (pcm *PerformantConfigManager) InvalidateAll() {
+    pcm.cache.Clear()
+}
+
+func (pcm *PerformantConfigManager) GetCacheStats() CacheStats {
+    return pcm.cache.GetStats()
+}
+
+func (pcm *PerformantConfigManager) GetLoadCount() int64 {
+    pcm.mutex.RLock()
+    defer pcm.mutex.RUnlock()
+    return pcm.loadCount
+}
+
+func (pcm *PerformantConfigManager) Stop() {
+    pcm.mutex.Lock()
+    defer pcm.mutex.Unlock()
+    
+    for _, ticker := range pcm.watchers {
+        ticker.Stop()
+    }
+    pcm.watchers = make(map[string]*time.Ticker)
+}
+
+func main() {
+    fmt.Println("=== Configuration Caching and Performance Example ===")
+    
+    // Create performant config manager
+    manager := NewPerformantConfigManager(100, 5*time.Minute)
+    defer manager.Stop()
+    
+    // Create sample configuration files
+    appConfig := map[string]interface{}{
+        "app_name":    "CachedApp",
+        "version":     "1.0.0",
+        "debug":       false,
+        "log_level":   "info",
+        "server_port": 8080,
+        "timeout":     30.5,
+    }
+    
+    featureConfig := map[string]interface{}{
+        "feature_flags": map[string]bool{
+            "metrics": true,
+            "tracing": false,
+            "caching": true,
+        },
+        "rate_limits": map[string]int{
+            "api_requests": 1000,
+            "file_uploads": 10,
+        },
+    }
+    
+    // Write config files
+    appData, _ := json.MarshalIndent(appConfig, "", "  ")
+    featureData, _ := json.MarshalIndent(featureConfig, "", "  ")
+    
+    appFile := "/tmp/app_config.json"
+    featureFile := "/tmp/feature_config.json"
+    
+    os.WriteFile(appFile, appData, 0644)
+    os.WriteFile(featureFile, featureData, 0644)
+    
+    // Load configurations with auto-refresh
+    fmt.Println("\n=== Loading Configurations ===")
+    if err := manager.LoadConfigFile("app", appFile, 30*time.Second); err != nil {
+        fmt.Printf("Error loading app config: %v\n", err)
+        return
+    }
+    
+    if err := manager.LoadConfigFile("features", featureFile, 10*time.Second); err != nil {
+        fmt.Printf("Error loading feature config: %v\n", err)
+        return
+    }
+    
+    // Test configuration access
+    fmt.Println("\n=== Testing Configuration Access ===")
+    
+    appName := manager.GetString("app.app_name", "unknown")
+    serverPort := manager.GetInt("app.server_port", 8080)
+    timeout := manager.GetFloat("app.timeout", 30.0)
+    debugMode := manager.GetBool("app.debug", true)
+    
+    fmt.Printf("App: %s\n", appName)
+    fmt.Printf("Server port: %d\n", serverPort)
+    fmt.Printf("Timeout: %.1f seconds\n", timeout)
+    fmt.Printf("Debug mode: %v\n", debugMode)
+    
+    // Performance test
+    fmt.Println("\n=== Performance Test ===")
+    
+    iterations := 10000
+    start := time.Now()
+    
+    for i := 0; i < iterations; i++ {
+        manager.GetString("app.app_name", "default")
+        manager.GetInt("app.server_port", 8080)
+        manager.GetBool("app.debug", false)
+        manager.GetFloat("app.timeout", 30.0)
+    }
+    
+    duration := time.Since(start)
+    fmt.Printf("Performed %d cached config accesses in %v\n", iterations*4, duration)
+    fmt.Printf("Average per access: %v\n", duration/time.Duration(iterations*4))
+    
+    // Show cache statistics
+    fmt.Println("\n=== Cache Statistics ===")
+    stats := manager.GetCacheStats()
+    fmt.Printf("Cache size: %d/%d\n", stats.Size, stats.MaxSize)
+    fmt.Printf("Hit count: %d\n", stats.HitCount)
+    fmt.Printf("Miss count: %d\n", stats.MissCount)
+    fmt.Printf("Hit ratio: %.2f%%\n", stats.HitRatio*100)
+    fmt.Printf("Evictions: %d\n", stats.Evictions)
+    fmt.Printf("Load count: %d\n", manager.GetLoadCount())
+    
+    // Test cache invalidation
+    fmt.Println("\n=== Testing Cache Invalidation ===")
+    fmt.Printf("Before invalidation - App name: %s\n", manager.GetString("app.app_name", "unknown"))
+    
+    manager.InvalidateKey("app.app_name")
+    fmt.Printf("After invalidation - App name: %s\n", manager.GetString("app.app_name", "unknown"))
+    
+    // Test with different TTL for sensitive data
+    fmt.Println("\n=== Testing TTL-based Expiration ===")
+    
+    // Simulate rapid access to show caching benefits
+    rapidStart := time.Now()
+    for i := 0; i < 1000; i++ {
+        manager.GetString("app.version", "1.0.0")
+    }
+    rapidDuration := time.Since(rapidStart)
+    
+    fmt.Printf("1000 rapid accesses took: %v\n", rapidDuration)
+    
+    // Final cache stats
+    finalStats := manager.GetCacheStats()
+    fmt.Printf("\nFinal cache hit ratio: %.2f%%\n", finalStats.HitRatio*100)
+    
+    // Clean up
+    os.Remove(appFile)
+    os.Remove(featureFile)
+    
+    fmt.Println("\n=== Caching Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration caching and performance  
+optimization including TTL-based expiration, LRU eviction, auto-refresh  
+capabilities, and detailed performance metrics. The pattern significantly  
+improves configuration access performance while maintaining data freshness  
+through intelligent caching strategies.  
+
+## Remote configuration services
+
+Remote configuration services enable centralized configuration management  
+with real-time updates and distributed coordination capabilities.  
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "sync"
+    "time"
+)
+
+// RemoteConfigClient provides access to remote configuration services
+type RemoteConfigClient struct {
+    baseURL    string
+    apiKey     string
+    client     *http.Client
+    cache      map[string]ConfigValue
+    callbacks  []func(key string, value interface{})
+    mutex      sync.RWMutex
+    polling    bool
+    pollCancel context.CancelFunc
+}
+
+type ConfigValue struct {
+    Value     interface{} `json:"value"`
+    Version   int64       `json:"version"`
+    UpdatedAt time.Time   `json:"updated_at"`
+    Source    string      `json:"source"`
+}
+
+func NewRemoteConfigClient(baseURL, apiKey string) *RemoteConfigClient {
+    return &RemoteConfigClient{
+        baseURL: baseURL,
+        apiKey:  apiKey,
+        client: &http.Client{
+            Timeout: 10 * time.Second,
+        },
+        cache:     make(map[string]ConfigValue),
+        callbacks: make([]func(string, interface{}), 0),
+    }
+}
+
+func (rcc *RemoteConfigClient) GetValue(key string) (interface{}, error) {
+    // Check cache first
+    rcc.mutex.RLock()
+    if cached, exists := rcc.cache[key]; exists {
+        rcc.mutex.RUnlock()
+        return cached.Value, nil
+    }
+    rcc.mutex.RUnlock()
+    
+    // Fetch from remote service
+    url := fmt.Sprintf("%s/config/%s", rcc.baseURL, key)
+    req, err := http.NewRequest("GET", url, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    req.Header.Set("Authorization", "Bearer "+rcc.apiKey)
+    req.Header.Set("Accept", "application/json")
+    
+    resp, err := rcc.client.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("failed to fetch config: %w", err)
+    }
+    defer resp.Body.Close()
+    
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("config service returned status: %d", resp.StatusCode)
+    }
+    
+    var configValue ConfigValue
+    if err := json.NewDecoder(resp.Body).Decode(&configValue); err != nil {
+        return nil, fmt.Errorf("failed to decode response: %w", err)
+    }
+    
+    // Update cache
+    rcc.mutex.Lock()
+    rcc.cache[key] = configValue
+    rcc.mutex.Unlock()
+    
+    return configValue.Value, nil
+}
+
+func (rcc *RemoteConfigClient) StartPolling(ctx context.Context, interval time.Duration) {
+    if rcc.polling {
+        return
+    }
+    
+    pollCtx, cancel := context.WithCancel(ctx)
+    rcc.pollCancel = cancel
+    rcc.polling = true
+    
+    go func() {
+        ticker := time.NewTicker(interval)
+        defer ticker.Stop()
+        
+        for {
+            select {
+            case <-pollCtx.Done():
+                rcc.polling = false
+                return
+            case <-ticker.C:
+                rcc.pollUpdates()
+            }
+        }
+    }()
+}
+
+func (rcc *RemoteConfigClient) StopPolling() {
+    if rcc.pollCancel != nil {
+        rcc.pollCancel()
+    }
+}
+
+func (rcc *RemoteConfigClient) pollUpdates() {
+    rcc.mutex.RLock()
+    keys := make([]string, 0, len(rcc.cache))
+    for key := range rcc.cache {
+        keys = append(keys, key)
+    }
+    rcc.mutex.RUnlock()
+    
+    for _, key := range keys {
+        if newValue, err := rcc.GetValue(key); err == nil {
+            rcc.mutex.RLock()
+            cached, exists := rcc.cache[key]
+            rcc.mutex.RUnlock()
+            
+            if exists && cached.Value != newValue {
+                for _, callback := range rcc.callbacks {
+                    callback(key, newValue)
+                }
+            }
+        }
+    }
+}
+
+func (rcc *RemoteConfigClient) OnChange(callback func(key string, value interface{})) {
+    rcc.callbacks = append(rcc.callbacks, callback)
+}
+
+// Simulate a remote config service
+func startMockConfigService() *http.Server {
+    mux := http.NewServeMux()
+    
+    // Mock configuration data
+    configs := map[string]ConfigValue{
+        "app.name": {
+            Value:     "RemoteApp",
+            Version:   1,
+            UpdatedAt: time.Now(),
+            Source:    "remote",
+        },
+        "feature.metrics": {
+            Value:     true,
+            Version:   1,
+            UpdatedAt: time.Now(),
+            Source:    "remote",
+        },
+        "rate.limit": {
+            Value:     100,
+            Version:   1,
+            UpdatedAt: time.Now(),
+            Source:    "remote",
+        },
+    }
+    
+    mux.HandleFunc("/config/", func(w http.ResponseWriter, r *http.Request) {
+        key := r.URL.Path[8:] // Remove "/config/" prefix
+        
+        config, exists := configs[key]
+        if !exists {
+            http.NotFound(w, r)
+            return
+        }
+        
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(config)
+    })
+    
+    server := &http.Server{
+        Addr:    ":8090",
+        Handler: mux,
+    }
+    
+    go server.ListenAndServe()
+    return server
+}
+
+func main() {
+    fmt.Println("=== Remote Configuration Service Example ===")
+    
+    // Start mock config service
+    server := startMockConfigService()
+    defer server.Shutdown(context.Background())
+    
+    // Give server time to start
+    time.Sleep(100 * time.Millisecond)
+    
+    // Create remote config client
+    client := NewRemoteConfigClient("http://localhost:8090", "demo-api-key")
+    
+    // Set up change callback
+    client.OnChange(func(key string, value interface{}) {
+        fmt.Printf("Configuration changed: %s = %v\n", key, value)
+    })
+    
+    // Fetch some configuration values
+    fmt.Println("\n=== Fetching Remote Configuration ===")
+    
+    appName, err := client.GetValue("app.name")
+    if err != nil {
+        fmt.Printf("Error fetching app.name: %v\n", err)
+    } else {
+        fmt.Printf("App name: %v\n", appName)
+    }
+    
+    metricsEnabled, err := client.GetValue("feature.metrics")
+    if err != nil {
+        fmt.Printf("Error fetching feature.metrics: %v\n", err)
+    } else {
+        fmt.Printf("Metrics enabled: %v\n", metricsEnabled)
+    }
+    
+    rateLimit, err := client.GetValue("rate.limit")
+    if err != nil {
+        fmt.Printf("Error fetching rate.limit: %v\n", err)
+    } else {
+        fmt.Printf("Rate limit: %v\n", rateLimit)
+    }
+    
+    // Test caching (second access should be faster)
+    fmt.Println("\n=== Testing Cache Performance ===")
+    
+    start := time.Now()
+    for i := 0; i < 100; i++ {
+        client.GetValue("app.name")
+    }
+    duration := time.Since(start)
+    fmt.Printf("100 cached accesses took: %v\n", duration)
+    
+    fmt.Println("\n=== Remote Configuration Complete ===")
+}
+```
+
+This example demonstrates integration with remote configuration services  
+including caching, polling for updates, and change notifications. This  
+pattern enables centralized configuration management across distributed  
+systems with real-time update capabilities.  
+
+## Configuration feature flags and A/B testing
+
+Feature flags provide runtime configuration control for application behavior  
+enabling safe deployments and A/B testing capabilities.  
+
+```go
+package main
+
+import (
+    "crypto/md5"
+    "encoding/json"
+    "fmt"
+    "math/rand"
+    "os"
+    "strconv"
+    "sync"
+    "time"
+)
+
+// FeatureFlag represents a feature flag configuration
+type FeatureFlag struct {
+    Key          string                 `json:"key"`
+    Name         string                 `json:"name"`
+    Description  string                 `json:"description"`
+    Enabled      bool                   `json:"enabled"`
+    Rules        []FeatureRule          `json:"rules"`
+    Variations   map[string]interface{} `json:"variations"`
+    DefaultValue interface{}            `json:"default_value"`
+    CreatedAt    time.Time              `json:"created_at"`
+    UpdatedAt    time.Time              `json:"updated_at"`
+}
+
+type FeatureRule struct {
+    ID          string                 `json:"id"`
+    Condition   RuleCondition          `json:"condition"`
+    Variation   string                 `json:"variation"`
+    Percentage  int                    `json:"percentage"`
+    UserFilters map[string]interface{} `json:"user_filters"`
+}
+
+type RuleCondition struct {
+    Operator string      `json:"operator"`
+    Field    string      `json:"field"`
+    Value    interface{} `json:"value"`
+}
+
+type User struct {
+    ID         string            `json:"id"`
+    Email      string            `json:"email"`
+    Properties map[string]string `json:"properties"`
+    Groups     []string          `json:"groups"`
+}
+
+// FeatureFlagManager manages feature flags and evaluations
+type FeatureFlagManager struct {
+    flags   map[string]*FeatureFlag
+    mutex   sync.RWMutex
+    metrics map[string]*FlagMetrics
+}
+
+type FlagMetrics struct {
+    EvaluationCount map[string]int64 `json:"evaluation_count"`
+    LastEvaluated   time.Time        `json:"last_evaluated"`
+    TotalEvaluations int64           `json:"total_evaluations"`
+}
+
+func NewFeatureFlagManager() *FeatureFlagManager {
+    return &FeatureFlagManager{
+        flags:   make(map[string]*FeatureFlag),
+        metrics: make(map[string]*FlagMetrics),
+    }
+}
+
+func (ffm *FeatureFlagManager) LoadFlags(filename string) error {
+    data, err := os.ReadFile(filename)
+    if err != nil {
+        return fmt.Errorf("failed to read flags file: %w", err)
+    }
+    
+    var flags []*FeatureFlag
+    if err := json.Unmarshal(data, &flags); err != nil {
+        return fmt.Errorf("failed to parse flags: %w", err)
+    }
+    
+    ffm.mutex.Lock()
+    defer ffm.mutex.Unlock()
+    
+    for _, flag := range flags {
+        ffm.flags[flag.Key] = flag
+        if _, exists := ffm.metrics[flag.Key]; !exists {
+            ffm.metrics[flag.Key] = &FlagMetrics{
+                EvaluationCount: make(map[string]int64),
+            }
+        }
+    }
+    
+    fmt.Printf("Loaded %d feature flags\n", len(flags))
+    return nil
+}
+
+func (ffm *FeatureFlagManager) EvaluateFlag(key string, user *User, defaultValue interface{}) interface{} {
+    ffm.mutex.RLock()
+    flag, exists := ffm.flags[key]
+    if !exists {
+        ffm.mutex.RUnlock()
+        return defaultValue
+    }
+    
+    metrics := ffm.metrics[key]
+    ffm.mutex.RUnlock()
+    
+    // Update metrics
+    ffm.mutex.Lock()
+    metrics.TotalEvaluations++
+    metrics.LastEvaluated = time.Now()
+    ffm.mutex.Unlock()
+    
+    // If flag is disabled, return default
+    if !flag.Enabled {
+        ffm.recordEvaluation(key, "default")
+        return flag.DefaultValue
+    }
+    
+    // Evaluate rules in order
+    for _, rule := range flag.Rules {
+        if ffm.evaluateRule(rule, user) {
+            variation := ffm.selectVariation(flag, rule, user)
+            ffm.recordEvaluation(key, variation)
+            return flag.Variations[variation]
+        }
+    }
+    
+    // No rules matched, return default
+    ffm.recordEvaluation(key, "default")
+    return flag.DefaultValue
+}
+
+func (ffm *FeatureFlagManager) evaluateRule(rule FeatureRule, user *User) bool {
+    // Check user filters
+    for filterKey, filterValue := range rule.UserFilters {
+        switch filterKey {
+        case "user_id":
+            if user.ID != filterValue {
+                return false
+            }
+        case "email_domain":
+            if !ffm.matchesEmailDomain(user.Email, filterValue.(string)) {
+                return false
+            }
+        case "group":
+            if !ffm.userInGroup(user, filterValue.(string)) {
+                return false
+            }
+        case "property":
+            propFilter := filterValue.(map[string]interface{})
+            propKey := propFilter["key"].(string)
+            propValue := propFilter["value"].(string)
+            if user.Properties[propKey] != propValue {
+                return false
+            }
+        }
+    }
+    
+    // Check percentage rollout
+    if rule.Percentage < 100 {
+        hash := ffm.getUserHash(user.ID, rule.ID)
+        if hash%100 >= rule.Percentage {
+            return false
+        }
+    }
+    
+    return true
+}
+
+func (ffm *FeatureFlagManager) selectVariation(flag *FeatureFlag, rule FeatureRule, user *User) string {
+    if rule.Variation != "" {
+        return rule.Variation
+    }
+    
+    // A/B test logic - use user hash for consistent assignment
+    hash := ffm.getUserHash(user.ID, flag.Key)
+    variations := make([]string, 0, len(flag.Variations))
+    for variation := range flag.Variations {
+        variations = append(variations, variation)
+    }
+    
+    if len(variations) > 0 {
+        return variations[hash%len(variations)]
+    }
+    
+    return "default"
+}
+
+func (ffm *FeatureFlagManager) getUserHash(userID, salt string) int {
+    hasher := md5.New()
+    hasher.Write([]byte(userID + salt))
+    hashBytes := hasher.Sum(nil)
+    
+    // Convert first 4 bytes to int
+    hash := int(hashBytes[0])<<24 | int(hashBytes[1])<<16 | int(hashBytes[2])<<8 | int(hashBytes[3])
+    if hash < 0 {
+        hash = -hash
+    }
+    return hash
+}
+
+func (ffm *FeatureFlagManager) matchesEmailDomain(email, domain string) bool {
+    if len(email) == 0 {
+        return false
+    }
+    
+    for i := len(email) - 1; i >= 0; i-- {
+        if email[i] == '@' {
+            emailDomain := email[i+1:]
+            return emailDomain == domain
+        }
+    }
+    return false
+}
+
+func (ffm *FeatureFlagManager) userInGroup(user *User, group string) bool {
+    for _, userGroup := range user.Groups {
+        if userGroup == group {
+            return true
+        }
+    }
+    return false
+}
+
+func (ffm *FeatureFlagManager) recordEvaluation(flagKey, variation string) {
+    ffm.mutex.Lock()
+    defer ffm.mutex.Unlock()
+    
+    if metrics, exists := ffm.metrics[flagKey]; exists {
+        metrics.EvaluationCount[variation]++
+    }
+}
+
+func (ffm *FeatureFlagManager) GetMetrics(flagKey string) *FlagMetrics {
+    ffm.mutex.RLock()
+    defer ffm.mutex.RUnlock()
+    
+    if metrics, exists := ffm.metrics[flagKey]; exists {
+        // Return a copy
+        metricsCopy := &FlagMetrics{
+            EvaluationCount:  make(map[string]int64),
+            LastEvaluated:    metrics.LastEvaluated,
+            TotalEvaluations: metrics.TotalEvaluations,
+        }
+        for k, v := range metrics.EvaluationCount {
+            metricsCopy.EvaluationCount[k] = v
+        }
+        return metricsCopy
+    }
+    
+    return nil
+}
+
+func (ffm *FeatureFlagManager) IsEnabled(key string, user *User) bool {
+    result := ffm.EvaluateFlag(key, user, false)
+    if b, ok := result.(bool); ok {
+        return b
+    }
+    return false
+}
+
+func (ffm *FeatureFlagManager) GetString(key string, user *User, defaultValue string) string {
+    result := ffm.EvaluateFlag(key, user, defaultValue)
+    if s, ok := result.(string); ok {
+        return s
+    }
+    return defaultValue
+}
+
+func (ffm *FeatureFlagManager) GetInt(key string, user *User, defaultValue int) int {
+    result := ffm.EvaluateFlag(key, user, defaultValue)
+    switch v := result.(type) {
+    case int:
+        return v
+    case float64:
+        return int(v)
+    case string:
+        if i, err := strconv.Atoi(v); err == nil {
+            return i
+        }
+    }
+    return defaultValue
+}
+
+func main() {
+    fmt.Println("=== Feature Flags and A/B Testing Example ===")
+    
+    // Create feature flag configuration
+    flags := []*FeatureFlag{
+        {
+            Key:         "new_ui",
+            Name:        "New UI Design",
+            Description: "Enable the new user interface design",
+            Enabled:     true,
+            DefaultValue: false,
+            Variations: map[string]interface{}{
+                "control":   false,
+                "treatment": true,
+            },
+            Rules: []FeatureRule{
+                {
+                    ID:         "beta_users",
+                    Percentage: 100,
+                    Variation:  "treatment",
+                    UserFilters: map[string]interface{}{
+                        "group": "beta",
+                    },
+                },
+                {
+                    ID:         "gradual_rollout",
+                    Percentage: 25, // 25% rollout
+                    Variation:  "treatment",
+                },
+            },
+            CreatedAt: time.Now(),
+            UpdatedAt: time.Now(),
+        },
+        {
+            Key:         "recommendation_algorithm",
+            Name:        "Recommendation Algorithm",
+            Description: "A/B test for recommendation algorithms",
+            Enabled:     true,
+            DefaultValue: "collaborative",
+            Variations: map[string]interface{}{
+                "collaborative": "collaborative",
+                "content_based": "content_based",
+                "hybrid":        "hybrid",
+            },
+            Rules: []FeatureRule{
+                {
+                    ID:         "algorithm_test",
+                    Percentage: 100,
+                    UserFilters: map[string]interface{}{
+                        "email_domain": "example.com",
+                    },
+                },
+            },
+            CreatedAt: time.Now(),
+            UpdatedAt: time.Now(),
+        },
+        {
+            Key:         "premium_features",
+            Name:        "Premium Features",
+            Description: "Enable premium features for eligible users",
+            Enabled:     true,
+            DefaultValue: false,
+            Variations: map[string]interface{}{
+                "disabled": false,
+                "enabled":  true,
+            },
+            Rules: []FeatureRule{
+                {
+                    ID:         "premium_users",
+                    Percentage: 100,
+                    Variation:  "enabled",
+                    UserFilters: map[string]interface{}{
+                        "property": map[string]interface{}{
+                            "key":   "subscription",
+                            "value": "premium",
+                        },
+                    },
+                },
+            },
+            CreatedAt: time.Now(),
+            UpdatedAt: time.Now(),
+        },
+    }
+    
+    // Save flags to file
+    flagsData, _ := json.MarshalIndent(flags, "", "  ")
+    flagsFile := "/tmp/feature_flags.json"
+    os.WriteFile(flagsFile, flagsData, 0644)
+    
+    // Create feature flag manager
+    manager := NewFeatureFlagManager()
+    if err := manager.LoadFlags(flagsFile); err != nil {
+        fmt.Printf("Error loading flags: %v\n", err)
+        return
+    }
+    
+    // Test with different users
+    fmt.Println("\n=== Testing Feature Flag Evaluations ===")
+    
+    users := []*User{
+        {
+            ID:    "user1",
+            Email: "alice@example.com",
+            Properties: map[string]string{
+                "subscription": "premium",
+            },
+            Groups: []string{"beta"},
+        },
+        {
+            ID:    "user2",
+            Email: "bob@company.com",
+            Properties: map[string]string{
+                "subscription": "free",
+            },
+            Groups: []string{"regular"},
+        },
+        {
+            ID:    "user3",
+            Email: "charlie@example.com",
+            Properties: map[string]string{
+                "subscription": "free",
+            },
+            Groups: []string{"regular"},
+        },
+    }
+    
+    for _, user := range users {
+        fmt.Printf("\nUser: %s (%s)\n", user.ID, user.Email)
+        
+        newUI := manager.IsEnabled("new_ui", user)
+        fmt.Printf("  New UI: %v\n", newUI)
+        
+        algorithm := manager.GetString("recommendation_algorithm", user, "default")
+        fmt.Printf("  Recommendation Algorithm: %s\n", algorithm)
+        
+        premiumFeatures := manager.IsEnabled("premium_features", user)
+        fmt.Printf("  Premium Features: %v\n", premiumFeatures)
+    }
+    
+    // Simulate many evaluations for metrics
+    fmt.Println("\n=== Simulating Traffic for A/B Test ===")
+    
+    rand.Seed(time.Now().UnixNano())
+    
+    for i := 0; i < 1000; i++ {
+        userID := fmt.Sprintf("user_%d", rand.Intn(10000))
+        user := &User{
+            ID:    userID,
+            Email: fmt.Sprintf("%s@test.com", userID),
+            Groups: []string{"regular"},
+        }
+        
+        manager.EvaluateFlag("new_ui", user, false)
+        manager.EvaluateFlag("recommendation_algorithm", user, "collaborative")
+    }
+    
+    // Show metrics
+    fmt.Println("\n=== Feature Flag Metrics ===")
+    
+    flagKeys := []string{"new_ui", "recommendation_algorithm", "premium_features"}
+    for _, key := range flagKeys {
+        metrics := manager.GetMetrics(key)
+        if metrics != nil {
+            fmt.Printf("\nFlag: %s\n", key)
+            fmt.Printf("  Total evaluations: %d\n", metrics.TotalEvaluations)
+            fmt.Printf("  Last evaluated: %s\n", metrics.LastEvaluated.Format(time.RFC3339))
+            fmt.Printf("  Variation breakdown:\n")
+            
+            for variation, count := range metrics.EvaluationCount {
+                percentage := float64(count) / float64(metrics.TotalEvaluations) * 100
+                fmt.Printf("    %s: %d (%.1f%%)\n", variation, count, percentage)
+            }
+        }
+    }
+    
+    // Clean up
+    os.Remove(flagsFile)
+    
+    fmt.Println("\n=== Feature Flags Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive feature flag management including  
+rule-based evaluation, A/B testing capabilities, user targeting, percentage  
+rollouts, and detailed metrics collection. The pattern enables safe feature  
+deployments and data-driven decision making through controlled rollouts.  
+
+## Configuration deployment patterns
+
+Configuration deployment patterns ensure safe and reliable configuration  
+updates across different environments and deployment scenarios.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "path/filepath"
+    "time"
+)
+
+// ConfigDeployment represents a configuration deployment
+type ConfigDeployment struct {
+    ID          string                 `json:"id"`
+    Version     string                 `json:"version"`
+    Environment string                 `json:"environment"`
+    Config      map[string]interface{} `json:"config"`
+    Metadata    DeploymentMetadata     `json:"metadata"`
+    Status      string                 `json:"status"`
+    CreatedAt   time.Time              `json:"created_at"`
+    DeployedAt  *time.Time             `json:"deployed_at,omitempty"`
+    RolledBackAt *time.Time            `json:"rolled_back_at,omitempty"`
+}
+
+type DeploymentMetadata struct {
+    Author      string            `json:"author"`
+    Description string            `json:"description"`
+    Changes     []string          `json:"changes"`
+    Tags        map[string]string `json:"tags"`
+    Checksum    string            `json:"checksum"`
+}
+
+// ConfigDeploymentManager manages configuration deployments
+type ConfigDeploymentManager struct {
+    deploymentDir string
+    environments  map[string]*EnvironmentConfig
+}
+
+type EnvironmentConfig struct {
+    Name           string   `json:"name"`
+    RequiresApproval bool   `json:"requires_approval"`
+    Validators     []string `json:"validators"`
+    PreDeployHooks []string `json:"pre_deploy_hooks"`
+    PostDeployHooks []string `json:"post_deploy_hooks"`
+}
+
+func NewConfigDeploymentManager(deploymentDir string) *ConfigDeploymentManager {
+    return &ConfigDeploymentManager{
+        deploymentDir: deploymentDir,
+        environments: map[string]*EnvironmentConfig{
+            "development": {
+                Name:           "development",
+                RequiresApproval: false,
+                Validators:     []string{"syntax", "basic"},
+            },
+            "staging": {
+                Name:           "staging",
+                RequiresApproval: true,
+                Validators:     []string{"syntax", "basic", "integration"},
+                PreDeployHooks: []string{"backup", "notify"},
+            },
+            "production": {
+                Name:           "production",
+                RequiresApproval: true,
+                Validators:     []string{"syntax", "basic", "integration", "security"},
+                PreDeployHooks: []string{"backup", "notify", "maintenance_mode"},
+                PostDeployHooks: []string{"health_check", "notify", "disable_maintenance"},
+            },
+        },
+    }
+}
+
+func (cdm *ConfigDeploymentManager) CreateDeployment(
+    version, environment string,
+    config map[string]interface{},
+    metadata DeploymentMetadata,
+) (*ConfigDeployment, error) {
+    
+    // Validate environment
+    envConfig, exists := cdm.environments[environment]
+    if !exists {
+        return nil, fmt.Errorf("unknown environment: %s", environment)
+    }
+    
+    // Create deployment
+    deployment := &ConfigDeployment{
+        ID:          fmt.Sprintf("%s-%s-%d", environment, version, time.Now().Unix()),
+        Version:     version,
+        Environment: environment,
+        Config:      config,
+        Metadata:    metadata,
+        Status:      "created",
+        CreatedAt:   time.Now(),
+    }
+    
+    // Calculate checksum
+    deployment.Metadata.Checksum = cdm.calculateChecksum(config)
+    
+    // Validate configuration
+    if err := cdm.validateDeployment(deployment, envConfig); err != nil {
+        deployment.Status = "validation_failed"
+        return deployment, fmt.Errorf("validation failed: %w", err)
+    }
+    
+    deployment.Status = "validated"
+    
+    // Save deployment
+    if err := cdm.saveDeployment(deployment); err != nil {
+        return deployment, fmt.Errorf("failed to save deployment: %w", err)
+    }
+    
+    return deployment, nil
+}
+
+func (cdm *ConfigDeploymentManager) DeployConfiguration(deploymentID string) error {
+    deployment, err := cdm.loadDeployment(deploymentID)
+    if err != nil {
+        return fmt.Errorf("failed to load deployment: %w", err)
+    }
+    
+    envConfig := cdm.environments[deployment.Environment]
+    
+    fmt.Printf("Deploying configuration %s to %s\n", deploymentID, deployment.Environment)
+    
+    // Check approval requirements
+    if envConfig.RequiresApproval && deployment.Status != "approved" {
+        return fmt.Errorf("deployment requires approval")
+    }
+    
+    deployment.Status = "deploying"
+    cdm.saveDeployment(deployment)
+    
+    // Execute pre-deploy hooks
+    for _, hook := range envConfig.PreDeployHooks {
+        fmt.Printf("Executing pre-deploy hook: %s\n", hook)
+        if err := cdm.executeHook(hook, deployment); err != nil {
+            deployment.Status = "deploy_failed"
+            cdm.saveDeployment(deployment)
+            return fmt.Errorf("pre-deploy hook %s failed: %w", hook, err)
+        }
+    }
+    
+    // Deploy configuration
+    if err := cdm.deployToEnvironment(deployment); err != nil {
+        deployment.Status = "deploy_failed"
+        cdm.saveDeployment(deployment)
+        return fmt.Errorf("deployment failed: %w", err)
+    }
+    
+    // Execute post-deploy hooks
+    for _, hook := range envConfig.PostDeployHooks {
+        fmt.Printf("Executing post-deploy hook: %s\n", hook)
+        if err := cdm.executeHook(hook, deployment); err != nil {
+            fmt.Printf("Warning: post-deploy hook %s failed: %v\n", hook, err)
+        }
+    }
+    
+    now := time.Now()
+    deployment.DeployedAt = &now
+    deployment.Status = "deployed"
+    cdm.saveDeployment(deployment)
+    
+    fmt.Printf("Configuration %s deployed successfully\n", deploymentID)
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) RollbackDeployment(deploymentID string) error {
+    deployment, err := cdm.loadDeployment(deploymentID)
+    if err != nil {
+        return fmt.Errorf("failed to load deployment: %w", err)
+    }
+    
+    if deployment.Status != "deployed" {
+        return fmt.Errorf("can only rollback deployed configurations")
+    }
+    
+    fmt.Printf("Rolling back deployment %s\n", deploymentID)
+    
+    // Find previous deployment
+    previousDeployment, err := cdm.findPreviousDeployment(deployment.Environment, deployment.ID)
+    if err != nil {
+        return fmt.Errorf("failed to find previous deployment: %w", err)
+    }
+    
+    if previousDeployment == nil {
+        return fmt.Errorf("no previous deployment found for rollback")
+    }
+    
+    // Deploy previous configuration
+    if err := cdm.deployToEnvironment(previousDeployment); err != nil {
+        return fmt.Errorf("rollback failed: %w", err)
+    }
+    
+    now := time.Now()
+    deployment.RolledBackAt = &now
+    deployment.Status = "rolled_back"
+    cdm.saveDeployment(deployment)
+    
+    fmt.Printf("Deployment %s rolled back successfully\n", deploymentID)
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) validateDeployment(deployment *ConfigDeployment, envConfig *EnvironmentConfig) error {
+    for _, validator := range envConfig.Validators {
+        switch validator {
+        case "syntax":
+            if err := cdm.validateSyntax(deployment.Config); err != nil {
+                return fmt.Errorf("syntax validation failed: %w", err)
+            }
+        case "basic":
+            if err := cdm.validateBasic(deployment.Config); err != nil {
+                return fmt.Errorf("basic validation failed: %w", err)
+            }
+        case "integration":
+            if err := cdm.validateIntegration(deployment.Config, deployment.Environment); err != nil {
+                return fmt.Errorf("integration validation failed: %w", err)
+            }
+        case "security":
+            if err := cdm.validateSecurity(deployment.Config); err != nil {
+                return fmt.Errorf("security validation failed: %w", err)
+            }
+        }
+    }
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) validateSyntax(config map[string]interface{}) error {
+    // Validate JSON syntax by marshaling/unmarshaling
+    _, err := json.Marshal(config)
+    return err
+}
+
+func (cdm *ConfigDeploymentManager) validateBasic(config map[string]interface{}) error {
+    // Check required fields
+    requiredFields := []string{"app_name", "version"}
+    for _, field := range requiredFields {
+        if _, exists := config[field]; !exists {
+            return fmt.Errorf("required field missing: %s", field)
+        }
+    }
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) validateIntegration(config map[string]interface{}, environment string) error {
+    // Environment-specific validation
+    if environment == "production" {
+        if debug, exists := config["debug"]; exists && debug.(bool) {
+            return fmt.Errorf("debug mode not allowed in production")
+        }
+    }
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) validateSecurity(config map[string]interface{}) error {
+    // Check for potential secrets in configuration
+    for key, value := range config {
+        if str, ok := value.(string); ok {
+            if len(str) > 10 && len(str) < 100 {
+                // Potential secret - should be externalized
+                fmt.Printf("Warning: potential secret in field %s\n", key)
+            }
+        }
+    }
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) executeHook(hook string, deployment *ConfigDeployment) error {
+    switch hook {
+    case "backup":
+        return cdm.createBackup(deployment.Environment)
+    case "notify":
+        return cdm.sendNotification(deployment)
+    case "maintenance_mode":
+        return cdm.enableMaintenanceMode(deployment.Environment)
+    case "health_check":
+        return cdm.performHealthCheck(deployment.Environment)
+    case "disable_maintenance":
+        return cdm.disableMaintenanceMode(deployment.Environment)
+    default:
+        return fmt.Errorf("unknown hook: %s", hook)
+    }
+}
+
+func (cdm *ConfigDeploymentManager) createBackup(environment string) error {
+    fmt.Printf("Creating backup for environment: %s\n", environment)
+    // Implementation would backup current configuration
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) sendNotification(deployment *ConfigDeployment) error {
+    fmt.Printf("Sending notification for deployment: %s\n", deployment.ID)
+    // Implementation would send notifications via email, Slack, etc.
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) enableMaintenanceMode(environment string) error {
+    fmt.Printf("Enabling maintenance mode for: %s\n", environment)
+    // Implementation would enable maintenance mode
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) performHealthCheck(environment string) error {
+    fmt.Printf("Performing health check for: %s\n", environment)
+    // Implementation would check application health
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) disableMaintenanceMode(environment string) error {
+    fmt.Printf("Disabling maintenance mode for: %s\n", environment)
+    // Implementation would disable maintenance mode
+    return nil
+}
+
+func (cdm *ConfigDeploymentManager) deployToEnvironment(deployment *ConfigDeployment) error {
+    fmt.Printf("Deploying to environment: %s\n", deployment.Environment)
+    
+    // Write configuration to environment-specific location
+    envDir := filepath.Join(cdm.deploymentDir, "environments", deployment.Environment)
+    os.MkdirAll(envDir, 0755)
+    
+    configFile := filepath.Join(envDir, "config.json")
+    data, _ := json.MarshalIndent(deployment.Config, "", "  ")
+    
+    return os.WriteFile(configFile, data, 0644)
+}
+
+func (cdm *ConfigDeploymentManager) calculateChecksum(config map[string]interface{}) string {
+    data, _ := json.Marshal(config)
+    return fmt.Sprintf("%x", len(data)) // Simplified checksum
+}
+
+func (cdm *ConfigDeploymentManager) saveDeployment(deployment *ConfigDeployment) error {
+    deploymentFile := filepath.Join(cdm.deploymentDir, "deployments", deployment.ID+".json")
+    os.MkdirAll(filepath.Dir(deploymentFile), 0755)
+    
+    data, _ := json.MarshalIndent(deployment, "", "  ")
+    return os.WriteFile(deploymentFile, data, 0644)
+}
+
+func (cdm *ConfigDeploymentManager) loadDeployment(deploymentID string) (*ConfigDeployment, error) {
+    deploymentFile := filepath.Join(cdm.deploymentDir, "deployments", deploymentID+".json")
+    
+    data, err := os.ReadFile(deploymentFile)
+    if err != nil {
+        return nil, err
+    }
+    
+    var deployment ConfigDeployment
+    if err := json.Unmarshal(data, &deployment); err != nil {
+        return nil, err
+    }
+    
+    return &deployment, nil
+}
+
+func (cdm *ConfigDeploymentManager) findPreviousDeployment(environment, currentID string) (*ConfigDeployment, error) {
+    // Implementation would find the most recent successful deployment
+    // This is simplified for the example
+    return nil, fmt.Errorf("no previous deployment found")
+}
+
+func main() {
+    fmt.Println("=== Configuration Deployment Patterns Example ===")
+    
+    // Create deployment manager
+    deploymentDir := "/tmp/config_deployments"
+    manager := NewConfigDeploymentManager(deploymentDir)
+    
+    // Sample configuration
+    config := map[string]interface{}{
+        "app_name":    "DeploymentApp",
+        "version":     "2.1.0",
+        "environment": "production",
+        "debug":       false,
+        "server": map[string]interface{}{
+            "host": "0.0.0.0",
+            "port": 8080,
+        },
+        "database": map[string]interface{}{
+            "host": "prod-db.example.com",
+            "port": 5432,
+        },
+        "features": map[string]interface{}{
+            "metrics": true,
+            "tracing": true,
+        },
+    }
+    
+    metadata := DeploymentMetadata{
+        Author:      "deployment-system",
+        Description: "Production deployment with new features",
+        Changes: []string{
+            "Enable metrics collection",
+            "Enable distributed tracing",
+            "Update database host",
+        },
+        Tags: map[string]string{
+            "release": "v2.1.0",
+            "hotfix":  "false",
+        },
+    }
+    
+    // Test development deployment (no approval required)
+    fmt.Println("\n=== Development Deployment ===")
+    devDeployment, err := manager.CreateDeployment("2.1.0", "development", config, metadata)
+    if err != nil {
+        fmt.Printf("Error creating development deployment: %v\n", err)
+    } else {
+        fmt.Printf("Created deployment: %s\n", devDeployment.ID)
+        
+        if err := manager.DeployConfiguration(devDeployment.ID); err != nil {
+            fmt.Printf("Development deployment failed: %v\n", err)
+        }
+    }
+    
+    // Test staging deployment (requires approval)
+    fmt.Println("\n=== Staging Deployment ===")
+    stagingDeployment, err := manager.CreateDeployment("2.1.0", "staging", config, metadata)
+    if err != nil {
+        fmt.Printf("Error creating staging deployment: %v\n", err)
+    } else {
+        fmt.Printf("Created deployment: %s\n", stagingDeployment.ID)
+        
+        // Simulate approval
+        stagingDeployment.Status = "approved"
+        manager.saveDeployment(stagingDeployment)
+        
+        if err := manager.DeployConfiguration(stagingDeployment.ID); err != nil {
+            fmt.Printf("Staging deployment failed: %v\n", err)
+        }
+    }
+    
+    // Test production deployment
+    fmt.Println("\n=== Production Deployment ===")
+    prodDeployment, err := manager.CreateDeployment("2.1.0", "production", config, metadata)
+    if err != nil {
+        fmt.Printf("Error creating production deployment: %v\n", err)
+    } else {
+        fmt.Printf("Created deployment: %s\n", prodDeployment.ID)
+        
+        // Simulate approval
+        prodDeployment.Status = "approved"
+        manager.saveDeployment(prodDeployment)
+        
+        if err := manager.DeployConfiguration(prodDeployment.ID); err != nil {
+            fmt.Printf("Production deployment failed: %v\n", err)
+        }
+    }
+    
+    // Test validation failure
+    fmt.Println("\n=== Testing Validation Failure ===")
+    invalidConfig := map[string]interface{}{
+        "debug": true, // Not allowed in production
+    }
+    
+    _, err = manager.CreateDeployment("2.1.1", "production", invalidConfig, metadata)
+    if err != nil {
+        fmt.Printf("Expected validation failure: %v\n", err)
+    }
+    
+    // Clean up
+    os.RemoveAll(deploymentDir)
+    
+    fmt.Println("\n=== Deployment Patterns Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration deployment patterns  
+including environment-specific validation, approval workflows, deployment  
+hooks, rollback capabilities, and audit trails. The pattern ensures safe  
+and controlled configuration updates across different environments.  
+
+## Configuration monitoring and health checks
+
+Configuration monitoring ensures application configuration remains healthy  
+and detects configuration-related issues before they impact users.  
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "sync"
+    "time"
+)
+
+// ConfigHealthChecker monitors configuration health
+type ConfigHealthChecker struct {
+    checks      map[string]HealthCheck
+    results     map[string]HealthResult
+    mutex       sync.RWMutex
+    interval    time.Duration
+    running     bool
+    stopChan    chan struct{}
+    httpServer  *http.Server
+}
+
+type HealthCheck interface {
+    Name() string
+    Check(ctx context.Context) HealthResult
+}
+
+type HealthResult struct {
+    Status    string    `json:"status"`
+    Message   string    `json:"message"`
+    Details   map[string]interface{} `json:"details"`
+    CheckedAt time.Time `json:"checked_at"`
+    Duration  time.Duration `json:"duration"`
+}
+
+// ConfigFileHealthCheck checks if config files are accessible
+type ConfigFileHealthCheck struct {
+    name string
+    path string
+}
+
+func (c *ConfigFileHealthCheck) Name() string {
+    return c.name
+}
+
+func (c *ConfigFileHealthCheck) Check(ctx context.Context) HealthResult {
+    start := time.Now()
+    
+    if _, err := os.Stat(c.path); err != nil {
+        return HealthResult{
+            Status:    "unhealthy",
+            Message:   fmt.Sprintf("Config file not accessible: %v", err),
+            CheckedAt: time.Now(),
+            Duration:  time.Since(start),
+        }
+    }
+    
+    return HealthResult{
+        Status:    "healthy",
+        Message:   "Config file accessible",
+        CheckedAt: time.Now(),
+        Duration:  time.Since(start),
+    }
+}
+
+// ConfigValidationHealthCheck validates current configuration
+type ConfigValidationHealthCheck struct {
+    name      string
+    validator func() error
+}
+
+func (c *ConfigValidationHealthCheck) Name() string {
+    return c.name
+}
+
+func (c *ConfigValidationHealthCheck) Check(ctx context.Context) HealthResult {
+    start := time.Now()
+    
+    if err := c.validator(); err != nil {
+        return HealthResult{
+            Status:    "unhealthy", 
+            Message:   fmt.Sprintf("Configuration validation failed: %v", err),
+            CheckedAt: time.Now(),
+            Duration:  time.Since(start),
+        }
+    }
+    
+    return HealthResult{
+        Status:    "healthy",
+        Message:   "Configuration is valid",
+        CheckedAt: time.Now(),
+        Duration:  time.Since(start),
+    }
+}
+
+func NewConfigHealthChecker(interval time.Duration) *ConfigHealthChecker {
+    return &ConfigHealthChecker{
+        checks:   make(map[string]HealthCheck),
+        results:  make(map[string]HealthResult),
+        interval: interval,
+        stopChan: make(chan struct{}),
+    }
+}
+
+func (chc *ConfigHealthChecker) AddCheck(check HealthCheck) {
+    chc.mutex.Lock()
+    defer chc.mutex.Unlock()
+    chc.checks[check.Name()] = check
+}
+
+func (chc *ConfigHealthChecker) Start() {
+    if chc.running {
+        return
+    }
+    
+    chc.running = true
+    go chc.runHealthChecks()
+    chc.startHTTPServer()
+}
+
+func (chc *ConfigHealthChecker) Stop() {
+    if !chc.running {
+        return
+    }
+    
+    close(chc.stopChan)
+    chc.running = false
+    
+    if chc.httpServer != nil {
+        chc.httpServer.Shutdown(context.Background())
+    }
+}
+
+func (chc *ConfigHealthChecker) runHealthChecks() {
+    ticker := time.NewTicker(chc.interval)
+    defer ticker.Stop()
+    
+    // Run initial check
+    chc.performHealthChecks()
+    
+    for {
+        select {
+        case <-ticker.C:
+            chc.performHealthChecks()
+        case <-chc.stopChan:
+            return
+        }
+    }
+}
+
+func (chc *ConfigHealthChecker) performHealthChecks() {
+    chc.mutex.RLock()
+    checks := make(map[string]HealthCheck)
+    for name, check := range chc.checks {
+        checks[name] = check
+    }
+    chc.mutex.RUnlock()
+    
+    var wg sync.WaitGroup
+    resultsChan := make(chan struct{name string; result HealthResult}, len(checks))
+    
+    for name, check := range checks {
+        wg.Add(1)
+        go func(name string, check HealthCheck) {
+            defer wg.Done()
+            
+            ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+            defer cancel()
+            
+            result := check.Check(ctx)
+            resultsChan <- struct{name string; result HealthResult}{name: name, result: result}
+        }(name, check)
+    }
+    
+    go func() {
+        wg.Wait()
+        close(resultsChan)
+    }()
+    
+    chc.mutex.Lock()
+    for result := range resultsChan {
+        chc.results[result.name] = result.result
+    }
+    chc.mutex.Unlock()
+}
+
+func (chc *ConfigHealthChecker) GetHealthStatus() map[string]HealthResult {
+    chc.mutex.RLock()
+    defer chc.mutex.RUnlock()
+    
+    status := make(map[string]HealthResult)
+    for name, result := range chc.results {
+        status[name] = result
+    }
+    return status
+}
+
+func (chc *ConfigHealthChecker) IsHealthy() bool {
+    status := chc.GetHealthStatus()
+    for _, result := range status {
+        if result.Status != "healthy" {
+            return false
+        }
+    }
+    return true
+}
+
+func (chc *ConfigHealthChecker) startHTTPServer() {
+    mux := http.NewServeMux()
+    
+    mux.HandleFunc("/health", chc.healthHandler)
+    mux.HandleFunc("/health/config", chc.configHealthHandler)
+    
+    chc.httpServer = &http.Server{
+        Addr:    ":8091",
+        Handler: mux,
+    }
+    
+    go chc.httpServer.ListenAndServe()
+}
+
+func (chc *ConfigHealthChecker) healthHandler(w http.ResponseWriter, r *http.Request) {
+    if chc.IsHealthy() {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("OK"))
+    } else {
+        w.WriteHeader(http.StatusServiceUnavailable)
+        w.Write([]byte("UNHEALTHY"))
+    }
+}
+
+func (chc *ConfigHealthChecker) configHealthHandler(w http.ResponseWriter, r *http.Request) {
+    status := chc.GetHealthStatus()
+    
+    w.Header().Set("Content-Type", "application/json")
+    if chc.IsHealthy() {
+        w.WriteHeader(http.StatusOK)
+    } else {
+        w.WriteHeader(http.StatusServiceUnavailable)
+    }
+    
+    json.NewEncoder(w).Encode(status)
+}
+
+func main() {
+    fmt.Println("=== Configuration Health Monitoring Example ===")
+    
+    // Create config files for testing
+    configFile := "/tmp/app_config.json"
+    config := map[string]interface{}{
+        "app_name": "HealthApp",
+        "version":  "1.0.0",
+        "server": map[string]interface{}{
+            "port": 8080,
+        },
+    }
+    data, _ := json.MarshalIndent(config, "", "  ")
+    os.WriteFile(configFile, data, 0644)
+    
+    // Create health checker
+    checker := NewConfigHealthChecker(10 * time.Second)
+    
+    // Add health checks
+    checker.AddCheck(&ConfigFileHealthCheck{
+        name: "config_file",
+        path: configFile,
+    })
+    
+    checker.AddCheck(&ConfigValidationHealthCheck{
+        name: "config_validation",
+        validator: func() error {
+            // Simulate validation logic
+            if config["app_name"] == nil {
+                return fmt.Errorf("app_name is required")
+            }
+            return nil
+        },
+    })
+    
+    // Start monitoring
+    checker.Start()
+    defer checker.Stop()
+    
+    fmt.Println("Health monitoring started on :8091")
+    fmt.Println("Endpoints:")
+    fmt.Println("  GET /health - Overall health status")
+    fmt.Println("  GET /health/config - Detailed config health")
+    
+    // Wait and show health status
+    time.Sleep(2 * time.Second)
+    
+    fmt.Println("\n=== Initial Health Status ===")
+    status := checker.GetHealthStatus()
+    for name, result := range status {
+        fmt.Printf("%s: %s - %s\n", name, result.Status, result.Message)
+    }
+    
+    // Simulate config file issue
+    fmt.Println("\n=== Simulating Config File Issue ===")
+    os.Remove(configFile)
+    
+    time.Sleep(11 * time.Second) // Wait for next health check
+    
+    fmt.Println("Health status after removing config file:")
+    status = checker.GetHealthStatus()
+    for name, result := range status {
+        fmt.Printf("%s: %s - %s\n", name, result.Status, result.Message)
+    }
+    
+    // Restore config file
+    fmt.Println("\n=== Restoring Config File ===")
+    os.WriteFile(configFile, data, 0644)
+    
+    time.Sleep(11 * time.Second) // Wait for next health check
+    
+    fmt.Println("Health status after restoring config file:")
+    status = checker.GetHealthStatus()
+    for name, result := range status {
+        fmt.Printf("%s: %s - %s\n", name, result.Status, result.Message)
+    }
+    
+    // Clean up
+    os.Remove(configFile)
+    
+    fmt.Println("\n=== Health Monitoring Demo Complete ===")
+}
+```
+
+This example demonstrates configuration health monitoring with periodic  
+checks, HTTP health endpoints, and real-time status reporting to detect  
+configuration issues proactively.  
+
+## Configuration backup and restore
+
+Configuration backup and restore capabilities ensure configuration data  
+can be recovered in case of failures or corruption.  
+
+```go
+package main
+
+import (
+    "compress/gzip"
+    "encoding/json"
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+    "sort"
+    "strings"
+    "time"
+)
+
+// ConfigBackupManager handles configuration backup and restore operations
+type ConfigBackupManager struct {
+    backupDir    string
+    maxBackups   int
+    compression  bool
+    encryption   bool
+    encryptionKey []byte
+}
+
+type BackupMetadata struct {
+    ID          string            `json:"id"`
+    Timestamp   time.Time         `json:"timestamp"`
+    Description string            `json:"description"`
+    Environment string            `json:"environment"`
+    Version     string            `json:"version"`
+    Files       map[string]string `json:"files"`
+    Checksum    string            `json:"checksum"`
+    Size        int64             `json:"size"`
+    Compressed  bool              `json:"compressed"`
+    Encrypted   bool              `json:"encrypted"`
+}
+
+func NewConfigBackupManager(backupDir string, maxBackups int) *ConfigBackupManager {
+    return &ConfigBackupManager{
+        backupDir:   backupDir,
+        maxBackups:  maxBackups,
+        compression: true,
+        encryption:  false,
+    }
+}
+
+func (cbm *ConfigBackupManager) CreateBackup(environment, version, description string, configFiles map[string]string) (*BackupMetadata, error) {
+    backupID := fmt.Sprintf("%s_%s_%d", environment, version, time.Now().Unix())
+    backupPath := filepath.Join(cbm.backupDir, backupID)
+    
+    if err := os.MkdirAll(backupPath, 0755); err != nil {
+        return nil, fmt.Errorf("failed to create backup directory: %w", err)
+    }
+    
+    metadata := &BackupMetadata{
+        ID:          backupID,
+        Timestamp:   time.Now(),
+        Description: description,
+        Environment: environment,
+        Version:     version,
+        Files:       make(map[string]string),
+        Compressed:  cbm.compression,
+        Encrypted:   cbm.encryption,
+    }
+    
+    var totalSize int64
+    
+    // Backup each configuration file
+    for configName, filePath := range configFiles {
+        fmt.Printf("Backing up %s from %s\n", configName, filePath)
+        
+        backupFileName := configName + ".json"
+        if cbm.compression {
+            backupFileName += ".gz"
+        }
+        
+        backupFilePath := filepath.Join(backupPath, backupFileName)
+        size, err := cbm.backupFile(filePath, backupFilePath)
+        if err != nil {
+            return nil, fmt.Errorf("failed to backup file %s: %w", configName, err)
+        }
+        
+        metadata.Files[configName] = backupFileName
+        totalSize += size
+    }
+    
+    metadata.Size = totalSize
+    metadata.Checksum = cbm.calculateChecksum(metadata)
+    
+    // Save metadata
+    metadataPath := filepath.Join(backupPath, "metadata.json")
+    if err := cbm.saveMetadata(metadata, metadataPath); err != nil {
+        return nil, fmt.Errorf("failed to save metadata: %w", err)
+    }
+    
+    // Clean up old backups
+    if err := cbm.cleanupOldBackups(); err != nil {
+        fmt.Printf("Warning: failed to cleanup old backups: %v\n", err)
+    }
+    
+    fmt.Printf("Backup created: %s (size: %d bytes)\n", backupID, totalSize)
+    return metadata, nil
+}
+
+func (cbm *ConfigBackupManager) backupFile(sourcePath, backupPath string) (int64, error) {
+    sourceFile, err := os.Open(sourcePath)
+    if err != nil {
+        return 0, err
+    }
+    defer sourceFile.Close()
+    
+    backupFile, err := os.Create(backupPath)
+    if err != nil {
+        return 0, err
+    }
+    defer backupFile.Close()
+    
+    var writer io.Writer = backupFile
+    var closer io.Closer
+    
+    if cbm.compression {
+        gzipWriter := gzip.NewWriter(backupFile)
+        writer = gzipWriter
+        closer = gzipWriter
+    }
+    
+    size, err := io.Copy(writer, sourceFile)
+    if err != nil {
+        return 0, err
+    }
+    
+    if closer != nil {
+        closer.Close()
+    }
+    
+    return size, nil
+}
+
+func (cbm *ConfigBackupManager) RestoreBackup(backupID string, targetDir string) error {
+    backupPath := filepath.Join(cbm.backupDir, backupID)
+    metadataPath := filepath.Join(backupPath, "metadata.json")
+    
+    metadata, err := cbm.loadMetadata(metadataPath)
+    if err != nil {
+        return fmt.Errorf("failed to load backup metadata: %w", err)
+    }
+    
+    fmt.Printf("Restoring backup: %s (%s)\n", backupID, metadata.Description)
+    
+    if err := os.MkdirAll(targetDir, 0755); err != nil {
+        return fmt.Errorf("failed to create target directory: %w", err)
+    }
+    
+    // Restore each file
+    for configName, backupFileName := range metadata.Files {
+        sourcePath := filepath.Join(backupPath, backupFileName)
+        targetPath := filepath.Join(targetDir, configName+".json")
+        
+        fmt.Printf("Restoring %s to %s\n", configName, targetPath)
+        
+        if err := cbm.restoreFile(sourcePath, targetPath, metadata.Compressed); err != nil {
+            return fmt.Errorf("failed to restore file %s: %w", configName, err)
+        }
+    }
+    
+    fmt.Printf("Backup restored successfully to %s\n", targetDir)
+    return nil
+}
+
+func (cbm *ConfigBackupManager) restoreFile(sourcePath, targetPath string, compressed bool) error {
+    sourceFile, err := os.Open(sourcePath)
+    if err != nil {
+        return err
+    }
+    defer sourceFile.Close()
+    
+    targetFile, err := os.Create(targetPath)
+    if err != nil {
+        return err
+    }
+    defer targetFile.Close()
+    
+    var reader io.Reader = sourceFile
+    var closer io.Closer
+    
+    if compressed {
+        gzipReader, err := gzip.NewReader(sourceFile)
+        if err != nil {
+            return err
+        }
+        reader = gzipReader
+        closer = gzipReader
+    }
+    
+    _, err = io.Copy(targetFile, reader)
+    if closer != nil {
+        closer.Close()
+    }
+    
+    return err
+}
+
+func (cbm *ConfigBackupManager) ListBackups() ([]*BackupMetadata, error) {
+    entries, err := os.ReadDir(cbm.backupDir)
+    if err != nil {
+        return nil, err
+    }
+    
+    var backups []*BackupMetadata
+    
+    for _, entry := range entries {
+        if entry.IsDir() {
+            metadataPath := filepath.Join(cbm.backupDir, entry.Name(), "metadata.json")
+            if metadata, err := cbm.loadMetadata(metadataPath); err == nil {
+                backups = append(backups, metadata)
+            }
+        }
+    }
+    
+    // Sort by timestamp (newest first)
+    sort.Slice(backups, func(i, j int) bool {
+        return backups[i].Timestamp.After(backups[j].Timestamp)
+    })
+    
+    return backups, nil
+}
+
+func (cbm *ConfigBackupManager) DeleteBackup(backupID string) error {
+    backupPath := filepath.Join(cbm.backupDir, backupID)
+    
+    if err := os.RemoveAll(backupPath); err != nil {
+        return fmt.Errorf("failed to delete backup: %w", err)
+    }
+    
+    fmt.Printf("Backup deleted: %s\n", backupID)
+    return nil
+}
+
+func (cbm *ConfigBackupManager) cleanupOldBackups() error {
+    backups, err := cbm.ListBackups()
+    if err != nil {
+        return err
+    }
+    
+    if len(backups) > cbm.maxBackups {
+        // Delete oldest backups
+        toDelete := backups[cbm.maxBackups:]
+        for _, backup := range toDelete {
+            if err := cbm.DeleteBackup(backup.ID); err != nil {
+                fmt.Printf("Warning: failed to delete old backup %s: %v\n", backup.ID, err)
+            }
+        }
+    }
+    
+    return nil
+}
+
+func (cbm *ConfigBackupManager) calculateChecksum(metadata *BackupMetadata) string {
+    // Simplified checksum calculation
+    data := fmt.Sprintf("%s%s%d", metadata.Environment, metadata.Version, metadata.Timestamp.Unix())
+    return fmt.Sprintf("%x", len(data))
+}
+
+func (cbm *ConfigBackupManager) saveMetadata(metadata *BackupMetadata, path string) error {
+    data, err := json.MarshalIndent(metadata, "", "  ")
+    if err != nil {
+        return err
+    }
+    return os.WriteFile(path, data, 0644)
+}
+
+func (cbm *ConfigBackupManager) loadMetadata(path string) (*BackupMetadata, error) {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return nil, err
+    }
+    
+    var metadata BackupMetadata
+    if err := json.Unmarshal(data, &metadata); err != nil {
+        return nil, err
+    }
+    
+    return &metadata, nil
+}
+
+func main() {
+    fmt.Println("=== Configuration Backup and Restore Example ===")
+    
+    // Create sample configuration files
+    configFiles := map[string]string{
+        "app":      "/tmp/app_config.json",
+        "database": "/tmp/db_config.json",
+        "features": "/tmp/features_config.json",
+    }
+    
+    // Create sample configs
+    configs := map[string]interface{}{
+        "app": map[string]interface{}{
+            "name":    "BackupApp",
+            "version": "1.0.0",
+            "environment": "production",
+        },
+        "database": map[string]interface{}{
+            "host": "db.example.com",
+            "port": 5432,
+            "name": "production_db",
+        },
+        "features": map[string]interface{}{
+            "metrics": true,
+            "tracing": false,
+            "caching": true,
+        },
+    }
+    
+    for name, config := range configs {
+        data, _ := json.MarshalIndent(config, "", "  ")
+        os.WriteFile(configFiles[name], data, 0644)
+    }
+    
+    // Create backup manager
+    backupDir := "/tmp/config_backups"
+    manager := NewConfigBackupManager(backupDir, 5)
+    
+    // Create backup
+    fmt.Println("\n=== Creating Backup ===")
+    backup, err := manager.CreateBackup(
+        "production",
+        "1.0.0",
+        "Pre-deployment backup",
+        configFiles,
+    )
+    if err != nil {
+        fmt.Printf("Error creating backup: %v\n", err)
+        return
+    }
+    
+    // List backups
+    fmt.Println("\n=== Listing Backups ===")
+    backups, err := manager.ListBackups()
+    if err != nil {
+        fmt.Printf("Error listing backups: %v\n", err)
+        return
+    }
+    
+    for _, backup := range backups {
+        fmt.Printf("Backup: %s\n", backup.ID)
+        fmt.Printf("  Timestamp: %s\n", backup.Timestamp.Format(time.RFC3339))
+        fmt.Printf("  Environment: %s\n", backup.Environment)
+        fmt.Printf("  Version: %s\n", backup.Version)
+        fmt.Printf("  Description: %s\n", backup.Description)
+        fmt.Printf("  Size: %d bytes\n", backup.Size)
+        fmt.Printf("  Files: %s\n", strings.Join(getKeys(backup.Files), ", "))
+        fmt.Println()
+    }
+    
+    // Simulate configuration corruption
+    fmt.Println("=== Simulating Configuration Corruption ===")
+    for _, filePath := range configFiles {
+        os.WriteFile(filePath, []byte("corrupted"), 0644)
+    }
+    
+    // Restore from backup
+    fmt.Println("\n=== Restoring from Backup ===")
+    restoreDir := "/tmp/config_restore"
+    if err := manager.RestoreBackup(backup.ID, restoreDir); err != nil {
+        fmt.Printf("Error restoring backup: %v\n", err)
+        return
+    }
+    
+    // Verify restored files
+    fmt.Println("\n=== Verifying Restored Files ===")
+    for configName := range configFiles {
+        restoredPath := filepath.Join(restoreDir, configName+".json")
+        if data, err := os.ReadFile(restoredPath); err == nil {
+            var config map[string]interface{}
+            if err := json.Unmarshal(data, &config); err == nil {
+                fmt.Printf("Restored %s: %v\n", configName, config)
+            }
+        }
+    }
+    
+    // Create another backup to test cleanup
+    fmt.Println("\n=== Testing Backup Cleanup ===")
+    for i := 0; i < 3; i++ {
+        time.Sleep(100 * time.Millisecond) // Ensure different timestamps
+        manager.CreateBackup(
+            "staging",
+            fmt.Sprintf("1.0.%d", i+1),
+            fmt.Sprintf("Test backup %d", i+1),
+            configFiles,
+        )
+    }
+    
+    finalBackups, _ := manager.ListBackups()
+    fmt.Printf("Total backups after cleanup: %d\n", len(finalBackups))
+    
+    // Clean up
+    for _, filePath := range configFiles {
+        os.Remove(filePath)
+    }
+    os.RemoveAll(backupDir)
+    os.RemoveAll(restoreDir)
+    
+    fmt.Println("\n=== Backup and Restore Demo Complete ===")
+}
+
+func getKeys(m map[string]string) []string {
+    keys := make([]string, 0, len(m))
+    for k := range m {
+        keys = append(keys, k)
+    }
+    return keys
+}
+```
+
+This example demonstrates comprehensive configuration backup and restore  
+capabilities including compression, metadata tracking, cleanup policies,  
+and recovery verification to ensure configuration data protection.  
+
+## Configuration versioning and change tracking
+
+Configuration versioning tracks changes over time and enables rollback  
+to previous configurations when issues are detected.  
+
+```go
+package main
+
+import (
+    "crypto/md5"
+    "encoding/json"
+    "fmt"
+    "os"
+    "sort"
+    "time"
+)
+
+// ConfigVersion represents a version of configuration
+type ConfigVersion struct {
+    ID          string                 `json:"id"`
+    Version     int                    `json:"version"`
+    Config      map[string]interface{} `json:"config"`
+    Changes     []ConfigChange         `json:"changes"`
+    Metadata    VersionMetadata        `json:"metadata"`
+    Timestamp   time.Time              `json:"timestamp"`
+    ParentID    string                 `json:"parent_id,omitempty"`
+    Hash        string                 `json:"hash"`
+}
+
+type ConfigChange struct {
+    Field     string      `json:"field"`
+    Operation string      `json:"operation"` // "add", "update", "delete"
+    OldValue  interface{} `json:"old_value,omitempty"`
+    NewValue  interface{} `json:"new_value,omitempty"`
+}
+
+type VersionMetadata struct {
+    Author      string            `json:"author"`
+    Description string            `json:"description"`
+    Tags        map[string]string `json:"tags"`
+    Environment string            `json:"environment"`
+}
+
+// ConfigVersionManager manages configuration versions
+type ConfigVersionManager struct {
+    versions    map[string]*ConfigVersion
+    currentID   string
+    nextVersion int
+    storageDir  string
+}
+
+func NewConfigVersionManager(storageDir string) *ConfigVersionManager {
+    return &ConfigVersionManager{
+        versions:    make(map[string]*ConfigVersion),
+        nextVersion: 1,
+        storageDir:  storageDir,
+    }
+}
+
+func (cvm *ConfigVersionManager) CreateVersion(
+    config map[string]interface{},
+    metadata VersionMetadata,
+) (*ConfigVersion, error) {
+    
+    var changes []ConfigChange
+    var parentID string
+    
+    // Calculate changes from current version
+    if cvm.currentID != "" {
+        currentVersion := cvm.versions[cvm.currentID]
+        changes = cvm.calculateChanges(currentVersion.Config, config)
+        parentID = cvm.currentID
+    }
+    
+    version := &ConfigVersion{
+        ID:        fmt.Sprintf("v%d_%d", cvm.nextVersion, time.Now().Unix()),
+        Version:   cvm.nextVersion,
+        Config:    cvm.deepCopyConfig(config),
+        Changes:   changes,
+        Metadata:  metadata,
+        Timestamp: time.Now(),
+        ParentID:  parentID,
+        Hash:      cvm.calculateHash(config),
+    }
+    
+    // Store version
+    cvm.versions[version.ID] = version
+    cvm.currentID = version.ID
+    cvm.nextVersion++
+    
+    // Persist to storage
+    if err := cvm.saveVersion(version); err != nil {
+        return nil, fmt.Errorf("failed to save version: %w", err)
+    }
+    
+    fmt.Printf("Created configuration version %s (v%d)\n", version.ID, version.Version)
+    return version, nil
+}
+
+func (cvm *ConfigVersionManager) calculateChanges(oldConfig, newConfig map[string]interface{}) []ConfigChange {
+    var changes []ConfigChange
+    
+    // Find added and updated fields
+    for key, newValue := range newConfig {
+        if oldValue, exists := oldConfig[key]; exists {
+            if !cvm.isEqual(oldValue, newValue) {
+                changes = append(changes, ConfigChange{
+                    Field:     key,
+                    Operation: "update",
+                    OldValue:  oldValue,
+                    NewValue:  newValue,
+                })
+            }
+        } else {
+            changes = append(changes, ConfigChange{
+                Field:     key,
+                Operation: "add",
+                NewValue:  newValue,
+            })
+        }
+    }
+    
+    // Find deleted fields
+    for key, oldValue := range oldConfig {
+        if _, exists := newConfig[key]; !exists {
+            changes = append(changes, ConfigChange{
+                Field:     key,
+                Operation: "delete",
+                OldValue:  oldValue,
+            })
+        }
+    }
+    
+    return changes
+}
+
+func (cvm *ConfigVersionManager) isEqual(a, b interface{}) bool {
+    aJSON, _ := json.Marshal(a)
+    bJSON, _ := json.Marshal(b)
+    return string(aJSON) == string(bJSON)
+}
+
+func (cvm *ConfigVersionManager) deepCopyConfig(config map[string]interface{}) map[string]interface{} {
+    data, _ := json.Marshal(config)
+    var copy map[string]interface{}
+    json.Unmarshal(data, &copy)
+    return copy
+}
+
+func (cvm *ConfigVersionManager) calculateHash(config map[string]interface{}) string {
+    data, _ := json.Marshal(config)
+    hash := md5.Sum(data)
+    return fmt.Sprintf("%x", hash)
+}
+
+func (cvm *ConfigVersionManager) GetVersion(versionID string) (*ConfigVersion, error) {
+    version, exists := cvm.versions[versionID]
+    if !exists {
+        return nil, fmt.Errorf("version not found: %s", versionID)
+    }
+    return version, nil
+}
+
+func (cvm *ConfigVersionManager) GetCurrentVersion() *ConfigVersion {
+    if cvm.currentID == "" {
+        return nil
+    }
+    return cvm.versions[cvm.currentID]
+}
+
+func (cvm *ConfigVersionManager) ListVersions() []*ConfigVersion {
+    versions := make([]*ConfigVersion, 0, len(cvm.versions))
+    for _, version := range cvm.versions {
+        versions = append(versions, version)
+    }
+    
+    // Sort by version number
+    sort.Slice(versions, func(i, j int) bool {
+        return versions[i].Version > versions[j].Version
+    })
+    
+    return versions
+}
+
+func (cvm *ConfigVersionManager) RollbackToVersion(versionID string) error {
+    version, exists := cvm.versions[versionID]
+    if !exists {
+        return fmt.Errorf("version not found: %s", versionID)
+    }
+    
+    // Create a new version based on the target version
+    rollbackMetadata := VersionMetadata{
+        Author:      "system",
+        Description: fmt.Sprintf("Rollback to version %d", version.Version),
+        Tags: map[string]string{
+            "rollback": "true",
+            "target":   versionID,
+        },
+        Environment: version.Metadata.Environment,
+    }
+    
+    _, err := cvm.CreateVersion(version.Config, rollbackMetadata)
+    if err != nil {
+        return fmt.Errorf("failed to create rollback version: %w", err)
+    }
+    
+    fmt.Printf("Rolled back to version %s\n", versionID)
+    return nil
+}
+
+func (cvm *ConfigVersionManager) GetChangeHistory(field string) []ConfigChange {
+    var history []ConfigChange
+    
+    versions := cvm.ListVersions()
+    for _, version := range versions {
+        for _, change := range version.Changes {
+            if change.Field == field {
+                history = append(history, change)
+            }
+        }
+    }
+    
+    return history
+}
+
+func (cvm *ConfigVersionManager) CompareVersions(versionID1, versionID2 string) ([]ConfigChange, error) {
+    version1, exists := cvm.versions[versionID1]
+    if !exists {
+        return nil, fmt.Errorf("version not found: %s", versionID1)
+    }
+    
+    version2, exists := cvm.versions[versionID2]
+    if !exists {
+        return nil, fmt.Errorf("version not found: %s", versionID2)
+    }
+    
+    return cvm.calculateChanges(version1.Config, version2.Config), nil
+}
+
+func (cvm *ConfigVersionManager) saveVersion(version *ConfigVersion) error {
+    if cvm.storageDir == "" {
+        return nil // In-memory only
+    }
+    
+    os.MkdirAll(cvm.storageDir, 0755)
+    filename := fmt.Sprintf("%s.json", version.ID)
+    filepath := fmt.Sprintf("%s/%s", cvm.storageDir, filename)
+    
+    data, err := json.MarshalIndent(version, "", "  ")
+    if err != nil {
+        return err
+    }
+    
+    return os.WriteFile(filepath, data, 0644)
+}
+
+func (cvm *ConfigVersionManager) LoadVersions() error {
+    if cvm.storageDir == "" {
+        return nil
+    }
+    
+    entries, err := os.ReadDir(cvm.storageDir)
+    if err != nil {
+        return err
+    }
+    
+    for _, entry := range entries {
+        if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+            filepath := fmt.Sprintf("%s/%s", cvm.storageDir, entry.Name())
+            data, err := os.ReadFile(filepath)
+            if err != nil {
+                continue
+            }
+            
+            var version ConfigVersion
+            if err := json.Unmarshal(data, &version); err != nil {
+                continue
+            }
+            
+            cvm.versions[version.ID] = &version
+            if version.Version >= cvm.nextVersion {
+                cvm.nextVersion = version.Version + 1
+                cvm.currentID = version.ID
+            }
+        }
+    }
+    
+    return nil
+}
+
+func main() {
+    fmt.Println("=== Configuration Versioning and Change Tracking Example ===")
+    
+    // Create version manager
+    storageDir := "/tmp/config_versions"
+    manager := NewConfigVersionManager(storageDir)
+    
+    // Create initial configuration
+    fmt.Println("\n=== Creating Initial Configuration ===")
+    initialConfig := map[string]interface{}{
+        "app_name":    "VersionApp",
+        "version":     "1.0.0",
+        "server_port": 8080,
+        "debug":       false,
+        "features": map[string]interface{}{
+            "metrics": false,
+            "tracing": false,
+        },
+    }
+    
+    v1, _ := manager.CreateVersion(initialConfig, VersionMetadata{
+        Author:      "developer",
+        Description: "Initial configuration",
+        Environment: "development",
+        Tags: map[string]string{
+            "milestone": "initial",
+        },
+    })
+    
+    // Update configuration
+    fmt.Println("\n=== Updating Configuration ===")
+    updatedConfig := map[string]interface{}{
+        "app_name":    "VersionApp",
+        "version":     "1.1.0",
+        "server_port": 9090,
+        "debug":       true,
+        "features": map[string]interface{}{
+            "metrics": true,
+            "tracing": false,
+            "caching": true,
+        },
+        "database_url": "postgres://localhost:5432/app",
+    }
+    
+    v2, _ := manager.CreateVersion(updatedConfig, VersionMetadata{
+        Author:      "developer",
+        Description: "Enable metrics and update server port",
+        Environment: "development",
+        Tags: map[string]string{
+            "feature": "metrics",
+        },
+    })
+    
+    // Another update
+    fmt.Println("\n=== Another Update ===")
+    finalConfig := map[string]interface{}{
+        "app_name":    "VersionApp",
+        "version":     "1.2.0",
+        "server_port": 9090,
+        "debug":       false,
+        "features": map[string]interface{}{
+            "metrics": true,
+            "tracing": true,
+            "caching": true,
+        },
+        "database_url": "postgres://prod-db:5432/app",
+    }
+    
+    v3, _ := manager.CreateVersion(finalConfig, VersionMetadata{
+        Author:      "ops-team",
+        Description: "Production deployment with tracing",
+        Environment: "production",
+        Tags: map[string]string{
+            "deployment": "production",
+            "feature":    "tracing",
+        },
+    })
+    
+    // List all versions
+    fmt.Println("\n=== Version History ===")
+    versions := manager.ListVersions()
+    for _, version := range versions {
+        fmt.Printf("Version %d (%s):\n", version.Version, version.ID)
+        fmt.Printf("  Author: %s\n", version.Metadata.Author)
+        fmt.Printf("  Description: %s\n", version.Metadata.Description)
+        fmt.Printf("  Timestamp: %s\n", version.Timestamp.Format(time.RFC3339))
+        fmt.Printf("  Hash: %s\n", version.Hash)
+        fmt.Printf("  Changes: %d\n", len(version.Changes))
+        
+        for _, change := range version.Changes {
+            fmt.Printf("    %s %s", change.Operation, change.Field)
+            if change.Operation == "update" {
+                fmt.Printf(": %v -> %v", change.OldValue, change.NewValue)
+            } else if change.Operation == "add" {
+                fmt.Printf(": %v", change.NewValue)
+            } else if change.Operation == "delete" {
+                fmt.Printf(": %v", change.OldValue)
+            }
+            fmt.Println()
+        }
+        fmt.Println()
+    }
+    
+    // Show change history for specific field
+    fmt.Println("=== Change History for 'server_port' ===")
+    portHistory := manager.GetChangeHistory("server_port")
+    for _, change := range portHistory {
+        fmt.Printf("%s: %v -> %v\n", change.Operation, change.OldValue, change.NewValue)
+    }
+    
+    // Compare versions
+    fmt.Println("\n=== Comparing Versions ===")
+    changes, _ := manager.CompareVersions(v1.ID, v3.ID)
+    fmt.Printf("Changes from v1 to v3:\n")
+    for _, change := range changes {
+        fmt.Printf("  %s %s", change.Operation, change.Field)
+        if change.Operation == "update" {
+            fmt.Printf(": %v -> %v", change.OldValue, change.NewValue)
+        } else if change.Operation == "add" {
+            fmt.Printf(": %v", change.NewValue)
+        }
+        fmt.Println()
+    }
+    
+    // Rollback to previous version
+    fmt.Println("\n=== Rolling Back ===")
+    manager.RollbackToVersion(v2.ID)
+    
+    current := manager.GetCurrentVersion()
+    fmt.Printf("Current version after rollback: %d\n", current.Version)
+    fmt.Printf("Debug mode: %v\n", current.Config["debug"])
+    
+    // Clean up
+    os.RemoveAll(storageDir)
+    
+    fmt.Println("\n=== Versioning Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration versioning with change  
+tracking, diff calculation, rollback capabilities, and change history  
+analysis to provide full visibility into configuration evolution.  
+
+## Multi-tenant configuration management
+
+Multi-tenant applications require isolated configuration management per  
+tenant while maintaining shared defaults and efficient resource usage.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// TenantConfig represents configuration for a specific tenant
+type TenantConfig struct {
+    TenantID    string                 `json:"tenant_id"`
+    Config      map[string]interface{} `json:"config"`
+    Overrides   map[string]interface{} `json:"overrides"`
+    LastUpdated time.Time              `json:"last_updated"`
+    Version     int                    `json:"version"`
+}
+
+// MultiTenantConfigManager manages configuration for multiple tenants
+type MultiTenantConfigManager struct {
+    globalConfig  map[string]interface{}
+    tenantConfigs map[string]*TenantConfig
+    mutex         sync.RWMutex
+    hierarchy     []string // Priority order for configuration resolution
+}
+
+func NewMultiTenantConfigManager() *MultiTenantConfigManager {
+    return &MultiTenantConfigManager{
+        globalConfig:  make(map[string]interface{}),
+        tenantConfigs: make(map[string]*TenantConfig),
+        hierarchy:     []string{"tenant", "global", "default"},
+    }
+}
+
+func (mtcm *MultiTenantConfigManager) SetGlobalConfig(config map[string]interface{}) {
+    mtcm.mutex.Lock()
+    defer mtcm.mutex.Unlock()
+    mtcm.globalConfig = config
+}
+
+func (mtcm *MultiTenantConfigManager) SetTenantConfig(tenantID string, config map[string]interface{}) {
+    mtcm.mutex.Lock()
+    defer mtcm.mutex.Unlock()
+    
+    tenantConfig, exists := mtcm.tenantConfigs[tenantID]
+    if !exists {
+        tenantConfig = &TenantConfig{
+            TenantID:  tenantID,
+            Config:    make(map[string]interface{}),
+            Overrides: make(map[string]interface{}),
+            Version:   1,
+        }
+        mtcm.tenantConfigs[tenantID] = tenantConfig
+    } else {
+        tenantConfig.Version++
+    }
+    
+    tenantConfig.Config = config
+    tenantConfig.LastUpdated = time.Now()
+}
+
+func (mtcm *MultiTenantConfigManager) SetTenantOverride(tenantID, key string, value interface{}) {
+    mtcm.mutex.Lock()
+    defer mtcm.mutex.Unlock()
+    
+    tenantConfig, exists := mtcm.tenantConfigs[tenantID]
+    if !exists {
+        tenantConfig = &TenantConfig{
+            TenantID:  tenantID,
+            Config:    make(map[string]interface{}),
+            Overrides: make(map[string]interface{}),
+            Version:   1,
+        }
+        mtcm.tenantConfigs[tenantID] = tenantConfig
+    }
+    
+    tenantConfig.Overrides[key] = value
+    tenantConfig.LastUpdated = time.Now()
+}
+
+func (mtcm *MultiTenantConfigManager) GetValue(tenantID, key string, defaultValue interface{}) interface{} {
+    mtcm.mutex.RLock()
+    defer mtcm.mutex.RUnlock()
+    
+    // Check tenant overrides first
+    if tenantConfig, exists := mtcm.tenantConfigs[tenantID]; exists {
+        if value, hasOverride := tenantConfig.Overrides[key]; hasOverride {
+            return value
+        }
+        
+        // Check tenant-specific config
+        if value, hasConfig := tenantConfig.Config[key]; hasConfig {
+            return value
+        }
+    }
+    
+    // Check global config
+    if value, hasGlobal := mtcm.globalConfig[key]; hasGlobal {
+        return value
+    }
+    
+    return defaultValue
+}
+
+func (mtcm *MultiTenantConfigManager) GetAllConfig(tenantID string) map[string]interface{} {
+    mtcm.mutex.RLock()
+    defer mtcm.mutex.RUnlock()
+    
+    result := make(map[string]interface{})
+    
+    // Start with global config
+    for key, value := range mtcm.globalConfig {
+        result[key] = value
+    }
+    
+    // Override with tenant-specific config
+    if tenantConfig, exists := mtcm.tenantConfigs[tenantID]; exists {
+        for key, value := range tenantConfig.Config {
+            result[key] = value
+        }
+        
+        // Override with tenant overrides
+        for key, value := range tenantConfig.Overrides {
+            result[key] = value
+        }
+    }
+    
+    return result
+}
+
+func (mtcm *MultiTenantConfigManager) ListTenants() []string {
+    mtcm.mutex.RLock()
+    defer mtcm.mutex.RUnlock()
+    
+    tenants := make([]string, 0, len(mtcm.tenantConfigs))
+    for tenantID := range mtcm.tenantConfigs {
+        tenants = append(tenants, tenantID)
+    }
+    return tenants
+}
+
+func (mtcm *MultiTenantConfigManager) GetTenantInfo(tenantID string) *TenantConfig {
+    mtcm.mutex.RLock()
+    defer mtcm.mutex.RUnlock()
+    
+    if config, exists := mtcm.tenantConfigs[tenantID]; exists {
+        // Return a copy
+        return &TenantConfig{
+            TenantID:    config.TenantID,
+            Config:      copyMap(config.Config),
+            Overrides:   copyMap(config.Overrides),
+            LastUpdated: config.LastUpdated,
+            Version:     config.Version,
+        }
+    }
+    return nil
+}
+
+func copyMap(original map[string]interface{}) map[string]interface{} {
+    copy := make(map[string]interface{})
+    for key, value := range original {
+        copy[key] = value
+    }
+    return copy
+}
+
+func main() {
+    fmt.Println("=== Multi-Tenant Configuration Management Example ===")
+    
+    manager := NewMultiTenantConfigManager()
+    
+    // Set global configuration
+    fmt.Println("\n=== Setting Global Configuration ===")
+    globalConfig := map[string]interface{}{
+        "app_name":        "MultiTenantApp",
+        "max_connections": 100,
+        "timeout":         30,
+        "features": map[string]interface{}{
+            "logging": true,
+            "metrics": true,
+            "tracing": false,
+        },
+        "limits": map[string]interface{}{
+            "api_calls_per_hour": 1000,
+            "storage_gb":         10,
+        },
+    }
+    
+    manager.SetGlobalConfig(globalConfig)
+    fmt.Println("Global configuration set")
+    
+    // Configure tenant-specific settings
+    fmt.Println("\n=== Configuring Tenant-Specific Settings ===")
+    
+    // Enterprise tenant with higher limits
+    enterpriseConfig := map[string]interface{}{
+        "max_connections": 500,
+        "features": map[string]interface{}{
+            "logging":       true,
+            "metrics":       true,
+            "tracing":       true,
+            "premium_apis":  true,
+        },
+        "limits": map[string]interface{}{
+            "api_calls_per_hour": 10000,
+            "storage_gb":         100,
+        },
+        "support_level": "enterprise",
+    }
+    manager.SetTenantConfig("enterprise-corp", enterpriseConfig)
+    
+    // Startup tenant with basic limits
+    startupConfig := map[string]interface{}{
+        "max_connections": 50,
+        "limits": map[string]interface{}{
+            "api_calls_per_hour": 500,
+            "storage_gb":         5,
+        },
+        "support_level": "basic",
+    }
+    manager.SetTenantConfig("startup-inc", startupConfig)
+    
+    // Free tier tenant
+    freeConfig := map[string]interface{}{
+        "max_connections": 10,
+        "features": map[string]interface{}{
+            "logging": true,
+            "metrics": false,
+            "tracing": false,
+        },
+        "limits": map[string]interface{}{
+            "api_calls_per_hour": 100,
+            "storage_gb":         1,
+        },
+        "support_level": "community",
+    }
+    manager.SetTenantConfig("free-user", freeConfig)
+    
+    // Set some tenant-specific overrides
+    fmt.Println("\n=== Setting Tenant Overrides ===")
+    manager.SetTenantOverride("enterprise-corp", "timeout", 60)
+    manager.SetTenantOverride("startup-inc", "timeout", 45)
+    manager.SetTenantOverride("free-user", "max_connections", 5)
+    
+    // Test configuration resolution for each tenant
+    fmt.Println("\n=== Configuration Resolution Testing ===")
+    
+    tenants := []string{"enterprise-corp", "startup-inc", "free-user", "new-tenant"}
+    
+    for _, tenantID := range tenants {
+        fmt.Printf("\nTenant: %s\n", tenantID)
+        fmt.Printf("  Max Connections: %v\n", manager.GetValue(tenantID, "max_connections", "default"))
+        fmt.Printf("  Timeout: %v\n", manager.GetValue(tenantID, "timeout", 30))
+        fmt.Printf("  API Calls/Hour: %v\n", manager.GetValue(tenantID, "limits.api_calls_per_hour", "unlimited"))
+        fmt.Printf("  Storage GB: %v\n", manager.GetValue(tenantID, "limits.storage_gb", "unlimited"))
+        fmt.Printf("  Support Level: %v\n", manager.GetValue(tenantID, "support_level", "none"))
+        fmt.Printf("  Tracing Enabled: %v\n", manager.GetValue(tenantID, "features.tracing", false))
+        
+        if tenantInfo := manager.GetTenantInfo(tenantID); tenantInfo != nil {
+            fmt.Printf("  Config Version: %d\n", tenantInfo.Version)
+            fmt.Printf("  Last Updated: %s\n", tenantInfo.LastUpdated.Format(time.RFC3339))
+            fmt.Printf("  Override Count: %d\n", len(tenantInfo.Overrides))
+        }
+    }
+    
+    // Show complete configuration for a tenant
+    fmt.Println("\n=== Complete Configuration for Enterprise Tenant ===")
+    enterpriseFullConfig := manager.GetAllConfig("enterprise-corp")
+    data, _ := json.MarshalIndent(enterpriseFullConfig, "", "  ")
+    fmt.Println(string(data))
+    
+    // List all tenants
+    fmt.Println("\n=== All Configured Tenants ===")
+    allTenants := manager.ListTenants()
+    for _, tenantID := range allTenants {
+        tenantInfo := manager.GetTenantInfo(tenantID)
+        fmt.Printf("- %s (v%d, %d config items, %d overrides)\n", 
+            tenantID, tenantInfo.Version, len(tenantInfo.Config), len(tenantInfo.Overrides))
+    }
+    
+    // Demonstrate configuration hierarchy
+    fmt.Println("\n=== Configuration Hierarchy Demo ===")
+    testKey := "new_feature_enabled"
+    
+    fmt.Printf("Testing resolution for key: %s\n", testKey)
+    for _, tenantID := range allTenants {
+        value := manager.GetValue(tenantID, testKey, "default_value")
+        fmt.Printf("  %s: %v\n", tenantID, value)
+    }
+    
+    // Add global setting and test again
+    fmt.Println("\nAdding global setting...")
+    globalConfig[testKey] = true
+    manager.SetGlobalConfig(globalConfig)
+    
+    for _, tenantID := range allTenants {
+        value := manager.GetValue(tenantID, testKey, "default_value")
+        fmt.Printf("  %s: %v\n", tenantID, value)
+    }
+    
+    // Add tenant override and test
+    fmt.Println("\nAdding tenant override for startup-inc...")
+    manager.SetTenantOverride("startup-inc", testKey, false)
+    
+    for _, tenantID := range allTenants {
+        value := manager.GetValue(tenantID, testKey, "default_value")
+        fmt.Printf("  %s: %v\n", tenantID, value)
+    }
+    
+    fmt.Println("\n=== Multi-Tenant Configuration Demo Complete ===")
+}
+```
+
+This example demonstrates multi-tenant configuration management with  
+tenant isolation, configuration hierarchy, override capabilities, and  
+efficient resource sharing while maintaining tenant-specific customization.  
+
+## Configuration performance profiling
+
+Configuration performance profiling identifies bottlenecks and optimizes  
+configuration access patterns for high-performance applications.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "math/rand"
+    "os"
+    "runtime"
+    "sync"
+    "time"
+)
+
+// ConfigProfiler profiles configuration access patterns and performance
+type ConfigProfiler struct {
+    accessCounts    map[string]int64
+    accessTimes     map[string][]time.Duration
+    totalAccesses   int64
+    hotKeys         []string
+    mutex           sync.RWMutex
+    startTime       time.Time
+    memStats        []MemorySnapshot
+    concurrentTests map[string]*ConcurrentTest
+}
+
+type MemorySnapshot struct {
+    Timestamp   time.Time `json:"timestamp"`
+    HeapAlloc   uint64    `json:"heap_alloc"`
+    HeapSys     uint64    `json:"heap_sys"`
+    NumGC       uint32    `json:"num_gc"`
+    GCCPUFraction float64 `json:"gc_cpu_fraction"`
+}
+
+type ConcurrentTest struct {
+    Name        string        `json:"name"`
+    Goroutines  int           `json:"goroutines"`
+    Operations  int           `json:"operations"`
+    Duration    time.Duration `json:"duration"`
+    Throughput  float64       `json:"throughput"`
+    Errors      int64         `json:"errors"`
+}
+
+type ProfileResult struct {
+    TotalAccesses    int64                        `json:"total_accesses"`
+    TestDuration     time.Duration                `json:"test_duration"`
+    AverageAccessTime time.Duration               `json:"average_access_time"`
+    TopKeys          []KeyStats                   `json:"top_keys"`
+    MemoryStats      []MemorySnapshot             `json:"memory_stats"`
+    ConcurrentTests  map[string]*ConcurrentTest   `json:"concurrent_tests"`
+    Performance      PerformanceMetrics           `json:"performance"`
+}
+
+type KeyStats struct {
+    Key          string        `json:"key"`
+    AccessCount  int64         `json:"access_count"`
+    AverageTime  time.Duration `json:"average_time"`
+    TotalTime    time.Duration `json:"total_time"`
+}
+
+type PerformanceMetrics struct {
+    AccessesPerSecond   float64 `json:"accesses_per_second"`
+    MemoryEfficiency    float64 `json:"memory_efficiency"`
+    CacheHitRatio      float64 `json:"cache_hit_ratio"`
+    ConcurrencyScaling float64 `json:"concurrency_scaling"`
+}
+
+func NewConfigProfiler() *ConfigProfiler {
+    return &ConfigProfiler{
+        accessCounts:    make(map[string]int64),
+        accessTimes:     make(map[string][]time.Duration),
+        startTime:       time.Now(),
+        memStats:        make([]MemorySnapshot, 0),
+        concurrentTests: make(map[string]*ConcurrentTest),
+    }
+}
+
+func (cp *ConfigProfiler) RecordAccess(key string, duration time.Duration) {
+    cp.mutex.Lock()
+    defer cp.mutex.Unlock()
+    
+    cp.accessCounts[key]++
+    cp.totalAccesses++
+    
+    if _, exists := cp.accessTimes[key]; !exists {
+        cp.accessTimes[key] = make([]time.Duration, 0)
+    }
+    cp.accessTimes[key] = append(cp.accessTimes[key], duration)
+    
+    // Keep only last 1000 measurements per key to manage memory
+    if len(cp.accessTimes[key]) > 1000 {
+        cp.accessTimes[key] = cp.accessTimes[key][len(cp.accessTimes[key])-1000:]
+    }
+}
+
+func (cp *ConfigProfiler) TakeMemorySnapshot() {
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+    
+    cp.mutex.Lock()
+    defer cp.mutex.Unlock()
+    
+    snapshot := MemorySnapshot{
+        Timestamp:     time.Now(),
+        HeapAlloc:     m.HeapAlloc,
+        HeapSys:       m.HeapSys,
+        NumGC:         m.NumGC,
+        GCCPUFraction: m.GCCPUFraction,
+    }
+    
+    cp.memStats = append(cp.memStats, snapshot)
+}
+
+func (cp *ConfigProfiler) RunConcurrentTest(name string, goroutines, operationsPerGoroutine int, testFunc func()) {
+    test := &ConcurrentTest{
+        Name:       name,
+        Goroutines: goroutines,
+        Operations: goroutines * operationsPerGoroutine,
+    }
+    
+    start := time.Now()
+    var wg sync.WaitGroup
+    var errors int64
+    
+    for i := 0; i < goroutines; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            
+            for j := 0; j < operationsPerGoroutine; j++ {
+                func() {
+                    defer func() {
+                        if r := recover(); r != nil {
+                            errors++
+                        }
+                    }()
+                    testFunc()
+                }()
+            }
+        }()
+    }
+    
+    wg.Wait()
+    test.Duration = time.Since(start)
+    test.Throughput = float64(test.Operations) / test.Duration.Seconds()
+    test.Errors = errors
+    
+    cp.mutex.Lock()
+    cp.concurrentTests[name] = test
+    cp.mutex.Unlock()
+}
+
+func (cp *ConfigProfiler) GenerateReport() *ProfileResult {
+    cp.mutex.RLock()
+    defer cp.mutex.RUnlock()
+    
+    result := &ProfileResult{
+        TotalAccesses:   cp.totalAccesses,
+        TestDuration:    time.Since(cp.startTime),
+        TopKeys:         make([]KeyStats, 0),
+        MemoryStats:     make([]MemorySnapshot, len(cp.memStats)),
+        ConcurrentTests: make(map[string]*ConcurrentTest),
+    }
+    
+    // Copy memory stats
+    copy(result.MemoryStats, cp.memStats)
+    
+    // Copy concurrent tests
+    for name, test := range cp.concurrentTests {
+        result.ConcurrentTests[name] = test
+    }
+    
+    // Calculate key statistics
+    var totalTime time.Duration
+    for key, count := range cp.accessCounts {
+        keyTimes := cp.accessTimes[key]
+        var keyTotalTime time.Duration
+        for _, t := range keyTimes {
+            keyTotalTime += t
+        }
+        
+        avgTime := keyTotalTime / time.Duration(len(keyTimes))
+        totalTime += keyTotalTime
+        
+        result.TopKeys = append(result.TopKeys, KeyStats{
+            Key:         key,
+            AccessCount: count,
+            AverageTime: avgTime,
+            TotalTime:   keyTotalTime,
+        })
+    }
+    
+    // Sort top keys by access count
+    for i := 0; i < len(result.TopKeys)-1; i++ {
+        for j := i + 1; j < len(result.TopKeys); j++ {
+            if result.TopKeys[j].AccessCount > result.TopKeys[i].AccessCount {
+                result.TopKeys[i], result.TopKeys[j] = result.TopKeys[j], result.TopKeys[i]
+            }
+        }
+    }
+    
+    // Keep only top 10
+    if len(result.TopKeys) > 10 {
+        result.TopKeys = result.TopKeys[:10]
+    }
+    
+    // Calculate average access time
+    if cp.totalAccesses > 0 {
+        result.AverageAccessTime = totalTime / time.Duration(cp.totalAccesses)
+    }
+    
+    // Calculate performance metrics
+    result.Performance = PerformanceMetrics{
+        AccessesPerSecond:  float64(cp.totalAccesses) / result.TestDuration.Seconds(),
+        MemoryEfficiency:   cp.calculateMemoryEfficiency(),
+        CacheHitRatio:     0.95, // Simulated
+        ConcurrencyScaling: cp.calculateConcurrencyScaling(),
+    }
+    
+    return result
+}
+
+func (cp *ConfigProfiler) calculateMemoryEfficiency() float64 {
+    if len(cp.memStats) < 2 {
+        return 1.0
+    }
+    
+    first := cp.memStats[0]
+    last := cp.memStats[len(cp.memStats)-1]
+    
+    memoryGrowth := float64(last.HeapAlloc - first.HeapAlloc)
+    accessGrowth := float64(cp.totalAccesses)
+    
+    if accessGrowth == 0 {
+        return 1.0
+    }
+    
+    // Lower values are better (less memory per access)
+    efficiency := 1.0 - (memoryGrowth / accessGrowth / 1000.0) // Normalize
+    if efficiency < 0 {
+        efficiency = 0
+    }
+    return efficiency
+}
+
+func (cp *ConfigProfiler) calculateConcurrencyScaling() float64 {
+    if len(cp.concurrentTests) < 2 {
+        return 1.0
+    }
+    
+    // Find single-threaded and multi-threaded tests
+    var singleThreaded, multiThreaded *ConcurrentTest
+    
+    for _, test := range cp.concurrentTests {
+        if test.Goroutines == 1 {
+            singleThreaded = test
+        } else if multiThreaded == nil || test.Goroutines > multiThreaded.Goroutines {
+            multiThreaded = test
+        }
+    }
+    
+    if singleThreaded == nil || multiThreaded == nil {
+        return 1.0
+    }
+    
+    // Calculate scaling factor
+    expectedScaling := float64(multiThreaded.Goroutines)
+    actualScaling := multiThreaded.Throughput / singleThreaded.Throughput
+    
+    return actualScaling / expectedScaling
+}
+
+// Mock configuration manager for testing
+type MockConfigManager struct {
+    config map[string]interface{}
+    mutex  sync.RWMutex
+}
+
+func NewMockConfigManager() *MockConfigManager {
+    return &MockConfigManager{
+        config: map[string]interface{}{
+            "app_name":      "ProfileApp",
+            "server_port":   8080,
+            "database_url":  "postgres://localhost:5432/app",
+            "cache_enabled": true,
+            "log_level":     "info",
+            "max_workers":   10,
+            "timeout":       30,
+            "features": map[string]interface{}{
+                "metrics": true,
+                "tracing": false,
+            },
+        },
+    }
+}
+
+func (mcm *MockConfigManager) Get(key string) interface{} {
+    mcm.mutex.RLock()
+    defer mcm.mutex.RUnlock()
+    
+    // Simulate some processing time
+    time.Sleep(time.Microsecond * time.Duration(rand.Intn(100)))
+    
+    return mcm.config[key]
+}
+
+func main() {
+    fmt.Println("=== Configuration Performance Profiling Example ===")
+    
+    profiler := NewConfigProfiler()
+    configManager := NewMockConfigManager()
+    
+    // Test keys with different access patterns
+    hotKeys := []string{"app_name", "server_port", "cache_enabled"}
+    warmKeys := []string{"database_url", "log_level", "max_workers"}
+    coldKeys := []string{"timeout", "features"}
+    
+    fmt.Println("\n=== Running Performance Tests ===")
+    
+    // Memory snapshot before tests
+    profiler.TakeMemorySnapshot()
+    
+    // Test 1: Single-threaded access pattern
+    fmt.Println("Running single-threaded test...")
+    profiler.RunConcurrentTest("single_threaded", 1, 10000, func() {
+        key := hotKeys[rand.Intn(len(hotKeys))]
+        start := time.Now()
+        configManager.Get(key)
+        profiler.RecordAccess(key, time.Since(start))
+    })
+    
+    // Test 2: Multi-threaded access pattern
+    fmt.Println("Running multi-threaded test...")
+    profiler.RunConcurrentTest("multi_threaded", 10, 1000, func() {
+        var key string
+        switch rand.Intn(10) {
+        case 0, 1, 2, 3, 4, 5: // 60% hot keys
+            key = hotKeys[rand.Intn(len(hotKeys))]
+        case 6, 7, 8: // 30% warm keys
+            key = warmKeys[rand.Intn(len(warmKeys))]
+        case 9: // 10% cold keys
+            key = coldKeys[rand.Intn(len(coldKeys))]
+        }
+        
+        start := time.Now()
+        configManager.Get(key)
+        profiler.RecordAccess(key, time.Since(start))
+    })
+    
+    // Test 3: High concurrency test
+    fmt.Println("Running high concurrency test...")
+    profiler.RunConcurrentTest("high_concurrency", 100, 100, func() {
+        key := hotKeys[rand.Intn(len(hotKeys))]
+        start := time.Now()
+        configManager.Get(key)
+        profiler.RecordAccess(key, time.Since(start))
+    })
+    
+    // Take periodic memory snapshots
+    for i := 0; i < 5; i++ {
+        time.Sleep(100 * time.Millisecond)
+        profiler.TakeMemorySnapshot()
+    }
+    
+    // Test 4: Mixed workload
+    fmt.Println("Running mixed workload test...")
+    profiler.RunConcurrentTest("mixed_workload", 20, 500, func() {
+        allKeys := append(append(hotKeys, warmKeys...), coldKeys...)
+        key := allKeys[rand.Intn(len(allKeys))]
+        start := time.Now()
+        configManager.Get(key)
+        profiler.RecordAccess(key, time.Since(start))
+    })
+    
+    // Final memory snapshot
+    profiler.TakeMemorySnapshot()
+    
+    // Generate and display report
+    fmt.Println("\n=== Performance Analysis Report ===")
+    report := profiler.GenerateReport()
+    
+    fmt.Printf("Total Accesses: %d\n", report.TotalAccesses)
+    fmt.Printf("Test Duration: %v\n", report.TestDuration)
+    fmt.Printf("Average Access Time: %v\n", report.AverageAccessTime)
+    fmt.Printf("Accesses per Second: %.2f\n", report.Performance.AccessesPerSecond)
+    fmt.Printf("Memory Efficiency: %.2f\n", report.Performance.MemoryEfficiency)
+    fmt.Printf("Cache Hit Ratio: %.2f\n", report.Performance.CacheHitRatio)
+    fmt.Printf("Concurrency Scaling: %.2f\n", report.Performance.ConcurrencyScaling)
+    
+    fmt.Println("\n=== Top Accessed Keys ===")
+    for i, keyStats := range report.TopKeys {
+        fmt.Printf("%d. %s: %d accesses, avg: %v, total: %v\n",
+            i+1, keyStats.Key, keyStats.AccessCount, 
+            keyStats.AverageTime, keyStats.TotalTime)
+    }
+    
+    fmt.Println("\n=== Concurrent Test Results ===")
+    for name, test := range report.ConcurrentTests {
+        fmt.Printf("%s:\n", name)
+        fmt.Printf("  Goroutines: %d\n", test.Goroutines)
+        fmt.Printf("  Operations: %d\n", test.Operations)
+        fmt.Printf("  Duration: %v\n", test.Duration)
+        fmt.Printf("  Throughput: %.2f ops/sec\n", test.Throughput)
+        fmt.Printf("  Errors: %d\n", test.Errors)
+        fmt.Println()
+    }
+    
+    fmt.Println("=== Memory Usage Over Time ===")
+    for i, snapshot := range report.MemoryStats {
+        if i%2 == 0 { // Show every other snapshot
+            fmt.Printf("T+%.1fs: Heap: %.2f MB, GC: %d\n",
+                snapshot.Timestamp.Sub(report.MemoryStats[0].Timestamp).Seconds(),
+                float64(snapshot.HeapAlloc)/1024/1024,
+                snapshot.NumGC)
+        }
+    }
+    
+    // Save detailed report to file
+    reportFile := "/tmp/config_performance_report.json"
+    if data, err := json.MarshalIndent(report, "", "  "); err == nil {
+        os.WriteFile(reportFile, data, 0644)
+        fmt.Printf("\nDetailed report saved to: %s\n", reportFile)
+    }
+    
+    // Performance recommendations
+    fmt.Println("\n=== Performance Recommendations ===")
+    if report.Performance.AccessesPerSecond < 10000 {
+        fmt.Println("- Consider implementing configuration caching")
+    }
+    if report.Performance.ConcurrencyScaling < 0.7 {
+        fmt.Println("- Configuration access may have concurrency bottlenecks")
+    }
+    if report.Performance.MemoryEfficiency < 0.8 {
+        fmt.Println("- Memory usage could be optimized")
+    }
+    
+    hotKeyThreshold := report.TotalAccesses / 5 // Top 20% threshold
+    fmt.Printf("- Hot keys (>%d accesses) should be prioritized for caching\n", hotKeyThreshold)
+    
+    // Clean up
+    os.Remove(reportFile)
+    
+    fmt.Println("\n=== Performance Profiling Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration performance profiling  
+including access pattern analysis, concurrency testing, memory profiling,  
+and performance optimization recommendations for high-performance  
+configuration management.  
+
+## Real-time configuration synchronization
+
+Real-time configuration synchronization ensures configuration consistency  
+across distributed systems with minimal latency and conflict resolution.  
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// ConfigSyncNode represents a node in the distributed configuration system
+type ConfigSyncNode struct {
+    nodeID      string
+    config      map[string]interface{}
+    version     int64
+    peers       map[string]*ConfigSyncNode
+    changeLog   []ConfigChange
+    subscribers []chan ConfigUpdate
+    mutex       sync.RWMutex
+    syncChan    chan ConfigSync
+    running     bool
+}
+
+type ConfigChange struct {
+    NodeID    string      `json:"node_id"`
+    Key       string      `json:"key"`
+    Value     interface{} `json:"value"`
+    Version   int64       `json:"version"`
+    Timestamp time.Time   `json:"timestamp"`
+    Operation string      `json:"operation"` // "set", "delete"
+}
+
+type ConfigUpdate struct {
+    Key       string      `json:"key"`
+    Value     interface{} `json:"value"`
+    OldValue  interface{} `json:"old_value"`
+    Version   int64       `json:"version"`
+    Source    string      `json:"source"`
+    Operation string      `json:"operation"`
+}
+
+type ConfigSync struct {
+    FromNode string        `json:"from_node"`
+    ToNode   string        `json:"to_node"`
+    Changes  []ConfigChange `json:"changes"`
+    Version  int64         `json:"version"`
+}
+
+func NewConfigSyncNode(nodeID string) *ConfigSyncNode {
+    return &ConfigSyncNode{
+        nodeID:      nodeID,
+        config:      make(map[string]interface{}),
+        version:     0,
+        peers:       make(map[string]*ConfigSyncNode),
+        changeLog:   make([]ConfigChange, 0),
+        subscribers: make([]chan ConfigUpdate, 0),
+        syncChan:    make(chan ConfigSync, 100),
+    }
+}
+
+func (csn *ConfigSyncNode) Start() {
+    csn.mutex.Lock()
+    if csn.running {
+        csn.mutex.Unlock()
+        return
+    }
+    csn.running = true
+    csn.mutex.Unlock()
+    
+    go csn.syncLoop()
+}
+
+func (csn *ConfigSyncNode) Stop() {
+    csn.mutex.Lock()
+    csn.running = false
+    csn.mutex.Unlock()
+    close(csn.syncChan)
+}
+
+func (csn *ConfigSyncNode) AddPeer(peer *ConfigSyncNode) {
+    csn.mutex.Lock()
+    defer csn.mutex.Unlock()
+    csn.peers[peer.nodeID] = peer
+}
+
+func (csn *ConfigSyncNode) Subscribe() chan ConfigUpdate {
+    csn.mutex.Lock()
+    defer csn.mutex.Unlock()
+    
+    updateChan := make(chan ConfigUpdate, 10)
+    csn.subscribers = append(csn.subscribers, updateChan)
+    return updateChan
+}
+
+func (csn *ConfigSyncNode) Set(key string, value interface{}) {
+    csn.mutex.Lock()
+    defer csn.mutex.Unlock()
+    
+    oldValue := csn.config[key]
+    csn.config[key] = value
+    csn.version++
+    
+    change := ConfigChange{
+        NodeID:    csn.nodeID,
+        Key:       key,
+        Value:     value,
+        Version:   csn.version,
+        Timestamp: time.Now(),
+        Operation: "set",
+    }
+    
+    csn.changeLog = append(csn.changeLog, change)
+    
+    // Notify subscribers
+    update := ConfigUpdate{
+        Key:       key,
+        Value:     value,
+        OldValue:  oldValue,
+        Version:   csn.version,
+        Source:    csn.nodeID,
+        Operation: "set",
+    }
+    
+    csn.notifySubscribers(update)
+    
+    // Propagate to peers
+    go csn.propagateChange(change)
+}
+
+func (csn *ConfigSyncNode) Delete(key string) {
+    csn.mutex.Lock()
+    defer csn.mutex.Unlock()
+    
+    oldValue, exists := csn.config[key]
+    if !exists {
+        return
+    }
+    
+    delete(csn.config, key)
+    csn.version++
+    
+    change := ConfigChange{
+        NodeID:    csn.nodeID,
+        Key:       key,
+        Value:     nil,
+        Version:   csn.version,
+        Timestamp: time.Now(),
+        Operation: "delete",
+    }
+    
+    csn.changeLog = append(csn.changeLog, change)
+    
+    // Notify subscribers
+    update := ConfigUpdate{
+        Key:       key,
+        Value:     nil,
+        OldValue:  oldValue,
+        Version:   csn.version,
+        Source:    csn.nodeID,
+        Operation: "delete",
+    }
+    
+    csn.notifySubscribers(update)
+    
+    // Propagate to peers
+    go csn.propagateChange(change)
+}
+
+func (csn *ConfigSyncNode) Get(key string) (interface{}, bool) {
+    csn.mutex.RLock()
+    defer csn.mutex.RUnlock()
+    
+    value, exists := csn.config[key]
+    return value, exists
+}
+
+func (csn *ConfigSyncNode) GetAll() map[string]interface{} {
+    csn.mutex.RLock()
+    defer csn.mutex.RUnlock()
+    
+    result := make(map[string]interface{})
+    for key, value := range csn.config {
+        result[key] = value
+    }
+    return result
+}
+
+func (csn *ConfigSyncNode) GetVersion() int64 {
+    csn.mutex.RLock()
+    defer csn.mutex.RUnlock()
+    return csn.version
+}
+
+func (csn *ConfigSyncNode) propagateChange(change ConfigChange) {
+    csn.mutex.RLock()
+    peers := make([]*ConfigSyncNode, 0, len(csn.peers))
+    for _, peer := range csn.peers {
+        peers = append(peers, peer)
+    }
+    csn.mutex.RUnlock()
+    
+    sync := ConfigSync{
+        FromNode: csn.nodeID,
+        Changes:  []ConfigChange{change},
+        Version:  change.Version,
+    }
+    
+    for _, peer := range peers {
+        sync.ToNode = peer.nodeID
+        select {
+        case peer.syncChan <- sync:
+        default:
+            fmt.Printf("Warning: sync channel full for peer %s\n", peer.nodeID)
+        }
+    }
+}
+
+func (csn *ConfigSyncNode) syncLoop() {
+    for sync := range csn.syncChan {
+        csn.processSyncMessage(sync)
+    }
+}
+
+func (csn *ConfigSyncNode) processSyncMessage(sync ConfigSync) {
+    csn.mutex.Lock()
+    defer csn.mutex.Unlock()
+    
+    for _, change := range sync.Changes {
+        // Avoid processing our own changes
+        if change.NodeID == csn.nodeID {
+            continue
+        }
+        
+        // Check if we already have this change (conflict resolution)
+        if csn.hasChange(change) {
+            continue
+        }
+        
+        // Apply change with conflict resolution
+        csn.applyChange(change)
+    }
+}
+
+func (csn *ConfigSyncNode) hasChange(change ConfigChange) bool {
+    for _, existingChange := range csn.changeLog {
+        if existingChange.NodeID == change.NodeID &&
+           existingChange.Key == change.Key &&
+           existingChange.Version == change.Version {
+            return true
+        }
+    }
+    return false
+}
+
+func (csn *ConfigSyncNode) applyChange(change ConfigChange) {
+    oldValue := csn.config[change.Key]
+    
+    // Conflict resolution: last-write-wins with timestamp tiebreaker
+    shouldApply := true
+    
+    for _, existingChange := range csn.changeLog {
+        if existingChange.Key == change.Key {
+            if existingChange.Timestamp.After(change.Timestamp) {
+                shouldApply = false
+                break
+            } else if existingChange.Timestamp.Equal(change.Timestamp) {
+                // Tiebreaker: use lexicographically later node ID
+                if existingChange.NodeID > change.NodeID {
+                    shouldApply = false
+                    break
+                }
+            }
+        }
+    }
+    
+    if !shouldApply {
+        return
+    }
+    
+    // Apply the change
+    switch change.Operation {
+    case "set":
+        csn.config[change.Key] = change.Value
+    case "delete":
+        delete(csn.config, change.Key)
+    }
+    
+    // Update our version if the change is newer
+    if change.Version > csn.version {
+        csn.version = change.Version
+    }
+    
+    // Add to change log
+    csn.changeLog = append(csn.changeLog, change)
+    
+    // Notify subscribers
+    update := ConfigUpdate{
+        Key:       change.Key,
+        Value:     change.Value,
+        OldValue:  oldValue,
+        Version:   change.Version,
+        Source:    change.NodeID,
+        Operation: change.Operation,
+    }
+    
+    csn.notifySubscribers(update)
+}
+
+func (csn *ConfigSyncNode) notifySubscribers(update ConfigUpdate) {
+    for _, subscriber := range csn.subscribers {
+        select {
+        case subscriber <- update:
+        default:
+            // Subscriber channel full, skip
+        }
+    }
+}
+
+func (csn *ConfigSyncNode) GetChangeLog() []ConfigChange {
+    csn.mutex.RLock()
+    defer csn.mutex.RUnlock()
+    
+    log := make([]ConfigChange, len(csn.changeLog))
+    copy(log, csn.changeLog)
+    return log
+}
+
+func main() {
+    fmt.Println("=== Real-time Configuration Synchronization Example ===")
+    
+    // Create a cluster of configuration nodes
+    node1 := NewConfigSyncNode("node-1")
+    node2 := NewConfigSyncNode("node-2")
+    node3 := NewConfigSyncNode("node-3")
+    
+    // Set up peer relationships
+    node1.AddPeer(node2)
+    node1.AddPeer(node3)
+    node2.AddPeer(node1)
+    node2.AddPeer(node3)
+    node3.AddPeer(node1)
+    node3.AddPeer(node2)
+    
+    // Start all nodes
+    node1.Start()
+    node2.Start()
+    node3.Start()
+    
+    defer func() {
+        node1.Stop()
+        node2.Stop()
+        node3.Stop()
+    }()
+    
+    // Subscribe to changes on node2
+    updates := node2.Subscribe()
+    go func() {
+        fmt.Println("\n=== Change Notifications (Node 2) ===")
+        for update := range updates {
+            fmt.Printf("Update: %s = %v (from %s, v%d)\n", 
+                update.Key, update.Value, update.Source, update.Version)
+        }
+    }()
+    
+    // Test configuration synchronization
+    fmt.Println("\n=== Testing Configuration Synchronization ===")
+    
+    // Node 1 sets some configuration
+    fmt.Println("Node 1 setting initial configuration...")
+    node1.Set("app_name", "SyncApp")
+    node1.Set("version", "1.0.0")
+    node1.Set("debug", true)
+    
+    time.Sleep(100 * time.Millisecond) // Allow propagation
+    
+    // Check if changes propagated
+    fmt.Println("\nConfiguration state after Node 1 updates:")
+    printNodeState("Node 1", node1)
+    printNodeState("Node 2", node2)
+    printNodeState("Node 3", node3)
+    
+    // Node 2 updates configuration
+    fmt.Println("\nNode 2 updating configuration...")
+    node2.Set("version", "1.1.0")
+    node2.Set("max_connections", 100)
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    fmt.Println("\nConfiguration state after Node 2 updates:")
+    printNodeState("Node 1", node1)
+    printNodeState("Node 2", node2)
+    printNodeState("Node 3", node3)
+    
+    // Node 3 deletes a key
+    fmt.Println("\nNode 3 deleting debug setting...")
+    node3.Delete("debug")
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    fmt.Println("\nConfiguration state after Node 3 deletion:")
+    printNodeState("Node 1", node1)
+    printNodeState("Node 2", node2)
+    printNodeState("Node 3", node3)
+    
+    // Test concurrent updates (conflict resolution)
+    fmt.Println("\n=== Testing Conflict Resolution ===")
+    
+    // Simulate near-simultaneous updates to the same key
+    go func() {
+        node1.Set("concurrent_test", "from_node1")
+    }()
+    go func() {
+        node2.Set("concurrent_test", "from_node2")
+    }()
+    go func() {
+        node3.Set("concurrent_test", "from_node3")
+    }()
+    
+    time.Sleep(200 * time.Millisecond)
+    
+    fmt.Println("Final state after concurrent updates:")
+    printNodeState("Node 1", node1)
+    printNodeState("Node 2", node2)
+    printNodeState("Node 3", node3)
+    
+    // Show change logs
+    fmt.Println("\n=== Change Logs ===")
+    
+    nodes := map[string]*ConfigSyncNode{
+        "Node 1": node1,
+        "Node 2": node2,
+        "Node 3": node3,
+    }
+    
+    for name, node := range nodes {
+        fmt.Printf("\n%s Change Log:\n", name)
+        changeLog := node.GetChangeLog()
+        for i, change := range changeLog {
+            fmt.Printf("  %d. %s %s=%v by %s (v%d) at %s\n",
+                i+1, change.Operation, change.Key, change.Value,
+                change.NodeID, change.Version,
+                change.Timestamp.Format("15:04:05.000"))
+        }
+    }
+    
+    // Test network partition simulation
+    fmt.Println("\n=== Simulating Network Partition ===")
+    
+    // Remove peer connections to simulate partition
+    node1.mutex.Lock()
+    delete(node1.peers, "node-2")
+    delete(node1.peers, "node-3")
+    node1.mutex.Unlock()
+    
+    // Node 1 makes changes while partitioned
+    node1.Set("partition_test", "isolated_update")
+    
+    // Nodes 2 and 3 continue to sync with each other
+    node2.Set("partition_test", "connected_update")
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    fmt.Println("During partition:")
+    printNodeState("Node 1 (isolated)", node1)
+    printNodeState("Node 2 (connected)", node2)
+    printNodeState("Node 3 (connected)", node3)
+    
+    // Restore connections (heal partition)
+    fmt.Println("\nHealing network partition...")
+    node1.AddPeer(node2)
+    node1.AddPeer(node3)
+    
+    // Trigger sync by making a new change
+    node1.Set("heal_trigger", "sync_now")
+    
+    time.Sleep(200 * time.Millisecond)
+    
+    fmt.Println("After healing partition:")
+    printNodeState("Node 1", node1)
+    printNodeState("Node 2", node2)
+    printNodeState("Node 3", node3)
+    
+    fmt.Println("\n=== Synchronization Demo Complete ===")
+}
+
+func printNodeState(name string, node *ConfigSyncNode) {
+    config := node.GetAll()
+    version := node.GetVersion()
+    
+    fmt.Printf("%s (v%d): ", name, version)
+    
+    if len(config) == 0 {
+        fmt.Println("(empty)")
+        return
+    }
+    
+    configJSON, _ := json.Marshal(config)
+    fmt.Println(string(configJSON))
+}
+```
+
+This example demonstrates real-time configuration synchronization across  
+distributed nodes with conflict resolution, network partition handling,  
+and eventual consistency guarantees for robust distributed configuration  
+management.  
+
+## Configuration compliance and governance
+
+Configuration compliance ensures applications meet organizational policies  
+and regulatory requirements through automated validation and reporting.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "regexp"
+    "strings"
+    "time"
+)
+
+// ComplianceRule defines a configuration compliance rule
+type ComplianceRule struct {
+    ID          string      `json:"id"`
+    Name        string      `json:"name"`
+    Description string      `json:"description"`
+    Category    string      `json:"category"`
+    Severity    string      `json:"severity"`
+    Condition   Condition   `json:"condition"`
+    Remediation string      `json:"remediation"`
+    Required    bool        `json:"required"`
+    Tags        []string    `json:"tags"`
+}
+
+type Condition struct {
+    Field    string      `json:"field"`
+    Operator string      `json:"operator"`
+    Value    interface{} `json:"value"`
+    Pattern  string      `json:"pattern,omitempty"`
+}
+
+type ComplianceViolation struct {
+    RuleID      string      `json:"rule_id"`
+    RuleName    string      `json:"rule_name"`
+    Severity    string      `json:"severity"`
+    Field       string      `json:"field"`
+    ActualValue interface{} `json:"actual_value"`
+    ExpectedValue interface{} `json:"expected_value"`
+    Message     string      `json:"message"`
+    Remediation string      `json:"remediation"`
+    Timestamp   time.Time   `json:"timestamp"`
+}
+
+type ComplianceReport struct {
+    Timestamp        time.Time             `json:"timestamp"`
+    TotalRules       int                   `json:"total_rules"`
+    PassedRules      int                   `json:"passed_rules"`
+    FailedRules      int                   `json:"failed_rules"`
+    ComplianceScore  float64               `json:"compliance_score"`
+    Violations       []ComplianceViolation `json:"violations"`
+    Summary          ComplianceSummary     `json:"summary"`
+}
+
+type ComplianceSummary struct {
+    CriticalViolations int               `json:"critical_violations"`
+    HighViolations     int               `json:"high_violations"`
+    MediumViolations   int               `json:"medium_violations"`
+    LowViolations      int               `json:"low_violations"`
+    CategoriesFailed   map[string]int    `json:"categories_failed"`
+}
+
+// ComplianceEngine evaluates configuration against compliance rules
+type ComplianceEngine struct {
+    rules map[string]ComplianceRule
+}
+
+func NewComplianceEngine() *ComplianceEngine {
+    return &ComplianceEngine{
+        rules: make(map[string]ComplianceRule),
+    }
+}
+
+func (ce *ComplianceEngine) AddRule(rule ComplianceRule) {
+    ce.rules[rule.ID] = rule
+}
+
+func (ce *ComplianceEngine) LoadStandardRules() {
+    rules := []ComplianceRule{
+        {
+            ID:          "SEC-001",
+            Name:        "TLS Required for Production",
+            Description: "Production environments must use TLS encryption",
+            Category:    "Security",
+            Severity:    "Critical",
+            Condition: Condition{
+                Field:    "server.tls.enabled",
+                Operator: "equals",
+                Value:    true,
+            },
+            Remediation: "Enable TLS by setting server.tls.enabled to true",
+            Required:    true,
+            Tags:        []string{"security", "encryption", "production"},
+        },
+        {
+            ID:          "SEC-002",
+            Name:        "Debug Mode Disabled in Production",
+            Description: "Debug mode must be disabled in production environments",
+            Category:    "Security",
+            Severity:    "High",
+            Condition: Condition{
+                Field:    "debug",
+                Operator: "equals",
+                Value:    false,
+            },
+            Remediation: "Set debug to false for production deployments",
+            Required:    true,
+            Tags:        []string{"security", "production"},
+        },
+        {
+            ID:          "SEC-003",
+            Name:        "Strong Database Passwords",
+            Description: "Database passwords must meet complexity requirements",
+            Category:    "Security",
+            Severity:    "High",
+            Condition: Condition{
+                Field:    "database.password",
+                Operator: "matches",
+                Pattern:  `^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{12,}$`,
+            },
+            Remediation: "Use passwords with 12+ chars, including uppercase, lowercase, numbers, and special characters",
+            Required:    true,
+            Tags:        []string{"security", "passwords"},
+        },
+        {
+            ID:          "PERF-001",
+            Name:        "Connection Pool Limits",
+            Description: "Database connection pools should have reasonable limits",
+            Category:    "Performance",
+            Severity:    "Medium",
+            Condition: Condition{
+                Field:    "database.max_connections",
+                Operator: "less_than_or_equal",
+                Value:    1000,
+            },
+            Remediation: "Set database.max_connections to a reasonable value (≤1000)",
+            Required:    false,
+            Tags:        []string{"performance", "database"},
+        },
+        {
+            ID:          "OPS-001",
+            Name:        "Logging Level Compliance",
+            Description: "Production systems should use appropriate log levels",
+            Category:    "Operations",
+            Severity:    "Medium",
+            Condition: Condition{
+                Field:    "logging.level",
+                Operator: "in",
+                Value:    []string{"info", "warn", "error"},
+            },
+            Remediation: "Set logging.level to info, warn, or error for production",
+            Required:    false,
+            Tags:        []string{"operations", "logging"},
+        },
+        {
+            ID:          "COMP-001",
+            Name:        "Required Application Metadata",
+            Description: "Applications must have name and version specified",
+            Category:    "Compliance",
+            Severity:    "Medium",
+            Condition: Condition{
+                Field:    "app.name",
+                Operator: "exists",
+            },
+            Remediation: "Specify app.name and app.version in configuration",
+            Required:    true,
+            Tags:        []string{"compliance", "metadata"},
+        },
+    }
+    
+    for _, rule := range rules {
+        ce.AddRule(rule)
+    }
+}
+
+func (ce *ComplianceEngine) EvaluateCompliance(config map[string]interface{}, environment string) *ComplianceReport {
+    report := &ComplianceReport{
+        Timestamp:   time.Now(),
+        TotalRules:  len(ce.rules),
+        Violations:  make([]ComplianceViolation, 0),
+        Summary: ComplianceSummary{
+            CategoriesFailed: make(map[string]int),
+        },
+    }
+    
+    for _, rule := range ce.rules {
+        // Skip non-required rules for non-production environments
+        if !rule.Required && environment != "production" {
+            continue
+        }
+        
+        violation := ce.evaluateRule(rule, config, environment)
+        if violation != nil {
+            report.Violations = append(report.Violations, *violation)
+            report.FailedRules++
+            
+            // Update summary counters
+            switch violation.Severity {
+            case "Critical":
+                report.Summary.CriticalViolations++
+            case "High":
+                report.Summary.HighViolations++
+            case "Medium":
+                report.Summary.MediumViolations++
+            case "Low":
+                report.Summary.LowViolations++
+            }
+            
+            report.Summary.CategoriesFailed[rule.Category]++
+        } else {
+            report.PassedRules++
+        }
+    }
+    
+    // Calculate compliance score
+    if report.TotalRules > 0 {
+        report.ComplianceScore = float64(report.PassedRules) / float64(report.TotalRules) * 100
+    }
+    
+    return report
+}
+
+func (ce *ComplianceEngine) evaluateRule(rule ComplianceRule, config map[string]interface{}, environment string) *ComplianceViolation {
+    value := ce.getNestedValue(config, rule.Condition.Field)
+    
+    passed := ce.evaluateCondition(rule.Condition, value)
+    
+    if !passed {
+        return &ComplianceViolation{
+            RuleID:        rule.ID,
+            RuleName:      rule.Name,
+            Severity:      rule.Severity,
+            Field:         rule.Condition.Field,
+            ActualValue:   value,
+            ExpectedValue: rule.Condition.Value,
+            Message:       fmt.Sprintf("Rule '%s' failed: %s", rule.Name, rule.Description),
+            Remediation:   rule.Remediation,
+            Timestamp:     time.Now(),
+        }
+    }
+    
+    return nil
+}
+
+func (ce *ComplianceEngine) evaluateCondition(condition Condition, value interface{}) bool {
+    switch condition.Operator {
+    case "exists":
+        return value != nil
+    case "equals":
+        return ce.valuesEqual(value, condition.Value)
+    case "not_equals":
+        return !ce.valuesEqual(value, condition.Value)
+    case "greater_than":
+        return ce.compareValues(value, condition.Value) > 0
+    case "less_than":
+        return ce.compareValues(value, condition.Value) < 0
+    case "greater_than_or_equal":
+        return ce.compareValues(value, condition.Value) >= 0
+    case "less_than_or_equal":
+        return ce.compareValues(value, condition.Value) <= 0
+    case "in":
+        if slice, ok := condition.Value.([]interface{}); ok {
+            for _, item := range slice {
+                if ce.valuesEqual(value, item) {
+                    return true
+                }
+            }
+        } else if slice, ok := condition.Value.([]string); ok {
+            if str, ok := value.(string); ok {
+                for _, item := range slice {
+                    if str == item {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    case "matches":
+        if str, ok := value.(string); ok && condition.Pattern != "" {
+            matched, err := regexp.MatchString(condition.Pattern, str)
+            return err == nil && matched
+        }
+        return false
+    default:
+        return false
+    }
+}
+
+func (ce *ComplianceEngine) getNestedValue(config map[string]interface{}, path string) interface{} {
+    parts := strings.Split(path, ".")
+    current := config
+    
+    for i, part := range parts {
+        if i == len(parts)-1 {
+            // Last part - return the value
+            return current[part]
+        }
+        
+        // Navigate deeper
+        if next, ok := current[part].(map[string]interface{}); ok {
+            current = next
+        } else {
+            return nil
+        }
+    }
+    
+    return nil
+}
+
+func (ce *ComplianceEngine) valuesEqual(a, b interface{}) bool {
+    if a == nil && b == nil {
+        return true
+    }
+    if a == nil || b == nil {
+        return false
+    }
+    
+    // Convert to JSON and compare strings for complex comparison
+    aJSON, _ := json.Marshal(a)
+    bJSON, _ := json.Marshal(b)
+    return string(aJSON) == string(bJSON)
+}
+
+func (ce *ComplianceEngine) compareValues(a, b interface{}) int {
+    switch va := a.(type) {
+    case int:
+        if vb, ok := b.(int); ok {
+            if va > vb {
+                return 1
+            } else if va < vb {
+                return -1
+            }
+            return 0
+        }
+    case float64:
+        if vb, ok := b.(float64); ok {
+            if va > vb {
+                return 1
+            } else if va < vb {
+                return -1
+            }
+            return 0
+        }
+        if vb, ok := b.(int); ok {
+            if va > float64(vb) {
+                return 1
+            } else if va < float64(vb) {
+                return -1
+            }
+            return 0
+        }
+    case string:
+        if vb, ok := b.(string); ok {
+            return strings.Compare(va, vb)
+        }
+    }
+    return 0
+}
+
+func main() {
+    fmt.Println("=== Configuration Compliance and Governance Example ===")
+    
+    // Create compliance engine and load standard rules
+    engine := NewComplianceEngine()
+    engine.LoadStandardRules()
+    
+    fmt.Printf("Loaded %d compliance rules\n", len(engine.rules))
+    
+    // Test configurations for different environments
+    configurations := map[string]map[string]interface{}{
+        "development": {
+            "app": map[string]interface{}{
+                "name":    "TestApp",
+                "version": "1.0.0",
+            },
+            "debug": true,
+            "server": map[string]interface{}{
+                "port": 8080,
+                "tls": map[string]interface{}{
+                    "enabled": false,
+                },
+            },
+            "database": map[string]interface{}{
+                "host":            "localhost",
+                "port":            5432,
+                "password":        "simple123",
+                "max_connections": 10,
+            },
+            "logging": map[string]interface{}{
+                "level": "debug",
+            },
+        },
+        "production": {
+            "app": map[string]interface{}{
+                "name":    "TestApp",
+                "version": "1.0.0",
+            },
+            "debug": false,
+            "server": map[string]interface{}{
+                "port": 443,
+                "tls": map[string]interface{}{
+                    "enabled": true,
+                },
+            },
+            "database": map[string]interface{}{
+                "host":            "prod-db.example.com",
+                "port":            5432,
+                "password":        "SecureP@ssw0rd123!",
+                "max_connections": 100,
+            },
+            "logging": map[string]interface{}{
+                "level": "info",
+            },
+        },
+        "non_compliant": {
+            "debug": true,  // Violation: debug enabled in production
+            "server": map[string]interface{}{
+                "port": 8080,
+                "tls": map[string]interface{}{
+                    "enabled": false,  // Violation: TLS disabled
+                },
+            },
+            "database": map[string]interface{}{
+                "password":        "weak",  // Violation: weak password
+                "max_connections": 5000,     // Violation: too many connections
+            },
+            "logging": map[string]interface{}{
+                "level": "debug",  // Violation: debug logging in production
+            },
+            // Missing app.name - violation
+        },
+    }
+    
+    // Evaluate compliance for each configuration
+    for envName, config := range configurations {
+        fmt.Printf("\n=== Compliance Report for %s Environment ===\n", strings.Title(envName))
+        
+        environment := envName
+        if envName == "non_compliant" {
+            environment = "production"  // Test as production for strictest rules
+        }
+        
+        report := engine.EvaluateCompliance(config, environment)
+        
+        fmt.Printf("Compliance Score: %.1f%%\n", report.ComplianceScore)
+        fmt.Printf("Rules Passed: %d/%d\n", report.PassedRules, report.TotalRules)
+        
+        if len(report.Violations) > 0 {
+            fmt.Printf("\nViolations Found:\n")
+            for i, violation := range report.Violations {
+                fmt.Printf("%d. [%s] %s\n", i+1, violation.Severity, violation.RuleName)
+                fmt.Printf("   Field: %s\n", violation.Field)
+                fmt.Printf("   Current: %v\n", violation.ActualValue)
+                if violation.ExpectedValue != nil {
+                    fmt.Printf("   Expected: %v\n", violation.ExpectedValue)
+                }
+                fmt.Printf("   Remediation: %s\n", violation.Remediation)
+                fmt.Println()
+            }
+            
+            fmt.Printf("Summary:\n")
+            fmt.Printf("  Critical: %d\n", report.Summary.CriticalViolations)
+            fmt.Printf("  High: %d\n", report.Summary.HighViolations)
+            fmt.Printf("  Medium: %d\n", report.Summary.MediumViolations)
+            fmt.Printf("  Low: %d\n", report.Summary.LowViolations)
+            
+            if len(report.Summary.CategoriesFailed) > 0 {
+                fmt.Printf("  Categories with failures:\n")
+                for category, count := range report.Summary.CategoriesFailed {
+                    fmt.Printf("    %s: %d violations\n", category, count)
+                }
+            }
+        } else {
+            fmt.Printf("✓ All compliance rules passed!\n")
+        }
+    }
+    
+    // Generate detailed compliance report
+    fmt.Println("\n=== Detailed Compliance Analysis ===")
+    
+    prodReport := engine.EvaluateCompliance(configurations["production"], "production")
+    nonCompliantReport := engine.EvaluateCompliance(configurations["non_compliant"], "production")
+    
+    fmt.Printf("Production Environment Compliance: %.1f%%\n", prodReport.ComplianceScore)
+    fmt.Printf("Non-Compliant Configuration: %.1f%%\n", nonCompliantReport.ComplianceScore)
+    
+    improvement := prodReport.ComplianceScore - nonCompliantReport.ComplianceScore
+    fmt.Printf("Compliance Improvement: +%.1f%%\n", improvement)
+    
+    // Save detailed report to file
+    reportData, _ := json.MarshalIndent(nonCompliantReport, "", "  ")
+    reportFile := "/tmp/compliance_report.json"
+    os.WriteFile(reportFile, reportData, 0644)
+    fmt.Printf("\nDetailed compliance report saved to: %s\n", reportFile)
+    
+    // Compliance recommendations
+    fmt.Println("\n=== Compliance Recommendations ===")
+    if nonCompliantReport.Summary.CriticalViolations > 0 {
+        fmt.Println("⚠️  CRITICAL: Address critical violations immediately")
+    }
+    if nonCompliantReport.Summary.HighViolations > 0 {
+        fmt.Println("⚠️  HIGH: Schedule high-priority violations for next release")
+    }
+    if nonCompliantReport.Summary.MediumViolations > 0 {
+        fmt.Println("ℹ️  MEDIUM: Consider addressing medium violations in upcoming sprints")
+    }
+    
+    fmt.Println("\nTop Priority Actions:")
+    criticalAndHigh := 0
+    for _, violation := range nonCompliantReport.Violations {
+        if violation.Severity == "Critical" || violation.Severity == "High" {
+            criticalAndHigh++
+            if criticalAndHigh <= 3 {  // Show top 3
+                fmt.Printf("%d. %s: %s\n", criticalAndHigh, violation.RuleName, violation.Remediation)
+            }
+        }
+    }
+    
+    // Clean up
+    os.Remove(reportFile)
+    
+    fmt.Println("\n=== Compliance and Governance Demo Complete ===")
+}
+```
+
+This example demonstrates comprehensive configuration compliance and governance  
+with automated rule evaluation, violation reporting, and remediation guidance  
+to ensure configurations meet organizational and regulatory requirements.  
+
+## Configuration A/B testing framework
+
+A/B testing framework for configuration enables data-driven configuration  
+decisions through controlled experiments and statistical analysis.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "math"
+    "math/rand"
+    "sort"
+    "time"
+)
+
+// ABTest represents a configuration A/B test
+type ABTest struct {
+    ID          string                 `json:"id"`
+    Name        string                 `json:"name"`
+    Description string                 `json:"description"`
+    ConfigKey   string                 `json:"config_key"`
+    Variants    map[string]ABVariant   `json:"variants"`
+    Traffic     TrafficAllocation      `json:"traffic"`
+    Metrics     []string               `json:"metrics"`
+    StartTime   time.Time              `json:"start_time"`
+    EndTime     *time.Time             `json:"end_time,omitempty"`
+    Status      string                 `json:"status"`
+    Results     *ABTestResults         `json:"results,omitempty"`
+}
+
+type ABVariant struct {
+    Name        string      `json:"name"`
+    Value       interface{} `json:"value"`
+    Description string      `json:"description"`
+    Weight      float64     `json:"weight"`
+}
+
+type TrafficAllocation struct {
+    TotalPercentage float64            `json:"total_percentage"`
+    VariantSplit    map[string]float64 `json:"variant_split"`
+}
+
+type ABTestResults struct {
+    TotalUsers      int64                      `json:"total_users"`
+    VariantResults  map[string]*VariantResults `json:"variant_results"`
+    WinningVariant  string                     `json:"winning_variant"`
+    ConfidenceLevel float64                    `json:"confidence_level"`
+    StatisticalPower float64                   `json:"statistical_power"`
+    Recommendations []string                   `json:"recommendations"`
+}
+
+type VariantResults struct {
+    UserCount     int64                  `json:"user_count"`
+    Metrics       map[string]MetricStats `json:"metrics"`
+    ConversionRate float64               `json:"conversion_rate"`
+}
+
+type MetricStats struct {
+    Count    int64   `json:"count"`
+    Sum      float64 `json:"sum"`
+    Mean     float64 `json:"mean"`
+    StdDev   float64 `json:"std_dev"`
+    Min      float64 `json:"min"`
+    Max      float64 `json:"max"`
+    Samples  []float64 `json:"-"` // Not exported, for calculation
+}
+
+// ABTestFramework manages A/B tests for configuration
+type ABTestFramework struct {
+    tests   map[string]*ABTest
+    metrics map[string]*MetricStats
+    rand    *rand.Rand
+}
+
+func NewABTestFramework() *ABTestFramework {
+    return &ABTestFramework{
+        tests:   make(map[string]*ABTest),
+        metrics: make(map[string]*MetricStats),
+        rand:    rand.New(rand.NewSource(time.Now().UnixNano())),
+    }
+}
+
+func (atf *ABTestFramework) CreateTest(test *ABTest) error {
+    // Validate test configuration
+    if err := atf.validateTest(test); err != nil {
+        return fmt.Errorf("test validation failed: %w", err)
+    }
+    
+    test.Status = "created"
+    test.StartTime = time.Now()
+    atf.tests[test.ID] = test
+    
+    fmt.Printf("Created A/B test: %s\n", test.Name)
+    return nil
+}
+
+func (atf *ABTestFramework) validateTest(test *ABTest) error {
+    if test.ID == "" || test.Name == "" || test.ConfigKey == "" {
+        return fmt.Errorf("test ID, name, and config key are required")
+    }
+    
+    if len(test.Variants) < 2 {
+        return fmt.Errorf("at least 2 variants are required")
+    }
+    
+    totalWeight := 0.0
+    for _, variant := range test.Variants {
+        totalWeight += variant.Weight
+    }
+    
+    if math.Abs(totalWeight-1.0) > 0.001 {
+        return fmt.Errorf("variant weights must sum to 1.0, got %.3f", totalWeight)
+    }
+    
+    return nil
+}
+
+func (atf *ABTestFramework) StartTest(testID string) error {
+    test, exists := atf.tests[testID]
+    if !exists {
+        return fmt.Errorf("test not found: %s", testID)
+    }
+    
+    if test.Status != "created" {
+        return fmt.Errorf("test cannot be started, current status: %s", test.Status)
+    }
+    
+    test.Status = "running"
+    test.StartTime = time.Now()
+    
+    fmt.Printf("Started A/B test: %s\n", test.Name)
+    return nil
+}
+
+func (atf *ABTestFramework) GetVariantForUser(testID, userID string) (string, interface{}, error) {
+    test, exists := atf.tests[testID]
+    if !exists {
+        return "", nil, fmt.Errorf("test not found: %s", testID)
+    }
+    
+    if test.Status != "running" {
+        return "", nil, fmt.Errorf("test is not running")
+    }
+    
+    // Determine if user is in the test
+    userHash := atf.hashUser(userID, testID)
+    if userHash > test.Traffic.TotalPercentage {
+        return "control", nil, nil // User not in test
+    }
+    
+    // Assign variant based on weights
+    variantHash := atf.hashUser(userID, testID+"_variant")
+    
+    var cumulativeWeight float64
+    for variantName, variant := range test.Variants {
+        cumulativeWeight += variant.Weight
+        if variantHash <= cumulativeWeight {
+            return variantName, variant.Value, nil
+        }
+    }
+    
+    // Fallback to first variant
+    for variantName, variant := range test.Variants {
+        return variantName, variant.Value, nil
+    }
+    
+    return "", nil, fmt.Errorf("no variant assigned")
+}
+
+func (atf *ABTestFramework) hashUser(userID, salt string) float64 {
+    // Simple hash function for demo - in production use crypto/hash
+    hash := 0
+    for _, char := range userID + salt {
+        hash = (hash*31 + int(char)) % 1000000
+    }
+    return float64(hash%1000) / 1000.0
+}
+
+func (atf *ABTestFramework) RecordMetric(testID, userID, variantName, metricName string, value float64) {
+    test, exists := atf.tests[testID]
+    if !exists || test.Status != "running" {
+        return
+    }
+    
+    // Initialize results if needed
+    if test.Results == nil {
+        test.Results = &ABTestResults{
+            VariantResults: make(map[string]*VariantResults),
+        }
+    }
+    
+    // Initialize variant results if needed
+    if test.Results.VariantResults[variantName] == nil {
+        test.Results.VariantResults[variantName] = &VariantResults{
+            Metrics: make(map[string]MetricStats),
+        }
+    }
+    
+    variant := test.Results.VariantResults[variantName]
+    
+    // Update metric statistics
+    metric := variant.Metrics[metricName]
+    metric.Count++
+    metric.Sum += value
+    metric.Mean = metric.Sum / float64(metric.Count)
+    
+    if metric.Samples == nil {
+        metric.Samples = make([]float64, 0)
+    }
+    metric.Samples = append(metric.Samples, value)
+    
+    if metric.Count == 1 {
+        metric.Min = value
+        metric.Max = value
+    } else {
+        if value < metric.Min {
+            metric.Min = value
+        }
+        if value > metric.Max {
+            metric.Max = value
+        }
+    }
+    
+    // Calculate standard deviation
+    if metric.Count > 1 {
+        variance := 0.0
+        for _, sample := range metric.Samples {
+            variance += math.Pow(sample-metric.Mean, 2)
+        }
+        variance /= float64(metric.Count - 1)
+        metric.StdDev = math.Sqrt(variance)
+    }
+    
+    variant.Metrics[metricName] = metric
+    test.Results.TotalUsers++
+}
+
+func (atf *ABTestFramework) AnalyzeTest(testID string) (*ABTestResults, error) {
+    test, exists := atf.tests[testID]
+    if !exists {
+        return nil, fmt.Errorf("test not found: %s", testID)
+    }
+    
+    if test.Results == nil {
+        return nil, fmt.Errorf("no data available for analysis")
+    }
+    
+    results := test.Results
+    
+    // Find winning variant based on primary metric (assume first metric is primary)
+    if len(test.Metrics) > 0 {
+        primaryMetric := test.Metrics[0]
+        
+        var bestVariant string
+        var bestValue float64
+        var hasData bool
+        
+        for variantName, variantResults := range results.VariantResults {
+            if metric, exists := variantResults.Metrics[primaryMetric]; exists && metric.Count > 0 {
+                if !hasData || metric.Mean > bestValue {
+                    bestVariant = variantName
+                    bestValue = metric.Mean
+                    hasData = true
+                }
+            }
+        }
+        
+        if hasData {
+            results.WinningVariant = bestVariant
+            results.ConfidenceLevel = atf.calculateConfidence(test, primaryMetric)
+            results.StatisticalPower = atf.calculatePower(test, primaryMetric)
+        }
+    }
+    
+    // Generate recommendations
+    results.Recommendations = atf.generateRecommendations(test)
+    
+    return results, nil
+}
+
+func (atf *ABTestFramework) calculateConfidence(test *ABTest, metricName string) float64 {
+    // Simplified confidence calculation - in production use proper statistical tests
+    variants := make([]*VariantResults, 0)
+    for _, variant := range test.Results.VariantResults {
+        if metric, exists := variant.Metrics[metricName]; exists && metric.Count > 30 {
+            variants = append(variants, variant)
+        }
+    }
+    
+    if len(variants) < 2 {
+        return 0.0
+    }
+    
+    // Simple t-test approximation
+    baselineMetric := variants[0].Metrics[metricName]
+    variantMetric := variants[1].Metrics[metricName]
+    
+    if baselineMetric.StdDev == 0 || variantMetric.StdDev == 0 {
+        return 0.0
+    }
+    
+    meanDiff := math.Abs(variantMetric.Mean - baselineMetric.Mean)
+    pooledStdErr := math.Sqrt(
+        (math.Pow(baselineMetric.StdDev, 2)/float64(baselineMetric.Count)) +
+        (math.Pow(variantMetric.StdDev, 2)/float64(variantMetric.Count)),
+    )
+    
+    if pooledStdErr == 0 {
+        return 0.0
+    }
+    
+    tStat := meanDiff / pooledStdErr
+    
+    // Convert t-statistic to confidence (simplified)
+    if tStat > 2.0 {
+        return 0.95
+    } else if tStat > 1.65 {
+        return 0.90
+    } else if tStat > 1.28 {
+        return 0.80
+    }
+    
+    return 0.50
+}
+
+func (atf *ABTestFramework) calculatePower(test *ABTest, metricName string) float64 {
+    // Simplified power calculation
+    if test.Results.TotalUsers < 1000 {
+        return 0.50
+    } else if test.Results.TotalUsers < 5000 {
+        return 0.70
+    } else if test.Results.TotalUsers < 10000 {
+        return 0.80
+    }
+    return 0.90
+}
+
+func (atf *ABTestFramework) generateRecommendations(test *ABTest) []string {
+    recommendations := make([]string, 0)
+    
+    if test.Results.ConfidenceLevel < 0.90 {
+        recommendations = append(recommendations, 
+            "Increase sample size to achieve statistical significance")
+    }
+    
+    if test.Results.StatisticalPower < 0.80 {
+        recommendations = append(recommendations, 
+            "Test may be underpowered - consider longer runtime")
+    }
+    
+    if test.Results.TotalUsers < 1000 {
+        recommendations = append(recommendations, 
+            "Sample size is too small for reliable conclusions")
+    }
+    
+    if test.Results.WinningVariant != "" {
+        recommendations = append(recommendations, 
+            fmt.Sprintf("Consider implementing variant '%s' based on test results", 
+                test.Results.WinningVariant))
+    }
+    
+    return recommendations
+}
+
+func (atf *ABTestFramework) StopTest(testID string) error {
+    test, exists := atf.tests[testID]
+    if !exists {
+        return fmt.Errorf("test not found: %s", testID)
+    }
+    
+    if test.Status != "running" {
+        return fmt.Errorf("test is not running")
+    }
+    
+    test.Status = "completed"
+    now := time.Now()
+    test.EndTime = &now
+    
+    // Perform final analysis
+    _, err := atf.AnalyzeTest(testID)
+    if err != nil {
+        fmt.Printf("Warning: final analysis failed: %v\n", err)
+    }
+    
+    fmt.Printf("Stopped A/B test: %s\n", test.Name)
+    return nil
+}
+
+func main() {
+    fmt.Println("=== Configuration A/B Testing Framework Example ===")
+    
+    framework := NewABTestFramework()
+    
+    // Create an A/B test for cache timeout configuration
+    test := &ABTest{
+        ID:          "cache_timeout_test",
+        Name:        "Cache Timeout Optimization",
+        Description: "Test different cache timeout values to optimize performance",
+        ConfigKey:   "cache.timeout",
+        Variants: map[string]ABVariant{
+            "control": {
+                Name:        "Control (30s)",
+                Value:       30,
+                Description: "Current 30-second timeout",
+                Weight:      0.40,
+            },
+            "variant_a": {
+                Name:        "Variant A (60s)",
+                Value:       60,
+                Description: "Increased 60-second timeout",
+                Weight:      0.30,
+            },
+            "variant_b": {
+                Name:        "Variant B (15s)",
+                Value:       15,
+                Description: "Decreased 15-second timeout",
+                Weight:      0.30,
+            },
+        },
+        Traffic: TrafficAllocation{
+            TotalPercentage: 0.20, // 20% of users in test
+            VariantSplit: map[string]float64{
+                "control":   0.40,
+                "variant_a": 0.30,
+                "variant_b": 0.30,
+            },
+        },
+        Metrics: []string{"response_time", "cache_hit_ratio", "error_rate"},
+    }
+    
+    // Create and start the test
+    if err := framework.CreateTest(test); err != nil {
+        fmt.Printf("Error creating test: %v\n", err)
+        return
+    }
+    
+    if err := framework.StartTest(test.ID); err != nil {
+        fmt.Printf("Error starting test: %v\n", err)
+        return
+    }
+    
+    fmt.Println("\n=== Simulating User Traffic ===")
+    
+    // Simulate user traffic and metrics collection
+    for i := 0; i < 10000; i++ {
+        userID := fmt.Sprintf("user_%d", i)
+        
+        variant, configValue, err := framework.GetVariantForUser(test.ID, userID)
+        if err != nil {
+            continue
+        }
+        
+        if variant == "control" {
+            continue // User not in test
+        }
+        
+        // Simulate metrics based on variant
+        var responseTime, cacheHitRatio, errorRate float64
+        
+        switch variant {
+        case "control":
+            responseTime = 100 + rand.Float64()*50     // 100-150ms
+            cacheHitRatio = 0.70 + rand.Float64()*0.20 // 70-90%
+            errorRate = 0.01 + rand.Float64()*0.02     // 1-3%
+        case "variant_a":
+            responseTime = 90 + rand.Float64()*40      // 90-130ms (better)
+            cacheHitRatio = 0.75 + rand.Float64()*0.20 // 75-95% (better)
+            errorRate = 0.008 + rand.Float64()*0.015   // 0.8-2.3% (better)
+        case "variant_b":
+            responseTime = 110 + rand.Float64()*60     // 110-170ms (worse)
+            cacheHitRatio = 0.60 + rand.Float64()*0.25 // 60-85% (worse)
+            errorRate = 0.015 + rand.Float64()*0.025   // 1.5-4% (worse)
+        }
+        
+        // Record metrics
+        framework.RecordMetric(test.ID, userID, variant, "response_time", responseTime)
+        framework.RecordMetric(test.ID, userID, variant, "cache_hit_ratio", cacheHitRatio)
+        framework.RecordMetric(test.ID, userID, variant, "error_rate", errorRate)
+        
+        // Show progress periodically
+        if i%2000 == 0 {
+            fmt.Printf("Processed %d users, config value for %s: %v\n", i, variant, configValue)
+        }
+    }
+    
+    // Analyze test results
+    fmt.Println("\n=== Analyzing Test Results ===")
+    
+    results, err := framework.AnalyzeTest(test.ID)
+    if err != nil {
+        fmt.Printf("Error analyzing test: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Total Users: %d\n", results.TotalUsers)
+    fmt.Printf("Winning Variant: %s\n", results.WinningVariant)
+    fmt.Printf("Confidence Level: %.2f\n", results.ConfidenceLevel)
+    fmt.Printf("Statistical Power: %.2f\n", results.StatisticalPower)
+    
+    fmt.Println("\n=== Variant Performance ===")
+    
+    variants := make([]string, 0)
+    for variant := range results.VariantResults {
+        variants = append(variants, variant)
+    }
+    sort.Strings(variants)
+    
+    for _, variant := range variants {
+        variantResults := results.VariantResults[variant]
+        fmt.Printf("\n%s:\n", variant)
+        fmt.Printf("  Users: %d\n", variantResults.UserCount)
+        
+        for metricName, metric := range variantResults.Metrics {
+            fmt.Printf("  %s: %.2f ± %.2f (min: %.2f, max: %.2f, n=%d)\n",
+                metricName, metric.Mean, metric.StdDev, 
+                metric.Min, metric.Max, metric.Count)
+        }
+    }
+    
+    fmt.Println("\n=== Recommendations ===")
+    for i, recommendation := range results.Recommendations {
+        fmt.Printf("%d. %s\n", i+1, recommendation)
+    }
+    
+    // Stop the test
+    framework.StopTest(test.ID)
+    
+    // Final analysis summary
+    fmt.Println("\n=== Test Summary ===")
+    fmt.Printf("Test Duration: %v\n", test.EndTime.Sub(test.StartTime))
+    fmt.Printf("Status: %s\n", test.Status)
+    
+    if results.ConfidenceLevel >= 0.90 {
+        fmt.Printf("✓ Test achieved statistical significance\n")
+        fmt.Printf("Recommended action: Implement %s variant\n", results.WinningVariant)
+    } else {
+        fmt.Printf("⚠ Test did not achieve statistical significance\n")
+        fmt.Printf("Recommended action: Continue testing or increase sample size\n")
+    }
+    
+    fmt.Println("\n=== A/B Testing Framework Demo Complete ===")
+}
+```
+
+This example demonstrates a comprehensive A/B testing framework for  
+configuration experiments with statistical analysis, confidence calculations,  
+and data-driven recommendations for configuration optimization.  
