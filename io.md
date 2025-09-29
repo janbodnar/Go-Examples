@@ -1215,4 +1215,1987 @@ func main() {
     fmt.Printf("Backup verification: files match = %t\n", string(content1) == string(content2))
 }
 ```
+
+## Pipe operations
+
+Pipes create synchronized communication between a reader and writer,  
+useful for streaming data between goroutines.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "time"
+)
+
+func main() {
+    // Create a pipe
+    reader, writer := io.Pipe()
+    
+    // Start a goroutine to write data
+    go func() {
+        defer writer.Close()
+        
+        for i := 1; i <= 5; i++ {
+            data := fmt.Sprintf("Message %d: hello there from pipe\n", i)
+            n, err := writer.Write([]byte(data))
+            if err != nil {
+                fmt.Printf("Error writing to pipe: %v\n", err)
+                return
+            }
+            fmt.Printf("Wrote %d bytes\n", n)
+            time.Sleep(100 * time.Millisecond)
+        }
+    }()
+    
+    // Read from pipe
+    buffer := make([]byte, 64)
+    for {
+        n, err := reader.Read(buffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Printf("Error reading from pipe: %v\n", err)
+            break
+        }
+        
+        fmt.Printf("Read: %s", string(buffer[:n]))
+    }
+    
+    // Example with error handling
+    reader2, writer2 := io.Pipe()
+    
+    go func() {
+        defer writer2.Close()
+        
+        // Simulate writing and then an error
+        writer2.Write([]byte("Data before error\n"))
+        writer2.CloseWithError(fmt.Errorf("simulated write error"))
+    }()
+    
+    // Read until error
+    data, err := io.ReadAll(reader2)
+    if err != nil {
+        fmt.Printf("Pipe error: %v\n", err)
+    }
+    fmt.Printf("Data before error: %s", string(data))
+    
+    // Pipe for data transformation
+    transformReader, transformWriter := io.Pipe()
+    
+    go func() {
+        defer transformWriter.Close()
+        
+        inputData := []string{
+            "hello there",
+            "from pipe transformation",
+            "with multiple messages",
+        }
+        
+        for _, msg := range inputData {
+            transformWriter.Write([]byte(msg + "\n"))
+            time.Sleep(50 * time.Millisecond)
+        }
+    }()
+    
+    // Read and transform data
+    fmt.Println("\nTransformed data:")
+    buffer = make([]byte, 32)
+    messageNum := 1
+    
+    for {
+        n, err := transformReader.Read(buffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Printf("Transform error: %v\n", err)
+            break
+        }
+        
+        fmt.Printf("Message %d: %s", messageNum, string(buffer[:n]))
+        messageNum++
+    }
+}
+```
+
+## Limited reader
+
+Limited reader restricts the amount of data that can be read from  
+an underlying reader, useful for processing data in chunks.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+)
+
+func main() {
+    content := "hello there from limited reader with substantial content that will be truncated at specified limit"
+    source := strings.NewReader(content)
+    
+    // Limit to first 20 bytes
+    limited := io.LimitReader(source, 20)
+    
+    limitedData, err := io.ReadAll(limited)
+    if err != nil {
+        fmt.Printf("Error reading limited: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Limited read (20 bytes): %q\n", string(limitedData))
+    fmt.Printf("Original length: %d, limited length: %d\n", len(content), len(limitedData))
+    
+    // Read remaining data from original source
+    remaining, err := io.ReadAll(source)
+    if err != nil {
+        fmt.Printf("Error reading remaining: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Remaining data: %q\n", string(remaining))
+    
+    // Multiple limited readers from same source
+    source.Reset(content)
+    
+    chunk1 := io.LimitReader(source, 10)
+    chunk2 := io.LimitReader(source, 15) 
+    chunk3 := io.LimitReader(source, 20)
+    
+    data1, _ := io.ReadAll(chunk1)
+    data2, _ := io.ReadAll(chunk2)
+    data3, _ := io.ReadAll(chunk3)
+    
+    fmt.Printf("Chunk 1 (10 bytes): %q\n", string(data1))
+    fmt.Printf("Chunk 2 (15 bytes): %q\n", string(data2))
+    fmt.Printf("Chunk 3 (20 bytes): %q\n", string(data3))
+    
+    // Processing file in chunks
+    largeContent := strings.Repeat("Line of content for chunk processing\n", 10)
+    largeSource := strings.NewReader(largeContent)
+    
+    chunkSize := int64(50)
+    chunkNum := 1
+    
+    fmt.Println("\nProcessing in chunks:")
+    for {
+        chunk := io.LimitReader(largeSource, chunkSize)
+        data, err := io.ReadAll(chunk)
+        if err != nil {
+            fmt.Printf("Error reading chunk: %v\n", err)
+            break
+        }
+        
+        if len(data) == 0 {
+            break
+        }
+        
+        fmt.Printf("Chunk %d (%d bytes): %q...\n", chunkNum, len(data), string(data[:min(20, len(data))]))
+        chunkNum++
+        
+        if chunkNum > 5 { // Limit output
+            break
+        }
+    }
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+```
+
+## Section reader
+
+Section reader reads from a specific section of a ReaderAt,  
+providing offset and length control for partial reading.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+)
+
+func main() {
+    content := "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    source := strings.NewReader(content)
+    
+    // Create section reader for bytes 10-20
+    section := io.NewSectionReader(source, 10, 10)
+    
+    sectionData, err := io.ReadAll(section)
+    if err != nil {
+        fmt.Printf("Error reading section: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Original: %s\n", content)
+    fmt.Printf("Section (offset 10, length 10): %s\n", string(sectionData))
+    
+    // Multiple sections from same source
+    source.Reset(content)
+    
+    header := io.NewSectionReader(source, 0, 10)
+    middle := io.NewSectionReader(source, 25, 15)
+    tail := io.NewSectionReader(source, 50, 12)
+    
+    headerData, _ := io.ReadAll(header)
+    middleData, _ := io.ReadAll(middle)
+    tailData, _ := io.ReadAll(tail)
+    
+    fmt.Printf("Header (0-10): %s\n", string(headerData))
+    fmt.Printf("Middle (25-40): %s\n", string(middleData))
+    fmt.Printf("Tail (50-62): %s\n", string(tailData))
+    
+    // Reading with seeking
+    source.Reset(content)
+    seeker := io.NewSectionReader(source, 20, 20)
+    
+    // Read first part
+    buffer := make([]byte, 5)
+    n, err := seeker.Read(buffer)
+    if err != nil {
+        fmt.Printf("Error reading first part: %v\n", err)
+        return
+    }
+    fmt.Printf("First read: %s\n", string(buffer[:n]))
+    
+    // Seek within section
+    pos, err := seeker.Seek(10, io.SeekStart)
+    if err != nil {
+        fmt.Printf("Error seeking: %v\n", err)
+        return
+    }
+    fmt.Printf("Seeked to position: %d\n", pos)
+    
+    // Read after seek
+    n, err = seeker.Read(buffer)
+    if err != nil && err != io.EOF {
+        fmt.Printf("Error reading after seek: %v\n", err)
+        return
+    }
+    fmt.Printf("After seek: %s\n", string(buffer[:n]))
+    
+    // Get section size
+    fmt.Printf("Section size: %d bytes\n", seeker.Size())
+    
+    // Demonstrate bounds checking
+    source.Reset(content)
+    boundedSection := io.NewSectionReader(source, 55, 20) // Extends beyond content
+    
+    boundedData, err := io.ReadAll(boundedSection)
+    if err != nil {
+        fmt.Printf("Error reading bounded section: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Bounded section (extends beyond): %q\n", string(boundedData))
+}
+```
+
+## Tee reader
+
+Tee reader allows reading from a source while simultaneously writing  
+the data to a destination, useful for logging or monitoring data flow.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+)
+
+func main() {
+    content := "hello there from tee reader\nwith data flow monitoring\nand simultaneous writing"
+    source := strings.NewReader(content)
+    
+    // Create a destination for the tee
+    var logBuffer strings.Builder
+    
+    // Create tee reader
+    teeReader := io.TeeReader(source, &logBuffer)
+    
+    // Read from tee reader
+    buffer := make([]byte, 16)
+    var readData strings.Builder
+    
+    for {
+        n, err := teeReader.Read(buffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Printf("Error reading: %v\n", err)
+            break
+        }
+        
+        readData.Write(buffer[:n])
+        fmt.Printf("Read chunk: %q\n", string(buffer[:n]))
+    }
+    
+    fmt.Printf("\nOriginal data: %s\n", content)
+    fmt.Printf("Read data: %s\n", readData.String())
+    fmt.Printf("Logged data: %s\n", logBuffer.String())
+    fmt.Printf("Data matches: %t\n", readData.String() == logBuffer.String())
+    
+    // Practical example: monitoring file read
+    fileContent := "Important file content\nthat needs to be monitored\nduring processing"
+    fileSource := strings.NewReader(fileContent)
+    
+    var monitorLog strings.Builder
+    monitoredReader := io.TeeReader(fileSource, &monitorLog)
+    
+    // Process the file content
+    processedData, err := io.ReadAll(monitoredReader)
+    if err != nil {
+        fmt.Printf("Error processing: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nProcessed %d bytes\n", len(processedData))
+    fmt.Printf("Monitor log captured %d bytes\n", logBuffer.Len())
+    
+    // Multiple tee readers
+    source2 := strings.NewReader("Data for multiple monitoring")
+    var log1, log2 strings.Builder
+    
+    tee1 := io.TeeReader(source2, &log1)
+    tee2 := io.TeeReader(tee1, &log2)
+    
+    finalData, err := io.ReadAll(tee2)
+    if err != nil {
+        fmt.Printf("Error with multiple tees: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nMultiple tee example:\n")
+    fmt.Printf("Final data: %s\n", string(finalData))
+    fmt.Printf("Log1: %s\n", log1.String())
+    fmt.Printf("Log2: %s\n", log2.String())
+    
+    // Tee with file-like operations
+    documentContent := "Document header\nDocument body with important content\nDocument footer"
+    docSource := strings.NewReader(documentContent)
+    
+    var auditLog strings.Builder
+    auditReader := io.TeeReader(docSource, &auditLog)
+    
+    // Simulate document processing
+    lines := strings.Split(string(func() []byte {
+        data, _ := io.ReadAll(auditReader)
+        return data
+    }()), "\n")
+    
+    fmt.Printf("\nDocument processing:\n")
+    for i, line := range lines {
+        fmt.Printf("Line %d: %s\n", i+1, line)
+    }
+    
+    fmt.Printf("Audit trail:\n%s", auditLog.String())
+}
+```
+
+## Write string function
+
+WriteString provides a convenient way to write strings to writers,  
+with automatic conversion and error handling.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "os"
+    "strings"
+)
+
+func main() {
+    var buffer strings.Builder
+    
+    // Write string to builder
+    n, err := io.WriteString(&buffer, "hello there from WriteString")
+    if err != nil {
+        fmt.Printf("Error writing string: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Wrote %d bytes to buffer\n", n)
+    fmt.Printf("Buffer content: %s\n", buffer.String())
+    
+    // Write multiple strings
+    messages := []string{
+        "\nFirst message",
+        "\nSecond message",
+        "\nThird message with more content",
+    }
+    
+    for i, msg := range messages {
+        n, err := io.WriteString(&buffer, msg)
+        if err != nil {
+            fmt.Printf("Error writing message %d: %v\n", i+1, err)
+            continue
+        }
+        fmt.Printf("Message %d: wrote %d bytes\n", i+1, n)
+    }
+    
+    fmt.Printf("Final buffer:\n%s\n", buffer.String())
+    
+    // Write to file
+    filename := "writestring_test.txt"
+    file, err := os.Create(filename)
+    if err != nil {
+        fmt.Printf("Error creating file: %v\n", err)
+        return
+    }
+    defer file.Close()
+    defer os.Remove(filename)
+    
+    content := "File content written with WriteString\nSecond line of file content\n"
+    n, err = io.WriteString(file, content)
+    if err != nil {
+        fmt.Printf("Error writing to file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Wrote %d bytes to file\n", n)
+    
+    // Verify file content
+    readContent, err := os.ReadFile(filename)
+    if err != nil {
+        fmt.Printf("Error reading file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("File contains: %s", string(readContent))
+    fmt.Printf("Content matches: %t\n", string(readContent) == content)
+    
+    // Write to standard output
+    fmt.Println("\nWriting to stdout:")
+    io.WriteString(os.Stdout, "Direct output to stdout\n")
+    io.WriteString(os.Stderr, "Direct output to stderr\n")
+    
+    // Chained writing
+    var chainBuffer strings.Builder
+    
+    texts := []string{
+        "Chain link 1",
+        " -> Chain link 2",
+        " -> Chain link 3",
+        " -> End of chain\n",
+    }
+    
+    totalBytes := 0
+    for _, text := range texts {
+        n, err := io.WriteString(&chainBuffer, text)
+        if err != nil {
+            fmt.Printf("Error in chain: %v\n", err)
+            break
+        }
+        totalBytes += n
+    }
+    
+    fmt.Printf("Chained writing: %d total bytes\n", totalBytes)
+    fmt.Printf("Chain result: %s", chainBuffer.String())
+}
+```
+
+## Read at least function
+
+ReadAtLeast ensures that a minimum number of bytes are read from  
+a reader, useful when you need a specific amount of data.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+)
+
+func main() {
+    content := "hello there from ReadAtLeast with sufficient content for testing minimum read requirements"
+    source := strings.NewReader(content)
+    
+    // Read at least 10 bytes
+    buffer := make([]byte, 20)
+    n, err := io.ReadAtLeast(source, buffer, 10)
+    if err != nil {
+        fmt.Printf("Error reading at least 10 bytes: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Read %d bytes (requested at least 10): %q\n", n, string(buffer[:n]))
+    
+    // Try to read more than available
+    shortContent := "short"
+    shortSource := strings.NewReader(shortContent)
+    
+    buffer2 := make([]byte, 20)
+    n, err = io.ReadAtLeast(shortSource, buffer2, 10)
+    if err != nil {
+        fmt.Printf("Expected error reading at least 10 from short content: %v\n", err)
+        fmt.Printf("Actually read: %d bytes: %q\n", n, string(buffer2[:n]))
+    }
+    
+    // Exact read requirement
+    exactContent := "exactly20characters!"
+    exactSource := strings.NewReader(exactContent)
+    
+    exactBuffer := make([]byte, 25)
+    n, err = io.ReadAtLeast(exactSource, exactBuffer, 20)
+    if err != nil {
+        fmt.Printf("Error reading exactly 20: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Read exactly %d bytes: %q\n", n, string(exactBuffer[:n]))
+    
+    // Reading with larger buffer than minimum
+    largeContent := "hello there with substantial content for testing larger buffer scenarios"
+    largeSource := strings.NewReader(largeContent)
+    
+    largeBuffer := make([]byte, 50)
+    n, err = io.ReadAtLeast(largeSource, largeBuffer, 15)
+    if err != nil {
+        fmt.Printf("Error reading with large buffer: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Large buffer read %d bytes (min 15): %q\n", n, string(largeBuffer[:n]))
+    
+    // Multiple ReadAtLeast calls
+    multiContent := "First part of content. Second part of content. Third part with more data."
+    multiSource := strings.NewReader(multiContent)
+    
+    for i := 1; i <= 3; i++ {
+        chunkBuffer := make([]byte, 25)
+        n, err := io.ReadAtLeast(multiSource, chunkBuffer, 8)
+        if err != nil {
+            if err == io.EOF {
+                fmt.Printf("Reached end of content at chunk %d\n", i)
+                break
+            }
+            fmt.Printf("Error reading chunk %d: %v\n", i, err)
+            break
+        }
+        
+        fmt.Printf("Chunk %d: read %d bytes: %q\n", i, n, string(chunkBuffer[:n]))
+    }
+    
+    // Practical example: reading fixed-size records
+    recordData := "REC001DATA01REC002DATA02REC003DATA03"
+    recordSource := strings.NewReader(recordData)
+    
+    recordSize := 12
+    recordNum := 1
+    
+    fmt.Println("\nReading fixed-size records:")
+    for {
+        recordBuffer := make([]byte, recordSize)
+        n, err := io.ReadAtLeast(recordSource, recordBuffer, recordSize)
+        if err != nil {
+            if err == io.EOF || err == io.ErrUnexpectedEOF {
+                fmt.Printf("Finished reading records\n")
+                break
+            }
+            fmt.Printf("Error reading record %d: %v\n", recordNum, err)
+            break
+        }
+        
+        fmt.Printf("Record %d: %q\n", recordNum, string(recordBuffer[:n]))
+        recordNum++
+    }
+}
+```
+
+## Read full function
+
+ReadFull reads exactly the number of bytes needed to fill the buffer,  
+ensuring complete data retrieval or returning an error.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+)
+
+func main() {
+    content := "hello there from ReadFull with exactly enough content for complete buffer filling operations"
+    source := strings.NewReader(content)
+    
+    // Read exactly 15 bytes
+    buffer := make([]byte, 15)
+    n, err := io.ReadFull(source, buffer)
+    if err != nil {
+        fmt.Printf("Error reading full buffer: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("ReadFull: read %d bytes (buffer size %d): %q\n", n, len(buffer), string(buffer))
+    
+    // Try to read more than available
+    shortContent := "short data"
+    shortSource := strings.NewReader(shortContent)
+    
+    largeBuffer := make([]byte, 20)
+    n, err = io.ReadFull(shortSource, largeBuffer)
+    if err != nil {
+        fmt.Printf("Expected error with insufficient data: %v\n", err)
+        fmt.Printf("Partial read: %d bytes: %q\n", n, string(largeBuffer[:n]))
+    }
+    
+    // Read multiple full buffers
+    longContent := "This is a longer content string with multiple segments for testing ReadFull functionality"
+    longSource := strings.NewReader(longContent)
+    
+    bufferSize := 20
+    segmentNum := 1
+    
+    fmt.Println("\nReading multiple full buffers:")
+    for {
+        segment := make([]byte, bufferSize)
+        n, err := io.ReadFull(longSource, segment)
+        if err != nil {
+            if err == io.EOF {
+                fmt.Printf("Reached end of content\n")
+                break
+            }
+            if err == io.ErrUnexpectedEOF {
+                fmt.Printf("Partial final segment: %d bytes: %q\n", n, string(segment[:n]))
+                break
+            }
+            fmt.Printf("Error reading segment %d: %v\n", segmentNum, err)
+            break
+        }
+        
+        fmt.Printf("Segment %d: %q\n", segmentNum, string(segment))
+        segmentNum++
+        
+        if segmentNum > 4 { // Limit output
+            break
+        }
+    }
+    
+    // Binary data reading
+    binaryData := []byte{0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x00, 0x57, 0x6F, 0x72, 0x6C, 0x64, 0xFF, 0xFE, 0xFD}
+    binarySource := strings.NewReader(string(binaryData))
+    
+    // Read header (first 5 bytes)
+    header := make([]byte, 5)
+    n, err = io.ReadFull(binarySource, header)
+    if err != nil {
+        fmt.Printf("Error reading binary header: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nBinary header: %v (as string: %q)\n", header, string(header))
+    
+    // Read footer (last 3 bytes)
+    footer := make([]byte, 3)
+    binarySource.Seek(-3, io.SeekEnd)
+    n, err = io.ReadFull(binarySource, footer)
+    if err != nil {
+        fmt.Printf("Error reading binary footer: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Binary footer: %v\n", footer)
+    
+    // Structured data reading
+    structuredData := "HDR001DATA123456789END"
+    structSource := strings.NewReader(structuredData)
+    
+    // Read components with fixed sizes
+    headerPart := make([]byte, 6)
+    dataPart := make([]byte, 13)
+    trailerPart := make([]byte, 3)
+    
+    // Read header
+    _, err = io.ReadFull(structSource, headerPart)
+    if err != nil {
+        fmt.Printf("Error reading header part: %v\n", err)
+        return
+    }
+    
+    // Read data
+    _, err = io.ReadFull(structSource, dataPart)
+    if err != nil {
+        fmt.Printf("Error reading data part: %v\n", err)
+        return
+    }
+    
+    // Read trailer
+    _, err = io.ReadFull(structSource, trailerPart)
+    if err != nil {
+        fmt.Printf("Error reading trailer part: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nStructured data:\n")
+    fmt.Printf("Header: %q\n", string(headerPart))
+    fmt.Printf("Data: %q\n", string(dataPart))
+    fmt.Printf("Trailer: %q\n", string(trailerPart))
+}
+```
+
+## File seeking operations
+
+File seeking allows random access to file contents by moving the  
+read/write position to specific locations within the file.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "os"
+)
+
+func main() {
+    content := "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    filename := "seek_test.txt"
+    
+    // Create test file
+    err := os.WriteFile(filename, []byte(content), 0644)
+    if err != nil {
+        fmt.Printf("Error creating test file: %v\n", err)
+        return
+    }
+    defer os.Remove(filename)
+    
+    // Open file for reading
+    file, err := os.Open(filename)
+    if err != nil {
+        fmt.Printf("Error opening file: %v\n", err)
+        return
+    }
+    defer file.Close()
+    
+    // Read from beginning
+    buffer := make([]byte, 5)
+    n, err := file.Read(buffer)
+    if err != nil {
+        fmt.Printf("Error reading from start: %v\n", err)
+        return
+    }
+    fmt.Printf("From start: %s\n", string(buffer[:n]))
+    
+    // Seek to position 10 from start
+    pos, err := file.Seek(10, io.SeekStart)
+    if err != nil {
+        fmt.Printf("Error seeking to 10: %v\n", err)
+        return
+    }
+    fmt.Printf("Seeked to position: %d\n", pos)
+    
+    // Read from new position
+    n, err = file.Read(buffer)
+    if err != nil {
+        fmt.Printf("Error reading after seek: %v\n", err)
+        return
+    }
+    fmt.Printf("After seek to 10: %s\n", string(buffer[:n]))
+    
+    // Seek relative to current position
+    pos, err = file.Seek(5, io.SeekCurrent)
+    if err != nil {
+        fmt.Printf("Error seeking relative: %v\n", err)
+        return
+    }
+    fmt.Printf("Relative seek position: %d\n", pos)
+    
+    n, err = file.Read(buffer)
+    if err != nil {
+        fmt.Printf("Error reading after relative seek: %v\n", err)
+        return
+    }
+    fmt.Printf("After relative seek: %s\n", string(buffer[:n]))
+    
+    // Seek from end
+    pos, err = file.Seek(-10, io.SeekEnd)
+    if err != nil {
+        fmt.Printf("Error seeking from end: %v\n", err)
+        return
+    }
+    fmt.Printf("Seek from end position: %d\n", pos)
+    
+    n, err = file.Read(buffer)
+    if err != nil && err != io.EOF {
+        fmt.Printf("Error reading from end: %v\n", err)
+        return
+    }
+    fmt.Printf("From end (-10): %s\n", string(buffer[:n]))
+    
+    // Get current position
+    currentPos, err := file.Seek(0, io.SeekCurrent)
+    if err != nil {
+        fmt.Printf("Error getting current position: %v\n", err)
+        return
+    }
+    fmt.Printf("Current position: %d\n", currentPos)
+    
+    // Get file size by seeking to end
+    fileSize, err := file.Seek(0, io.SeekEnd)
+    if err != nil {
+        fmt.Printf("Error getting file size: %v\n", err)
+        return
+    }
+    fmt.Printf("File size: %d bytes\n", fileSize)
+    
+    // Random access pattern
+    positions := []int64{0, 15, 30, 45, 60}
+    file.Seek(0, io.SeekStart) // Reset to beginning
+    
+    fmt.Println("\nRandom access pattern:")
+    for i, seekPos := range positions {
+        pos, err := file.Seek(seekPos, io.SeekStart)
+        if err != nil {
+            fmt.Printf("Error seeking to %d: %v\n", seekPos, err)
+            continue
+        }
+        
+        readBuffer := make([]byte, 3)
+        n, err := file.Read(readBuffer)
+        if err != nil && err != io.EOF {
+            fmt.Printf("Error reading at position %d: %v\n", pos, err)
+            continue
+        }
+        
+        fmt.Printf("Position %d: %s\n", pos, string(readBuffer[:n]))
+    }
+}
+```
+
+## Temporary files and directories
+
+Temporary files and directories provide secure, automatically cleaned  
+storage for intermediate processing or testing purposes.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+)
+
+func main() {
+    // Create temporary file
+    tempFile, err := os.CreateTemp("", "example_*.txt")
+    if err != nil {
+        fmt.Printf("Error creating temp file: %v\n", err)
+        return
+    }
+    defer os.Remove(tempFile.Name()) // Cleanup
+    defer tempFile.Close()
+    
+    fmt.Printf("Temporary file: %s\n", tempFile.Name())
+    
+    // Write to temporary file
+    content := "hello there from temporary file\nwith test content\nfor processing"
+    n, err := tempFile.WriteString(content)
+    if err != nil {
+        fmt.Printf("Error writing to temp file: %v\n", err)
+        return
+    }
+    fmt.Printf("Wrote %d bytes to temp file\n", n)
+    
+    // Read back from temporary file
+    tempFile.Seek(0, io.SeekStart) // Reset to beginning
+    
+    readContent, err := io.ReadAll(tempFile)
+    if err != nil {
+        fmt.Printf("Error reading temp file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Read back: %s\n", string(readContent))
+    
+    // Create temporary directory
+    tempDir, err := os.MkdirTemp("", "example_dir_*")
+    if err != nil {
+        fmt.Printf("Error creating temp dir: %v\n", err)
+        return
+    }
+    defer os.RemoveAll(tempDir) // Cleanup directory and contents
+    
+    fmt.Printf("Temporary directory: %s\n", tempDir)
+    
+    // Create files in temporary directory
+    for i := 1; i <= 3; i++ {
+        filename := filepath.Join(tempDir, fmt.Sprintf("file%d.txt", i))
+        fileContent := fmt.Sprintf("Content of file %d\nCreated in temp directory", i)
+        
+        err := os.WriteFile(filename, []byte(fileContent), 0644)
+        if err != nil {
+            fmt.Printf("Error creating file %d: %v\n", i, err)
+            continue
+        }
+        
+        fmt.Printf("Created: %s\n", filename)
+    }
+    
+    // List contents of temporary directory
+    entries, err := os.ReadDir(tempDir)
+    if err != nil {
+        fmt.Printf("Error reading temp dir: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Temp directory contents:\n")
+    for _, entry := range entries {
+        info, err := entry.Info()
+        if err != nil {
+            fmt.Printf("Error getting info for %s: %v\n", entry.Name(), err)
+            continue
+        }
+        
+        fmt.Printf("  %s (%d bytes)\n", entry.Name(), info.Size())
+    }
+    
+    // Create temporary file with specific pattern
+    patternFile, err := os.CreateTemp(tempDir, "pattern_*_test.log")
+    if err != nil {
+        fmt.Printf("Error creating pattern file: %v\n", err)
+        return
+    }
+    defer patternFile.Close()
+    
+    fmt.Printf("Pattern file: %s\n", patternFile.Name())
+    
+    // Write structured data to pattern file
+    logEntries := []string{
+        "2024-01-01 10:00:00 INFO Application started",
+        "2024-01-01 10:01:00 DEBUG Processing data",
+        "2024-01-01 10:02:00 INFO Operation completed",
+    }
+    
+    for _, entry := range logEntries {
+        fmt.Fprintf(patternFile, "%s\n", entry)
+    }
+    
+    // Get file info
+    fileInfo, err := patternFile.Stat()
+    if err != nil {
+        fmt.Printf("Error getting file info: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Pattern file size: %d bytes\n", fileInfo.Size())
+    fmt.Printf("Pattern file mode: %v\n", fileInfo.Mode())
+    
+    // Demonstrate cleanup
+    fmt.Println("Cleanup will be handled by defer statements")
+}
+```
+
+## Working with paths
+
+Path operations help manipulate file and directory paths in a  
+cross-platform manner using the filepath package.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "path/filepath"
+    "strings"
+)
+
+func main() {
+    // Basic path operations
+    path := "/home/user/documents/file.txt"
+    
+    fmt.Printf("Original path: %s\n", path)
+    fmt.Printf("Directory: %s\n", filepath.Dir(path))
+    fmt.Printf("Base name: %s\n", filepath.Base(path))
+    fmt.Printf("Extension: %s\n", filepath.Ext(path))
+    
+    // Clean path
+    messy := "/home/user/../user/./documents//file.txt"
+    clean := filepath.Clean(messy)
+    fmt.Printf("Messy path: %s\n", messy)
+    fmt.Printf("Clean path: %s\n", clean)
+    
+    // Join paths
+    parts := []string{"home", "user", "documents", "projects", "go"}
+    joined := filepath.Join(parts...)
+    fmt.Printf("Joined path: %s\n", joined)
+    
+    // Relative paths
+    base := "/home/user/documents"
+    target := "/home/user/documents/projects/go/main.go"
+    
+    rel, err := filepath.Rel(base, target)
+    if err != nil {
+        fmt.Printf("Error calculating relative path: %v\n", err)
+    } else {
+        fmt.Printf("Relative path from %s to %s: %s\n", base, target, rel)
+    }
+    
+    // Absolute path
+    currentDir, _ := os.Getwd()
+    relativePath := "test.txt"
+    
+    abs, err := filepath.Abs(relativePath)
+    if err != nil {
+        fmt.Printf("Error getting absolute path: %v\n", err)
+    } else {
+        fmt.Printf("Current directory: %s\n", currentDir)
+        fmt.Printf("Relative: %s -> Absolute: %s\n", relativePath, abs)
+    }
+    
+    // Split path
+    dir, file := filepath.Split(path)
+    fmt.Printf("Split %s -> dir: %s, file: %s\n", path, dir, file)
+    
+    // Volume name (Windows specific, empty on Unix)
+    volume := filepath.VolumeName(path)
+    fmt.Printf("Volume name: %q\n", volume)
+    
+    // Check if path is absolute
+    fmt.Printf("Is %s absolute? %t\n", path, filepath.IsAbs(path))
+    fmt.Printf("Is %s absolute? %t\n", "documents/file.txt", filepath.IsAbs("documents/file.txt"))
+    
+    // Pattern matching
+    pattern := "*.txt"
+    testFiles := []string{"file.txt", "document.pdf", "readme.txt", "image.png"}
+    
+    fmt.Printf("\nPattern matching with %s:\n", pattern)
+    for _, file := range testFiles {
+        matched, err := filepath.Match(pattern, file)
+        if err != nil {
+            fmt.Printf("Error matching %s: %v\n", file, err)
+            continue
+        }
+        fmt.Printf("  %s: %t\n", file, matched)
+    }
+    
+    // Walking directory tree (simulate with current directory)
+    fmt.Println("\nWalking current directory (first 5 entries):")
+    count := 0
+    err = filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        
+        if count >= 5 {
+            return filepath.SkipDir
+        }
+        
+        fileType := "file"
+        if info.IsDir() {
+            fileType = "directory"
+        }
+        
+        fmt.Printf("  %s (%s, %d bytes)\n", path, fileType, info.Size())
+        count++
+        return nil
+    })
+    
+    if err != nil {
+        fmt.Printf("Error walking directory: %v\n", err)
+    }
+    
+    // Create and manipulate complex paths
+    basePath := "projects"
+    subDirs := []string{"frontend", "backend", "database"}
+    files := []string{"main.go", "config.json", "README.md"}
+    
+    fmt.Println("\nComplex path construction:")
+    for _, subDir := range subDirs {
+        dirPath := filepath.Join(basePath, subDir)
+        fmt.Printf("Directory: %s\n", dirPath)
+        
+        for _, file := range files {
+            filePath := filepath.Join(dirPath, file)
+            fmt.Printf("  File: %s\n", filePath)
+        }
+    }
+    
+    // Change extension
+    originalFile := "document.pdf"
+    newExt := ".txt"
+    nameWithoutExt := strings.TrimSuffix(originalFile, filepath.Ext(originalFile))
+    newFile := nameWithoutExt + newExt
+    
+    fmt.Printf("\nExtension change: %s -> %s\n", originalFile, newFile)
+}
+```
+
+## File information and stats
+
+File information provides metadata about files and directories  
+including size, permissions, modification time, and type.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "time"
+)
+
+func main() {
+    // Create a test file
+    testFile := "fileinfo_test.txt"
+    content := "hello there from file info test\nwith multiple lines\nfor stat testing"
+    
+    err := os.WriteFile(testFile, []byte(content), 0644)
+    if err != nil {
+        fmt.Printf("Error creating test file: %v\n", err)
+        return
+    }
+    defer os.Remove(testFile)
+    
+    // Get file info
+    info, err := os.Stat(testFile)
+    if err != nil {
+        fmt.Printf("Error getting file info: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("File name: %s\n", info.Name())
+    fmt.Printf("File size: %d bytes\n", info.Size())
+    fmt.Printf("File mode: %v\n", info.Mode())
+    fmt.Printf("Modification time: %v\n", info.ModTime())
+    fmt.Printf("Is directory: %t\n", info.IsDir())
+    
+    // Check specific permissions
+    mode := info.Mode()
+    fmt.Printf("File mode bits: %o\n", mode.Perm())
+    fmt.Printf("Is regular file: %t\n", mode.IsRegular())
+    fmt.Printf("Owner read: %t\n", mode&0400 != 0)
+    fmt.Printf("Owner write: %t\n", mode&0200 != 0)
+    fmt.Printf("Owner execute: %t\n", mode&0100 != 0)
+    
+    // Create a directory and check its info
+    testDir := "test_directory"
+    err = os.Mkdir(testDir, 0755)
+    if err != nil {
+        fmt.Printf("Error creating directory: %v\n", err)
+        return
+    }
+    defer os.Remove(testDir)
+    
+    dirInfo, err := os.Stat(testDir)
+    if err != nil {
+        fmt.Printf("Error getting directory info: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nDirectory name: %s\n", dirInfo.Name())
+    fmt.Printf("Directory size: %d\n", dirInfo.Size())
+    fmt.Printf("Directory mode: %v\n", dirInfo.Mode())
+    fmt.Printf("Is directory: %t\n", dirInfo.IsDir())
+    
+    // File existence check
+    existingFile := testFile
+    nonExistentFile := "non_existent_file.txt"
+    
+    fmt.Printf("\nFile existence checks:\n")
+    
+    if _, err := os.Stat(existingFile); err == nil {
+        fmt.Printf("%s exists\n", existingFile)
+    } else if os.IsNotExist(err) {
+        fmt.Printf("%s does not exist\n", existingFile)
+    } else {
+        fmt.Printf("Error checking %s: %v\n", existingFile, err)
+    }
+    
+    if _, err := os.Stat(nonExistentFile); err == nil {
+        fmt.Printf("%s exists\n", nonExistentFile)
+    } else if os.IsNotExist(err) {
+        fmt.Printf("%s does not exist\n", nonExistentFile)
+    } else {
+        fmt.Printf("Error checking %s: %v\n", nonExistentFile, err)
+    }
+    
+    // Modify file and check time changes
+    time.Sleep(1 * time.Second) // Ensure time difference
+    
+    additionalContent := "\nAdditional content added later"
+    file, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+    if err != nil {
+        fmt.Printf("Error opening file for append: %v\n", err)
+        return
+    }
+    defer file.Close()
+    
+    file.WriteString(additionalContent)
+    
+    // Get updated info
+    updatedInfo, err := os.Stat(testFile)
+    if err != nil {
+        fmt.Printf("Error getting updated file info: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nAfter modification:\n")
+    fmt.Printf("Original size: %d bytes\n", info.Size())
+    fmt.Printf("Updated size: %d bytes\n", updatedInfo.Size())
+    fmt.Printf("Original mod time: %v\n", info.ModTime())
+    fmt.Printf("Updated mod time: %v\n", updatedInfo.ModTime())
+    fmt.Printf("Time difference: %v\n", updatedInfo.ModTime().Sub(info.ModTime()))
+    
+    // Change file permissions
+    err = os.Chmod(testFile, 0600)
+    if err != nil {
+        fmt.Printf("Error changing permissions: %v\n", err)
+        return
+    }
+    
+    permInfo, err := os.Stat(testFile)
+    if err != nil {
+        fmt.Printf("Error getting permission info: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nAfter permission change:\n")
+    fmt.Printf("Original mode: %v\n", info.Mode())
+    fmt.Printf("Updated mode: %v\n", permInfo.Mode())
+    
+    // File size comparison
+    sizes := []string{"bytes", "KB", "MB", "GB"}
+    size := float64(updatedInfo.Size())
+    
+    fmt.Printf("\nFile size representations:\n")
+    for i, unit := range sizes {
+        if i == 0 {
+            fmt.Printf("%.0f %s\n", size, unit)
+        } else {
+            size /= 1024
+            if size >= 1 {
+                fmt.Printf("%.2f %s\n", size, unit)
+            }
+        }
+    }
+}
+```
+
+## Compression with gzip
+
+Gzip compression provides efficient data compression for reducing  
+file sizes and network transfer times.  
+
+```go
+package main
+
+import (
+    "bytes"
+    "compress/gzip"
+    "fmt"
+    "io"
+    "os"
+    "strings"
+)
+
+func main() {
+    originalData := "hello there from gzip compression example\n"
+    originalData += strings.Repeat("This line will be repeated many times for better compression ratio.\n", 10)
+    
+    fmt.Printf("Original data size: %d bytes\n", len(originalData))
+    
+    // Compress data
+    var compressedBuffer bytes.Buffer
+    
+    gzipWriter := gzip.NewWriter(&compressedBuffer)
+    
+    _, err := gzipWriter.Write([]byte(originalData))
+    if err != nil {
+        fmt.Printf("Error writing to gzip: %v\n", err)
+        return
+    }
+    
+    err = gzipWriter.Close()
+    if err != nil {
+        fmt.Printf("Error closing gzip writer: %v\n", err)
+        return
+    }
+    
+    compressedData := compressedBuffer.Bytes()
+    fmt.Printf("Compressed data size: %d bytes\n", len(compressedData))
+    fmt.Printf("Compression ratio: %.2f%%\n", float64(len(compressedData))/float64(len(originalData))*100)
+    
+    // Decompress data
+    compressedReader := bytes.NewReader(compressedData)
+    gzipReader, err := gzip.NewReader(compressedReader)
+    if err != nil {
+        fmt.Printf("Error creating gzip reader: %v\n", err)
+        return
+    }
+    defer gzipReader.Close()
+    
+    decompressedData, err := io.ReadAll(gzipReader)
+    if err != nil {
+        fmt.Printf("Error reading from gzip: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Decompressed data size: %d bytes\n", len(decompressedData))
+    fmt.Printf("Data integrity check: %t\n", string(decompressedData) == originalData)
+    
+    // Compress file
+    inputFile := "compress_input.txt"
+    outputFile := "compressed_output.gz"
+    
+    err = os.WriteFile(inputFile, []byte(originalData), 0644)
+    if err != nil {
+        fmt.Printf("Error creating input file: %v\n", err)
+        return
+    }
+    defer os.Remove(inputFile)
+    defer os.Remove(outputFile)
+    
+    // Read input file
+    input, err := os.Open(inputFile)
+    if err != nil {
+        fmt.Printf("Error opening input file: %v\n", err)
+        return
+    }
+    defer input.Close()
+    
+    // Create compressed output file
+    output, err := os.Create(outputFile)
+    if err != nil {
+        fmt.Printf("Error creating output file: %v\n", err)
+        return
+    }
+    defer output.Close()
+    
+    // Compress file to file
+    gzWriter := gzip.NewWriter(output)
+    
+    _, err = io.Copy(gzWriter, input)
+    if err != nil {
+        fmt.Printf("Error compressing file: %v\n", err)
+        return
+    }
+    
+    err = gzWriter.Close()
+    if err != nil {
+        fmt.Printf("Error closing gzip writer: %v\n", err)
+        return
+    }
+    
+    // Check compressed file size
+    compressedInfo, _ := os.Stat(outputFile)
+    originalInfo, _ := os.Stat(inputFile)
+    
+    fmt.Printf("\nFile compression:\n")
+    fmt.Printf("Original file size: %d bytes\n", originalInfo.Size())
+    fmt.Printf("Compressed file size: %d bytes\n", compressedInfo.Size())
+    fmt.Printf("File compression ratio: %.2f%%\n", float64(compressedInfo.Size())/float64(originalInfo.Size())*100)
+    
+    // Decompress file
+    decompressedFile := "decompressed_output.txt"
+    defer os.Remove(decompressedFile)
+    
+    // Open compressed file
+    compFile, err := os.Open(outputFile)
+    if err != nil {
+        fmt.Printf("Error opening compressed file: %v\n", err)
+        return
+    }
+    defer compFile.Close()
+    
+    // Create decompressed output
+    decompFile, err := os.Create(decompressedFile)
+    if err != nil {
+        fmt.Printf("Error creating decompressed file: %v\n", err)
+        return
+    }
+    defer decompFile.Close()
+    
+    // Decompress
+    gzReader, err := gzip.NewReader(compFile)
+    if err != nil {
+        fmt.Printf("Error creating gzip reader for file: %v\n", err)
+        return
+    }
+    defer gzReader.Close()
+    
+    _, err = io.Copy(decompFile, gzReader)
+    if err != nil {
+        fmt.Printf("Error decompressing file: %v\n", err)
+        return
+    }
+    
+    // Verify decompressed file
+    decompressedContent, err := os.ReadFile(decompressedFile)
+    if err != nil {
+        fmt.Printf("Error reading decompressed file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("File decompression successful: %t\n", string(decompressedContent) == originalData)
+}
+```
+
+## CSV reading and writing
+
+CSV operations provide structured data reading and writing for  
+tabular data exchange and processing.  
+
+```go
+package main
+
+import (
+    "encoding/csv"
+    "fmt"
+    "io"
+    "os"
+    "strings"
+)
+
+func main() {
+    // Create CSV data
+    csvData := `name,age,city,country
+John Doe,30,New York,USA
+Jane Smith,25,London,UK
+Bob Johnson,35,Toronto,Canada
+Alice Brown,28,Sydney,Australia`
+    
+    // Read CSV from string
+    reader := csv.NewReader(strings.NewReader(csvData))
+    
+    records, err := reader.ReadAll()
+    if err != nil {
+        fmt.Printf("Error reading CSV: %v\n", err)
+        return
+    }
+    
+    fmt.Println("CSV Records:")
+    for i, record := range records {
+        if i == 0 {
+            fmt.Printf("Headers: %v\n", record)
+            continue
+        }
+        fmt.Printf("Record %d: %v\n", i, record)
+    }
+    
+    // Read CSV record by record
+    reader2 := csv.NewReader(strings.NewReader(csvData))
+    
+    fmt.Println("\nReading record by record:")
+    recordNum := 0
+    for {
+        record, err := reader2.Read()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Printf("Error reading record: %v\n", err)
+            break
+        }
+        
+        fmt.Printf("Record %d: %v\n", recordNum, record)
+        recordNum++
+    }
+    
+    // Write CSV to file
+    outputFile := "output.csv"
+    file, err := os.Create(outputFile)
+    if err != nil {
+        fmt.Printf("Error creating CSV file: %v\n", err)
+        return
+    }
+    defer file.Close()
+    defer os.Remove(outputFile)
+    
+    writer := csv.NewWriter(file)
+    defer writer.Flush()
+    
+    // Write header
+    header := []string{"Product", "Price", "Quantity", "Category"}
+    err = writer.Write(header)
+    if err != nil {
+        fmt.Printf("Error writing header: %v\n", err)
+        return
+    }
+    
+    // Write data records
+    products := [][]string{
+        {"Laptop", "999.99", "5", "Electronics"},
+        {"Book", "19.99", "100", "Education"},
+        {"Coffee", "4.99", "50", "Food & Beverage"},
+        {"Desk Chair", "149.99", "10", "Furniture"},
+    }
+    
+    for _, product := range products {
+        err = writer.Write(product)
+        if err != nil {
+            fmt.Printf("Error writing product: %v\n", err)
+            continue
+        }
+    }
+    
+    fmt.Printf("\nWrote %d product records to %s\n", len(products), outputFile)
+    
+    // Read back the file
+    readFile, err := os.Open(outputFile)
+    if err != nil {
+        fmt.Printf("Error opening written file: %v\n", err)
+        return
+    }
+    defer readFile.Close()
+    
+    fileReader := csv.NewReader(readFile)
+    fileRecords, err := fileReader.ReadAll()
+    if err != nil {
+        fmt.Printf("Error reading written file: %v\n", err)
+        return
+    }
+    
+    fmt.Println("Written file contents:")
+    for i, record := range fileRecords {
+        fmt.Printf("Row %d: %v\n", i, record)
+    }
+    
+    // Custom CSV configuration
+    customCSV := `product|price|stock
+    laptop|999.99|5
+    book|19.99|100
+    coffee|4.99|50`
+    
+    customReader := csv.NewReader(strings.NewReader(customCSV))
+    customReader.Comma = '|' // Use pipe as delimiter
+    customReader.TrimLeadingSpace = true
+    
+    fmt.Println("\nCustom delimiter CSV:")
+    customRecords, err := customReader.ReadAll()
+    if err != nil {
+        fmt.Printf("Error reading custom CSV: %v\n", err)
+        return
+    }
+    
+    for i, record := range customRecords {
+        fmt.Printf("Custom row %d: %v\n", i, record)
+    }
+    
+    // Handle CSV with quotes and commas
+    quotedCSV := `"Last, First",Age,"City, State"
+    "Doe, John",30,"New York, NY"
+    "Smith, Jane",25,"Los Angeles, CA"`
+    
+    quotedReader := csv.NewReader(strings.NewReader(quotedCSV))
+    
+    fmt.Println("\nQuoted CSV:")
+    quotedRecords, err := quotedReader.ReadAll()
+    if err != nil {
+        fmt.Printf("Error reading quoted CSV: %v\n", err)
+        return
+    }
+    
+    for i, record := range quotedRecords {
+        fmt.Printf("Quoted row %d: %v\n", i, record)
+    }
+}
+```
+
+## JSON encoding and decoding
+
+JSON operations provide structured data serialization for web APIs  
+and configuration files with Go's built-in encoding capabilities.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "strings"
+)
+
+type Person struct {
+    Name    string   `json:"name"`
+    Age     int      `json:"age"`
+    Email   string   `json:"email"`
+    Hobbies []string `json:"hobbies"`
+    Address Address  `json:"address"`
+}
+
+type Address struct {
+    Street  string `json:"street"`
+    City    string `json:"city"`
+    Country string `json:"country"`
+    ZipCode string `json:"zip_code"`
+}
+
+func main() {
+    // Create sample data
+    person := Person{
+        Name:    "John Doe",
+        Age:     30,
+        Email:   "john.doe@example.com",
+        Hobbies: []string{"reading", "programming", "hiking"},
+        Address: Address{
+            Street:  "123 Main St",
+            City:    "New York",
+            Country: "USA",
+            ZipCode: "10001",
+        },
+    }
+    
+    // Encode to JSON
+    jsonData, err := json.Marshal(person)
+    if err != nil {
+        fmt.Printf("Error marshaling JSON: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Compact JSON:\n%s\n\n", string(jsonData))
+    
+    // Pretty print JSON
+    prettyJSON, err := json.MarshalIndent(person, "", "  ")
+    if err != nil {
+        fmt.Printf("Error marshaling pretty JSON: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Pretty JSON:\n%s\n\n", string(prettyJSON))
+    
+    // Decode JSON
+    var decodedPerson Person
+    err = json.Unmarshal(jsonData, &decodedPerson)
+    if err != nil {
+        fmt.Printf("Error unmarshaling JSON: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Decoded person: %+v\n", decodedPerson)
+    fmt.Printf("Hobbies: %v\n", decodedPerson.Hobbies)
+    fmt.Printf("Address: %+v\n\n", decodedPerson.Address)
+    
+    // JSON streaming with encoder/decoder
+    var buffer strings.Builder
+    encoder := json.NewEncoder(&buffer)
+    
+    // Encode multiple objects
+    people := []Person{person, {
+        Name:    "Jane Smith",
+        Age:     25,
+        Email:   "jane.smith@example.com",
+        Hobbies: []string{"photography", "travel"},
+        Address: Address{
+            Street:  "456 Oak Ave",
+            City:    "Los Angeles",
+            Country: "USA",
+            ZipCode: "90210",
+        },
+    }}
+    
+    for _, p := range people {
+        err = encoder.Encode(p)
+        if err != nil {
+            fmt.Printf("Error encoding person: %v\n", err)
+            continue
+        }
+    }
+    
+    fmt.Printf("Encoded stream:\n%s\n", buffer.String())
+    
+    // Decode stream
+    decoder := json.NewDecoder(strings.NewReader(buffer.String()))
+    
+    fmt.Println("Decoded stream:")
+    personNum := 1
+    for decoder.More() {
+        var streamPerson Person
+        err = decoder.Decode(&streamPerson)
+        if err != nil {
+            fmt.Printf("Error decoding person %d: %v\n", personNum, err)
+            break
+        }
+        
+        fmt.Printf("Person %d: %s (%d years old)\n", personNum, streamPerson.Name, streamPerson.Age)
+        personNum++
+    }
+    
+    // File operations
+    filename := "people.json"
+    file, err := os.Create(filename)
+    if err != nil {
+        fmt.Printf("Error creating file: %v\n", err)
+        return
+    }
+    defer file.Close()
+    defer os.Remove(filename)
+    
+    // Write JSON to file
+    fileEncoder := json.NewEncoder(file)
+    fileEncoder.SetIndent("", "  ")
+    
+    err = fileEncoder.Encode(people)
+    if err != nil {
+        fmt.Printf("Error writing JSON to file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nWrote JSON to %s\n", filename)
+    
+    // Read JSON from file
+    readFile, err := os.Open(filename)
+    if err != nil {
+        fmt.Printf("Error opening file: %v\n", err)
+        return
+    }
+    defer readFile.Close()
+    
+    var readPeople []Person
+    fileDecoder := json.NewDecoder(readFile)
+    
+    err = fileDecoder.Decode(&readPeople)
+    if err != nil {
+        fmt.Printf("Error reading JSON from file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Read %d people from file\n", len(readPeople))
+    
+    // Handle dynamic JSON
+    dynamicJSON := `{
+        "name": "Dynamic Object",
+        "properties": {
+            "count": 42,
+            "active": true,
+            "tags": ["important", "dynamic"]
+        }
+    }`
+    
+    var dynamic map[string]interface{}
+    err = json.Unmarshal([]byte(dynamicJSON), &dynamic)
+    if err != nil {
+        fmt.Printf("Error unmarshaling dynamic JSON: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("\nDynamic JSON:\n")
+    fmt.Printf("Name: %v\n", dynamic["name"])
+    
+    if properties, ok := dynamic["properties"].(map[string]interface{}); ok {
+        fmt.Printf("Count: %v\n", properties["count"])
+        fmt.Printf("Active: %v\n", properties["active"])
+        
+        if tags, ok := properties["tags"].([]interface{}); ok {
+            fmt.Printf("Tags: ")
+            for i, tag := range tags {
+                if i > 0 {
+                    fmt.Printf(", ")
+                }
+                fmt.Printf("%v", tag)
+            }
+            fmt.Println()
+        }
+    }
+}
+```
+
+## Network IO with HTTP
+
+HTTP operations demonstrate network IO patterns for web service  
+communication and data exchange over HTTP protocols.  
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "io"
+    "net/http"
+    "os"
+    "strings"
+    "time"
+)
+
+func main() {
+    // Simple HTTP GET request
+    resp, err := http.Get("https://httpbin.org/get")
+    if err != nil {
+        fmt.Printf("Error making GET request: %v\n", err)
+        return
+    }
+    defer resp.Body.Close()
+    
+    fmt.Printf("GET Response Status: %s\n", resp.Status)
+    fmt.Printf("Content-Type: %s\n", resp.Header.Get("Content-Type"))
+    
+    // Read response body
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        fmt.Printf("Error reading response body: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Response body length: %d bytes\n", len(body))
+    fmt.Printf("First 200 characters: %s...\n\n", string(body[:min(200, len(body))]))
+    
+    // HTTP POST request with JSON data
+    jsonData := `{"name": "John Doe", "email": "john@example.com"}`
+    
+    postResp, err := http.Post("https://httpbin.org/post", "application/json", strings.NewReader(jsonData))
+    if err != nil {
+        fmt.Printf("Error making POST request: %v\n", err)
+        return
+    }
+    defer postResp.Body.Close()
+    
+    fmt.Printf("POST Response Status: %s\n", postResp.Status)
+    
+    postBody, err := io.ReadAll(postResp.Body)
+    if err != nil {
+        fmt.Printf("Error reading POST response: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("POST response length: %d bytes\n\n", len(postBody))
+    
+    // Custom HTTP request with headers
+    client := &http.Client{
+        Timeout: 10 * time.Second,
+    }
+    
+    req, err := http.NewRequest("GET", "https://httpbin.org/headers", nil)
+    if err != nil {
+        fmt.Printf("Error creating request: %v\n", err)
+        return
+    }
+    
+    req.Header.Set("User-Agent", "Go-HTTP-Client/1.0")
+    req.Header.Set("Accept", "application/json")
+    req.Header.Set("X-Custom-Header", "hello-there")
+    
+    customResp, err := client.Do(req)
+    if err != nil {
+        fmt.Printf("Error making custom request: %v\n", err)
+        return
+    }
+    defer customResp.Body.Close()
+    
+    customBody, err := io.ReadAll(customResp.Body)
+    if err != nil {
+        fmt.Printf("Error reading custom response: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Custom request response:\n%s\n\n", string(customBody))
+    
+    // Download file via HTTP
+    fileURL := "https://httpbin.org/json"
+    fileResp, err := http.Get(fileURL)
+    if err != nil {
+        fmt.Printf("Error downloading file: %v\n", err)
+        return
+    }
+    defer fileResp.Body.Close()
+    
+    if fileResp.StatusCode != http.StatusOK {
+        fmt.Printf("Download failed with status: %s\n", fileResp.Status)
+        return
+    }
+    
+    // Save to file
+    downloadFile := "downloaded.json"
+    outFile, err := os.Create(downloadFile)
+    if err != nil {
+        fmt.Printf("Error creating download file: %v\n", err)
+        return
+    }
+    defer outFile.Close()
+    defer os.Remove(downloadFile)
+    
+    // Copy response to file
+    written, err := io.Copy(outFile, fileResp.Body)
+    if err != nil {
+        fmt.Printf("Error saving file: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("Downloaded %d bytes to %s\n", written, downloadFile)
+    
+    // Upload data
+    uploadData := "This is test data for upload"
+    uploadResp, err := http.Post("https://httpbin.org/put", "text/plain", strings.NewReader(uploadData))
+    if err != nil {
+        fmt.Printf("Error uploading data: %v\n", err)
+        return
+    }
+    defer uploadResp.Body.Close()
+    
+    fmt.Printf("Upload response status: %s\n", uploadResp.Status)
+    
+    // Stream processing
+    streamResp, err := http.Get("https://httpbin.org/stream/3")
+    if err != nil {
+        fmt.Printf("Error getting stream: %v\n", err)
+        return
+    }
+    defer streamResp.Body.Close()
+    
+    fmt.Println("Streaming response:")
+    buffer := make([]byte, 256)
+    lineNum := 1
+    
+    for {
+        n, err := streamResp.Body.Read(buffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            fmt.Printf("Error reading stream: %v\n", err)
+            break
+        }
+        
+        fmt.Printf("Stream chunk %d (%d bytes): %s", lineNum, n, string(buffer[:n]))
+        lineNum++
+        
+        if lineNum > 5 { // Limit output
+            break
+        }
+    }
+    
+    // Error handling
+    _, err = http.Get("https://nonexistent-domain-12345.com")
+    if err != nil {
+        fmt.Printf("\nExpected error for non-existent domain: %v\n", err)
+    }
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+```
+}
+```
+```
+```
 ```
