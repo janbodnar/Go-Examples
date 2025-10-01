@@ -3571,3 +3571,2713 @@ output based on context: HTML escaping for HTML, URL encoding for URLs, SQL
 parameterization for databases. Never trust user input and validate at system  
 boundaries.  
 
+
+## Rate limiting for APIs
+
+Rate limiting prevents abuse and ensures fair resource usage.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "sync"
+    "time"
+)
+
+type RateLimiter struct {
+    requests map[string]*ClientLimitInfo
+    mu       sync.RWMutex
+    limit    int
+    window   time.Duration
+}
+
+type ClientLimitInfo struct {
+    count     int
+    resetTime time.Time
+}
+
+func NewRateLimiter(requestsPerWindow int, window time.Duration) *RateLimiter {
+    rl := &RateLimiter{
+        requests: make(map[string]*ClientLimitInfo),
+        limit:    requestsPerWindow,
+        window:   window,
+    }
+    
+    go rl.cleanup()
+    return rl
+}
+
+func (rl *RateLimiter) Allow(clientID string) bool {
+    rl.mu.Lock()
+    defer rl.mu.Unlock()
+    
+    now := time.Now()
+    
+    info, exists := rl.requests[clientID]
+    if !exists || now.After(info.resetTime) {
+        rl.requests[clientID] = &ClientLimitInfo{
+            count:     1,
+            resetTime: now.Add(rl.window),
+        }
+        return true
+    }
+    
+    if info.count >= rl.limit {
+        return false
+    }
+    
+    info.count++
+    return true
+}
+
+func (rl *RateLimiter) cleanup() {
+    ticker := time.NewTicker(1 * time.Minute)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        rl.mu.Lock()
+        now := time.Now()
+        for clientID, info := range rl.requests {
+            if now.After(info.resetTime) {
+                delete(rl.requests, clientID)
+            }
+        }
+        rl.mu.Unlock()
+    }
+}
+
+func RateLimitMiddleware(limiter *RateLimiter) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Use IP address as client ID
+            clientID := r.RemoteAddr
+            
+            if !limiter.Allow(clientID) {
+                w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", limiter.limit))
+                w.Header().Set("X-RateLimit-Remaining", "0")
+                w.Header().Set("Retry-After", fmt.Sprintf("%d", int(limiter.window.Seconds())))
+                
+                http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+                return
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func main() {
+    limiter := NewRateLimiter(10, 1*time.Minute) // 10 requests per minute
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/api/data", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "API response\n")
+    })
+    
+    handler := RateLimitMiddleware(limiter)(mux)
+    
+    fmt.Println("API server with rate limiting running on :8080")
+    http.ListenAndServe(":8080", handler)
+}
+```
+
+This example implements token bucket rate limiting to prevent API abuse. Each  
+client gets a fixed number of requests per time window. The limiter tracks  
+requests by client IP and automatically cleans up old entries. Rate limiting  
+is essential for preventing denial-of-service attacks and ensuring fair usage.  
+For distributed systems, use Redis with sliding window counters. Consider  
+different limits for authenticated vs anonymous users.  
+
+## API key authentication
+
+API keys provide simple authentication for service-to-service communication.  
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "crypto/sha256"
+    "encoding/hex"
+    "fmt"
+    "net/http"
+    "strings"
+    "sync"
+    "time"
+)
+
+type APIKey struct {
+    Key       string
+    Hash      string
+    Name      string
+    CreatedAt time.Time
+    LastUsed  time.Time
+    Active    bool
+}
+
+type APIKeyManager struct {
+    keys map[string]*APIKey
+    mu   sync.RWMutex
+}
+
+func NewAPIKeyManager() *APIKeyManager {
+    return &APIKeyManager{
+        keys: make(map[string]*APIKey),
+    }
+}
+
+func (akm *APIKeyManager) GenerateKey(name string) (string, error) {
+    // Generate random key
+    keyBytes := make([]byte, 32)
+    if _, err := rand.Read(keyBytes); err != nil {
+        return "", fmt.Errorf("failed to generate key: %w", err)
+    }
+    
+    key := "sk_" + hex.EncodeToString(keyBytes)
+    
+    // Hash the key for storage
+    hash := sha256.Sum256([]byte(key))
+    hashStr := hex.EncodeToString(hash[:])
+    
+    apiKey := &APIKey{
+        Key:       key,
+        Hash:      hashStr,
+        Name:      name,
+        CreatedAt: time.Now(),
+        LastUsed:  time.Now(),
+        Active:    true,
+    }
+    
+    akm.mu.Lock()
+    akm.keys[hashStr] = apiKey
+    akm.mu.Unlock()
+    
+    return key, nil
+}
+
+func (akm *APIKeyManager) ValidateKey(key string) (*APIKey, error) {
+    hash := sha256.Sum256([]byte(key))
+    hashStr := hex.EncodeToString(hash[:])
+    
+    akm.mu.RLock()
+    apiKey, exists := akm.keys[hashStr]
+    akm.mu.RUnlock()
+    
+    if !exists {
+        return nil, fmt.Errorf("invalid API key")
+    }
+    
+    if !apiKey.Active {
+        return nil, fmt.Errorf("API key is inactive")
+    }
+    
+    // Update last used time
+    akm.mu.Lock()
+    apiKey.LastUsed = time.Now()
+    akm.mu.Unlock()
+    
+    return apiKey, nil
+}
+
+func (akm *APIKeyManager) RevokeKey(key string) error {
+    hash := sha256.Sum256([]byte(key))
+    hashStr := hex.EncodeToString(hash[:])
+    
+    akm.mu.Lock()
+    defer akm.mu.Unlock()
+    
+    apiKey, exists := akm.keys[hashStr]
+    if !exists {
+        return fmt.Errorf("API key not found")
+    }
+    
+    apiKey.Active = false
+    return nil
+}
+
+func APIKeyMiddleware(manager *APIKeyManager) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Extract API key from header
+            authHeader := r.Header.Get("Authorization")
+            if authHeader == "" {
+                http.Error(w, "Missing API key", http.StatusUnauthorized)
+                return
+            }
+            
+            // Parse "Bearer <key>" format
+            parts := strings.Split(authHeader, " ")
+            if len(parts) != 2 || parts[0] != "Bearer" {
+                http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
+                return
+            }
+            
+            apiKey, err := manager.ValidateKey(parts[1])
+            if err != nil {
+                http.Error(w, "Invalid or inactive API key", http.StatusUnauthorized)
+                return
+            }
+            
+            // Add API key info to context if needed
+            fmt.Printf("Request from API key: %s\n", apiKey.Name)
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func main() {
+    manager := NewAPIKeyManager()
+    
+    // Generate some API keys
+    key1, _ := manager.GenerateKey("production-service")
+    key2, _ := manager.GenerateKey("development-service")
+    
+    fmt.Println("Generated API keys:")
+    fmt.Printf("Production: %s\n", key1)
+    fmt.Printf("Development: %s\n", key2)
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/api/secure", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Authenticated API response\n")
+    })
+    
+    handler := APIKeyMiddleware(manager)(mux)
+    
+    fmt.Println("\nAPI server with key authentication running on :8080")
+    http.ListenAndServe(":8080", handler)
+}
+```
+
+This example implements API key authentication with secure generation and  
+validation. API keys are prefixed for identification and hashed before storage  
+to prevent leakage. Keys should be transmitted over HTTPS only and included  
+in the Authorization header. Track key usage and implement automatic rotation.  
+For sensitive operations, combine API keys with other auth methods (OAuth2,  
+mTLS). Never log or expose full API keys.  
+
+## CORS configuration
+
+CORS controls which origins can access your API from browsers.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "strings"
+)
+
+type CORSConfig struct {
+    AllowedOrigins   []string
+    AllowedMethods   []string
+    AllowedHeaders   []string
+    ExposedHeaders   []string
+    AllowCredentials bool
+    MaxAge           int
+}
+
+func DefaultCORSConfig() *CORSConfig {
+    return &CORSConfig{
+        AllowedOrigins:   []string{"https://example.com"},
+        AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+        AllowedHeaders:   []string{"Content-Type", "Authorization"},
+        ExposedHeaders:   []string{"X-Request-ID"},
+        AllowCredentials: true,
+        MaxAge:           86400, // 24 hours
+    }
+}
+
+func (cc *CORSConfig) isOriginAllowed(origin string) bool {
+    for _, allowed := range cc.AllowedOrigins {
+        if allowed == "*" || allowed == origin {
+            return true
+        }
+    }
+    return false
+}
+
+func CORSMiddleware(config *CORSConfig) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            origin := r.Header.Get("Origin")
+            
+            // Check if origin is allowed
+            if origin != "" && config.isOriginAllowed(origin) {
+                w.Header().Set("Access-Control-Allow-Origin", origin)
+                
+                if config.AllowCredentials {
+                    w.Header().Set("Access-Control-Allow-Credentials", "true")
+                }
+                
+                // Handle preflight request
+                if r.Method == "OPTIONS" {
+                    w.Header().Set("Access-Control-Allow-Methods", 
+                        strings.Join(config.AllowedMethods, ", "))
+                    w.Header().Set("Access-Control-Allow-Headers", 
+                        strings.Join(config.AllowedHeaders, ", "))
+                    w.Header().Set("Access-Control-Max-Age", 
+                        fmt.Sprintf("%d", config.MaxAge))
+                    
+                    w.WriteHeader(http.StatusNoContent)
+                    return
+                }
+                
+                // Expose headers for actual requests
+                if len(config.ExposedHeaders) > 0 {
+                    w.Header().Set("Access-Control-Expose-Headers", 
+                        strings.Join(config.ExposedHeaders, ", "))
+                }
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func main() {
+    corsConfig := DefaultCORSConfig()
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/api/data", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("X-Request-ID", "12345")
+        fmt.Fprintf(w, "API response with CORS\n")
+    })
+    
+    handler := CORSMiddleware(corsConfig)(mux)
+    
+    fmt.Println("API server with CORS running on :8080")
+    fmt.Printf("Allowed origins: %v\n", corsConfig.AllowedOrigins)
+    http.ListenAndServe(":8080", handler)
+}
+```
+
+This example implements CORS (Cross-Origin Resource Sharing) to control browser  
+access to APIs. CORS prevents unauthorized cross-origin requests while allowing  
+legitimate ones. Always use specific origins instead of "*" in production,  
+especially when `AllowCredentials` is true. Handle preflight OPTIONS requests  
+properly. CORS is a browser security feature—it doesn't protect against non-browser  
+clients. Combine with proper authentication and CSRF protection.  
+
+
+## CSRF protection
+
+CSRF tokens prevent cross-site request forgery attacks.  
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "crypto/subtle"
+    "encoding/base64"
+    "fmt"
+    "net/http"
+    "sync"
+    "time"
+)
+
+type CSRFProtection struct {
+    tokens map[string]time.Time
+    mu     sync.RWMutex
+}
+
+func NewCSRFProtection() *CSRFProtection {
+    cp := &CSRFProtection{
+        tokens: make(map[string]time.Time),
+    }
+    go cp.cleanup()
+    return cp
+}
+
+func (cp *CSRFProtection) GenerateToken() (string, error) {
+    bytes := make([]byte, 32)
+    if _, err := rand.Read(bytes); err != nil {
+        return "", err
+    }
+    
+    token := base64.URLEncoding.EncodeToString(bytes)
+    
+    cp.mu.Lock()
+    cp.tokens[token] = time.Now().Add(1 * time.Hour)
+    cp.mu.Unlock()
+    
+    return token, nil
+}
+
+func (cp *CSRFProtection) ValidateToken(token string) bool {
+    cp.mu.RLock()
+    expiry, exists := cp.tokens[token]
+    cp.mu.RUnlock()
+    
+    if !exists {
+        return false
+    }
+    
+    if time.Now().After(expiry) {
+        cp.mu.Lock()
+        delete(cp.tokens, token)
+        cp.mu.Unlock()
+        return false
+    }
+    
+    return true
+}
+
+func (cp *CSRFProtection) cleanup() {
+    ticker := time.NewTicker(10 * time.Minute)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        cp.mu.Lock()
+        now := time.Now()
+        for token, expiry := range cp.tokens {
+            if now.After(expiry) {
+                delete(cp.tokens, token)
+            }
+        }
+        cp.mu.Unlock()
+    }
+}
+
+func CSRFMiddleware(csrf *CSRFProtection) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Skip GET, HEAD, OPTIONS (safe methods)
+            if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" {
+                next.ServeHTTP(w, r)
+                return
+            }
+            
+            // Get token from header or form
+            token := r.Header.Get("X-CSRF-Token")
+            if token == "" {
+                token = r.FormValue("csrf_token")
+            }
+            
+            if token == "" || !csrf.ValidateToken(token) {
+                http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+                return
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func main() {
+    csrf := NewCSRFProtection()
+    
+    mux := http.NewServeMux()
+    
+    mux.HandleFunc("/form", func(w http.ResponseWriter, r *http.Request) {
+        token, _ := csrf.GenerateToken()
+        fmt.Fprintf(w, `<form method="POST" action="/submit">
+            <input type="hidden" name="csrf_token" value="%s">
+            <input type="text" name="data">
+            <button type="submit">Submit</button>
+        </form>`, token)
+    })
+    
+    mux.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Form submitted successfully!\n")
+    })
+    
+    handler := CSRFMiddleware(csrf)(mux)
+    
+    fmt.Println("Server with CSRF protection running on :8080")
+    http.ListenAndServe(":8080", handler)
+}
+```
+
+This example implements CSRF protection using synchronizer tokens. CSRF attacks  
+trick authenticated users into performing unwanted actions. The protection generates  
+unique tokens for each session/request and validates them on state-changing  
+operations. Tokens should be unpredictable and tied to the user session. Use  
+SameSite cookie attribute as additional defense. Double-submit cookies are an  
+alternative pattern for stateless apps.  
+
+## SQL injection prevention
+
+Parameterized queries prevent SQL injection attacks.  
+
+```go
+package main
+
+import (
+    "database/sql"
+    "fmt"
+    "log"
+    
+    _ "github.com/mattn/go-sqlite3"
+)
+
+type UserRepository struct {
+    db *sql.DB
+}
+
+func NewUserRepository(db *sql.DB) *UserRepository {
+    return &UserRepository{db: db}
+}
+
+// SECURE: Using parameterized query
+func (ur *UserRepository) GetUserByEmail(email string) (*User, error) {
+    query := "SELECT id, email, name FROM users WHERE email = ?"
+    
+    var user User
+    err := ur.db.QueryRow(query, email).Scan(&user.ID, &user.Email, &user.Name)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return nil, fmt.Errorf("user not found")
+        }
+        return nil, fmt.Errorf("query failed: %w", err)
+    }
+    
+    return &user, nil
+}
+
+// INSECURE: String concatenation (for demonstration only - NEVER do this!)
+func (ur *UserRepository) InsecureGetUser(email string) (*User, error) {
+    // VULNERABLE TO SQL INJECTION
+    // query := fmt.Sprintf("SELECT id, email, name FROM users WHERE email = '%s'", email)
+    // An attacker could pass: ' OR '1'='1
+    
+    // ALWAYS use parameterized queries instead!
+    return ur.GetUserByEmail(email)
+}
+
+// SECURE: Named parameters
+func (ur *UserRepository) CreateUser(email, name string) error {
+    query := "INSERT INTO users (email, name) VALUES (?, ?)"
+    
+    _, err := ur.db.Exec(query, email, name)
+    if err != nil {
+        return fmt.Errorf("failed to create user: %w", err)
+    }
+    
+    return nil
+}
+
+// SECURE: Using transactions
+func (ur *UserRepository) TransferData(fromID, toID int, amount float64) error {
+    tx, err := ur.db.Begin()
+    if err != nil {
+        return fmt.Errorf("failed to begin transaction: %w", err)
+    }
+    defer tx.Rollback()
+    
+    // Deduct from source
+    _, err = tx.Exec("UPDATE accounts SET balance = balance - ? WHERE id = ?", amount, fromID)
+    if err != nil {
+        return fmt.Errorf("debit failed: %w", err)
+    }
+    
+    // Add to destination
+    _, err = tx.Exec("UPDATE accounts SET balance = balance + ? WHERE id = ?", amount, toID)
+    if err != nil {
+        return fmt.Errorf("credit failed: %w", err)
+    }
+    
+    if err := tx.Commit(); err != nil {
+        return fmt.Errorf("commit failed: %w", err)
+    }
+    
+    return nil
+}
+
+type User struct {
+    ID    int
+    Email string
+    Name  string
+}
+
+func main() {
+    db, err := sql.Open("sqlite3", ":memory:")
+    if err != nil {
+        log.Fatalf("Failed to open database: %v", err)
+    }
+    defer db.Close()
+    
+    // Create table
+    _, err = db.Exec(`CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL
+    )`)
+    if err != nil {
+        log.Fatalf("Failed to create table: %v", err)
+    }
+    
+    repo := NewUserRepository(db)
+    
+    // Create users securely
+    repo.CreateUser("alice@example.com", "Alice")
+    repo.CreateUser("bob@example.com", "Bob")
+    
+    // Query securely
+    user, err := repo.GetUserByEmail("alice@example.com")
+    if err != nil {
+        log.Printf("Query failed: %v", err)
+    } else {
+        fmt.Printf("Found user: %s (%s)\n", user.Name, user.Email)
+    }
+    
+    fmt.Println("\nSQL injection prevention:")
+    fmt.Println("- Always use parameterized queries (?)")
+    fmt.Println("- Never concatenate user input into SQL")
+    fmt.Println("- Use prepared statements for repeated queries")
+    fmt.Println("- Validate and sanitize input")
+}
+```
+
+This example demonstrates preventing SQL injection using parameterized queries.  
+SQL injection is one of the most dangerous vulnerabilities. NEVER concatenate  
+user input into SQL queries. Always use placeholders (?) and pass values as  
+separate parameters. The database driver handles proper escaping. Use prepared  
+statements for repeated queries. Implement input validation as defense-in-depth.  
+Apply least privilege principles to database users.  
+
+## OAuth2 client implementation
+
+OAuth2 enables secure third-party authentication and authorization.  
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/rand"
+    "encoding/base64"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "net/url"
+    "time"
+)
+
+type OAuth2Config struct {
+    ClientID     string
+    ClientSecret string
+    RedirectURL  string
+    AuthURL      string
+    TokenURL     string
+    Scopes       []string
+}
+
+type OAuth2Client struct {
+    config *OAuth2Config
+    states map[string]time.Time
+}
+
+type TokenResponse struct {
+    AccessToken  string `json:"access_token"`
+    TokenType    string `json:"token_type"`
+    ExpiresIn    int    `json:"expires_in"`
+    RefreshToken string `json:"refresh_token,omitempty"`
+}
+
+func NewOAuth2Client(config *OAuth2Config) *OAuth2Client {
+    return &OAuth2Client{
+        config: config,
+        states: make(map[string]time.Time),
+    }
+}
+
+func (oc *OAuth2Client) GenerateState() (string, error) {
+    b := make([]byte, 32)
+    if _, err := rand.Read(b); err != nil {
+        return "", err
+    }
+    
+    state := base64.URLEncoding.EncodeToString(b)
+    oc.states[state] = time.Now().Add(10 * time.Minute)
+    
+    return state, nil
+}
+
+func (oc *OAuth2Client) ValidateState(state string) bool {
+    expiry, exists := oc.states[state]
+    if !exists {
+        return false
+    }
+    
+    if time.Now().After(expiry) {
+        delete(oc.states, state)
+        return false
+    }
+    
+    delete(oc.states, state)
+    return true
+}
+
+func (oc *OAuth2Client) GetAuthURL() (string, string, error) {
+    state, err := oc.GenerateState()
+    if err != nil {
+        return "", "", err
+    }
+    
+    params := url.Values{}
+    params.Add("client_id", oc.config.ClientID)
+    params.Add("redirect_uri", oc.config.RedirectURL)
+    params.Add("response_type", "code")
+    params.Add("state", state)
+    
+    if len(oc.config.Scopes) > 0 {
+        params.Add("scope", oc.config.Scopes[0])
+    }
+    
+    authURL := fmt.Sprintf("%s?%s", oc.config.AuthURL, params.Encode())
+    return authURL, state, nil
+}
+
+func (oc *OAuth2Client) ExchangeCode(ctx context.Context, code string) (*TokenResponse, error) {
+    data := url.Values{}
+    data.Set("grant_type", "authorization_code")
+    data.Set("code", code)
+    data.Set("redirect_uri", oc.config.RedirectURL)
+    data.Set("client_id", oc.config.ClientID)
+    data.Set("client_secret", oc.config.ClientSecret)
+    
+    req, err := http.NewRequestWithContext(ctx, "POST", oc.config.TokenURL, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+    req.URL.RawQuery = data.Encode()
+    
+    client := &http.Client{Timeout: 10 * time.Second}
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+    
+    if resp.StatusCode != http.StatusOK {
+        body, _ := io.ReadAll(resp.Body)
+        return nil, fmt.Errorf("token exchange failed: %s", string(body))
+    }
+    
+    var tokenResp TokenResponse
+    if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+        return nil, err
+    }
+    
+    return &tokenResp, nil
+}
+
+func main() {
+    config := &OAuth2Config{
+        ClientID:     "your-client-id",
+        ClientSecret: "your-client-secret",
+        RedirectURL:  "http://localhost:8080/callback",
+        AuthURL:      "https://provider.com/oauth/authorize",
+        TokenURL:     "https://provider.com/oauth/token",
+        Scopes:       []string{"read", "write"},
+    }
+    
+    client := NewOAuth2Client(config)
+    
+    // Generate authorization URL
+    authURL, state, _ := client.GetAuthURL()
+    
+    fmt.Println("OAuth2 Client Implementation")
+    fmt.Println("Authorization URL:")
+    fmt.Println(authURL)
+    fmt.Printf("\nState parameter: %s\n", state)
+    fmt.Println("\nAfter user authorizes, exchange code for token:")
+    fmt.Println("tokenResp, err := client.ExchangeCode(ctx, code)")
+}
+```
+
+This example implements an OAuth2 client for third-party authentication. OAuth2  
+provides delegated access without sharing credentials. The state parameter  
+prevents CSRF attacks during the OAuth flow. Always validate state on callback.  
+Use PKCE (Proof Key for Code Exchange) for mobile and single-page apps. Store  
+tokens securely and implement refresh token rotation. Never expose client secrets  
+in client-side code.  
+
+
+
+## Timing attack prevention
+
+Constant-time comparisons prevent timing-based attacks.  
+
+```go
+package main
+
+import (
+    "crypto/subtle"
+    "fmt"
+    "time"
+)
+
+type SecureComparator struct{}
+
+func NewSecureComparator() *SecureComparator {
+    return &SecureComparator{}
+}
+
+// InsecureCompare demonstrates vulnerable comparison (for education only)
+func (sc *SecureComparator) InsecureCompare(a, b string) bool {
+    // VULNERABLE: Returns early on first mismatch
+    // Timing differences reveal information
+    if len(a) != len(b) {
+        return false
+    }
+    
+    for i := 0; i < len(a); i++ {
+        if a[i] != b[i] {
+            return false // Early return reveals position of mismatch
+        }
+    }
+    
+    return true
+}
+
+// SecureCompare uses constant-time comparison
+func (sc *SecureComparator) SecureCompare(a, b string) bool {
+    // Constant-time comparison prevents timing attacks
+    return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// SecureCompareBytes for byte slices
+func (sc *SecureComparator) SecureCompareBytes(a, b []byte) bool {
+    return subtle.ConstantTimeCompare(a, b) == 1
+}
+
+// DemonstrateTimingDifference shows timing attack vulnerability
+func (sc *SecureComparator) DemonstrateTimingDifference() {
+    secret := "supersecretpassword123"
+    
+    tests := []string{
+        "aupersecretpassword123", // Wrong first character
+        "supersecretpassword12a", // Wrong last character
+    }
+    
+    fmt.Println("Timing comparison demonstration:")
+    fmt.Println("(In practice, differences are much smaller)")
+    
+    for _, test := range tests {
+        // Insecure comparison
+        start := time.Now()
+        sc.InsecureCompare(secret, test)
+        insecureDuration := time.Since(start)
+        
+        // Secure comparison
+        start = time.Now()
+        sc.SecureCompare(secret, test)
+        secureDuration := time.Since(start)
+        
+        fmt.Printf("\nTest: %s...\n", test[:20])
+        fmt.Printf("Insecure: %v\n", insecureDuration)
+        fmt.Printf("Secure: %v\n", secureDuration)
+    }
+}
+
+func main() {
+    comparator := NewSecureComparator()
+    
+    // Compare secrets securely
+    secret1 := "correct-password"
+    secret2 := "correct-password"
+    secret3 := "wrong-password"
+    
+    fmt.Println("Secure secret comparison:")
+    fmt.Printf("Comparing equal secrets: %t\n", 
+        comparator.SecureCompare(secret1, secret2))
+    fmt.Printf("Comparing different secrets: %t\n", 
+        comparator.SecureCompare(secret1, secret3))
+    
+    // Demonstrate timing differences
+    fmt.Println()
+    comparator.DemonstrateTimingDifference()
+}
+```
+
+This example demonstrates preventing timing attacks using constant-time comparisons.  
+Regular string comparison returns early on mismatch, allowing attackers to deduce  
+secret values by measuring response times. Always use `subtle.ConstantTimeCompare`  
+for security-sensitive comparisons like passwords, tokens, and MACs. This applies  
+to any comparison where the value should remain secret. Timing attacks can work  
+remotely over networks with statistical analysis.  
+
+## Secure session management
+
+Secure sessions prevent hijacking and fixation attacks.  
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "encoding/base64"
+    "fmt"
+    "net/http"
+    "sync"
+    "time"
+)
+
+type Session struct {
+    ID        string
+    UserID    string
+    CreatedAt time.Time
+    LastSeen  time.Time
+    Data      map[string]interface{}
+}
+
+type SessionManager struct {
+    sessions map[string]*Session
+    mu       sync.RWMutex
+    timeout  time.Duration
+}
+
+func NewSessionManager(timeout time.Duration) *SessionManager {
+    sm := &SessionManager{
+        sessions: make(map[string]*Session),
+        timeout:  timeout,
+    }
+    
+    go sm.cleanup()
+    return sm
+}
+
+func (sm *SessionManager) Create(userID string) (*Session, error) {
+    sessionID, err := generateSessionID()
+    if err != nil {
+        return nil, err
+    }
+    
+    session := &Session{
+        ID:        sessionID,
+        UserID:    userID,
+        CreatedAt: time.Now(),
+        LastSeen:  time.Now(),
+        Data:      make(map[string]interface{}),
+    }
+    
+    sm.mu.Lock()
+    sm.sessions[sessionID] = session
+    sm.mu.Unlock()
+    
+    return session, nil
+}
+
+func (sm *SessionManager) Get(sessionID string) (*Session, error) {
+    sm.mu.RLock()
+    session, exists := sm.sessions[sessionID]
+    sm.mu.RUnlock()
+    
+    if !exists {
+        return nil, fmt.Errorf("session not found")
+    }
+    
+    // Check timeout
+    if time.Since(session.LastSeen) > sm.timeout {
+        sm.Destroy(sessionID)
+        return nil, fmt.Errorf("session expired")
+    }
+    
+    // Update last seen
+    sm.mu.Lock()
+    session.LastSeen = time.Now()
+    sm.mu.Unlock()
+    
+    return session, nil
+}
+
+func (sm *SessionManager) Destroy(sessionID string) {
+    sm.mu.Lock()
+    delete(sm.sessions, sessionID)
+    sm.mu.Unlock()
+}
+
+func (sm *SessionManager) Regenerate(oldSessionID, userID string) (*Session, error) {
+    // Destroy old session
+    sm.Destroy(oldSessionID)
+    
+    // Create new session
+    return sm.Create(userID)
+}
+
+func (sm *SessionManager) cleanup() {
+    ticker := time.NewTicker(5 * time.Minute)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        sm.mu.Lock()
+        now := time.Now()
+        for id, session := range sm.sessions {
+            if now.Sub(session.LastSeen) > sm.timeout {
+                delete(sm.sessions, id)
+            }
+        }
+        sm.mu.Unlock()
+    }
+}
+
+func generateSessionID() (string, error) {
+    b := make([]byte, 32)
+    if _, err := rand.Read(b); err != nil {
+        return "", err
+    }
+    return base64.URLEncoding.EncodeToString(b), nil
+}
+
+func SessionMiddleware(sm *SessionManager) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            cookie, err := r.Cookie("session_id")
+            if err != nil {
+                next.ServeHTTP(w, r)
+                return
+            }
+            
+            session, err := sm.Get(cookie.Value)
+            if err != nil {
+                // Clear invalid cookie
+                http.SetCookie(w, &http.Cookie{
+                    Name:     "session_id",
+                    Value:    "",
+                    MaxAge:   -1,
+                    HttpOnly: true,
+                    Secure:   true,
+                    SameSite: http.SameSiteStrictMode,
+                })
+                next.ServeHTTP(w, r)
+                return
+            }
+            
+            // Add session to context
+            fmt.Printf("Session user: %s\n", session.UserID)
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func main() {
+    sm := NewSessionManager(30 * time.Minute)
+    
+    // Create session
+    session, _ := sm.Create("user123")
+    fmt.Printf("Created session: %s\n", session.ID)
+    
+    // Get session
+    retrieved, _ := sm.Get(session.ID)
+    fmt.Printf("Retrieved session for user: %s\n", retrieved.UserID)
+    
+    // Regenerate session (important after privilege change)
+    newSession, _ := sm.Regenerate(session.ID, "user123")
+    fmt.Printf("Regenerated session: %s\n", newSession.ID)
+    
+    fmt.Println("\nSecurity best practices:")
+    fmt.Println("- Use cryptographically random session IDs")
+    fmt.Println("- Set HttpOnly and Secure cookie flags")
+    fmt.Println("- Implement session timeout")
+    fmt.Println("- Regenerate session ID after login")
+    fmt.Println("- Use SameSite cookie attribute")
+}
+```
+
+This example implements secure session management with protection against common  
+attacks. Sessions use cryptographically random IDs and implement timeouts. The  
+`Regenerate` method prevents session fixation attacks by creating a new ID after  
+authentication. Store sessions server-side, not in cookies. Use httpOnly and  
+secure cookie flags. Implement absolute and idle timeouts. For distributed systems,  
+use Redis or similar for shared session storage.  
+
+
+## XSS prevention with templating
+
+Template auto-escaping prevents cross-site scripting attacks.  
+
+```go
+package main
+
+import (
+    "html/template"
+    "net/http"
+    "strings"
+)
+
+type PageData struct {
+    Title   string
+    Content string
+    UserInput string
+}
+
+// SafeTemplate uses html/template with auto-escaping
+func SafeTemplate() *template.Template {
+    tmpl := `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{.Title}}</title>
+</head>
+<body>
+    <h1>{{.Title}}</h1>
+    <div>{{.Content}}</div>
+    <div>User said: {{.UserInput}}</div>
+</body>
+</html>
+`
+    return template.Must(template.New("page").Parse(tmpl))
+}
+
+func main() {
+    tmpl := SafeTemplate()
+    
+    http.HandleFunc("/safe", func(w http.ResponseWriter, r *http.Request) {
+        userInput := r.URL.Query().Get("input")
+        
+        data := PageData{
+            Title:     "XSS Prevention Demo",
+            Content:   "This page is protected from XSS",
+            UserInput: userInput,
+        }
+        
+        // html/template automatically escapes dangerous content
+        tmpl.Execute(w, data)
+    })
+    
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "text/html")
+        w.Write([]byte(`
+            <h1>XSS Prevention Test</h1>
+            <p>Try injecting: &lt;script&gt;alert('XSS')&lt;/script&gt;</p>
+            <form action="/safe">
+                <input type="text" name="input" value="<script>alert('XSS')</script>">
+                <button>Submit</button>
+            </form>
+        `))
+    })
+    
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+This example demonstrates XSS prevention using Go's `html/template` package  
+which automatically escapes output. Never use `text/template` for HTML or  
+concatenate user input into HTML. The `html/template` package is context-aware  
+and applies appropriate escaping. For JavaScript contexts, use explicit escaping.  
+Implement Content Security Policy headers as defense-in-depth. Validate and  
+sanitize input at entry points.  
+
+## Secure file uploads
+
+File upload validation prevents malicious file execution.  
+
+```go
+package main
+
+import (
+    "crypto/sha256"
+    "encoding/hex"
+    "fmt"
+    "io"
+    "mime/multipart"
+    "net/http"
+    "os"
+    "path/filepath"
+    "strings"
+)
+
+type FileUploadHandler struct {
+    maxSize       int64
+    allowedTypes  map[string]bool
+    uploadDir     string
+}
+
+func NewFileUploadHandler(maxSize int64, uploadDir string) *FileUploadHandler {
+    return &FileUploadHandler{
+        maxSize: maxSize,
+        allowedTypes: map[string]bool{
+            "image/jpeg": true,
+            "image/png":  true,
+            "image/gif":  true,
+            "application/pdf": true,
+        },
+        uploadDir: uploadDir,
+    }
+}
+
+func (fuh *FileUploadHandler) ValidateFile(file multipart.File, header *multipart.FileHeader) error {
+    // Check file size
+    if header.Size > fuh.maxSize {
+        return fmt.Errorf("file too large: %d bytes (max %d)", header.Size, fuh.maxSize)
+    }
+    
+    // Read first 512 bytes to detect content type
+    buffer := make([]byte, 512)
+    _, err := file.Read(buffer)
+    if err != nil && err != io.EOF {
+        return fmt.Errorf("failed to read file: %w", err)
+    }
+    
+    // Reset file pointer
+    file.Seek(0, 0)
+    
+    // Detect actual content type
+    contentType := http.DetectContentType(buffer)
+    
+    if !fuh.allowedTypes[contentType] {
+        return fmt.Errorf("file type not allowed: %s", contentType)
+    }
+    
+    // Validate filename
+    if strings.Contains(header.Filename, "..") {
+        return fmt.Errorf("invalid filename: path traversal detected")
+    }
+    
+    return nil
+}
+
+func (fuh *FileUploadHandler) SaveFile(file multipart.File, header *multipart.FileHeader) (string, error) {
+    if err := fuh.ValidateFile(file, header); err != nil {
+        return "", err
+    }
+    
+    // Generate secure filename
+    hash := sha256.New()
+    io.Copy(hash, file)
+    file.Seek(0, 0)
+    
+    hashStr := hex.EncodeToString(hash.Sum(nil))
+    ext := filepath.Ext(header.Filename)
+    filename := hashStr + ext
+    
+    // Create full path
+    fullPath := filepath.Join(fuh.uploadDir, filename)
+    
+    // Create destination file
+    dst, err := os.Create(fullPath)
+    if err != nil {
+        return "", fmt.Errorf("failed to create file: %w", err)
+    }
+    defer dst.Close()
+    
+    // Copy file
+    if _, err := io.Copy(dst, file); err != nil {
+        return "", fmt.Errorf("failed to save file: %w", err)
+    }
+    
+    return filename, nil
+}
+
+func (fuh *FileUploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
+    // Parse multipart form
+    if err := r.ParseMultipartForm(fuh.maxSize); err != nil {
+        http.Error(w, "File too large", http.StatusBadRequest)
+        return
+    }
+    
+    file, header, err := r.FormFile("upload")
+    if err != nil {
+        http.Error(w, "Failed to get file", http.StatusBadRequest)
+        return
+    }
+    defer file.Close()
+    
+    filename, err := fuh.SaveFile(file, header)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+    
+    fmt.Fprintf(w, "File uploaded successfully: %s\\n", filename)
+}
+
+func main() {
+    uploadDir := "./uploads"
+    os.MkdirAll(uploadDir, 0755)
+    
+    handler := NewFileUploadHandler(10*1024*1024, uploadDir) // 10MB max
+    
+    http.HandleFunc("/upload", handler.HandleUpload)
+    
+    fmt.Println("File upload server running on :8080")
+    fmt.Printf("Max file size: %d bytes\\n", handler.maxSize)
+    fmt.Printf("Upload directory: %s\\n", uploadDir)
+    
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+This example implements secure file uploads with comprehensive validation.  
+Validate file type using magic bytes, not just extension. Limit file size to  
+prevent DoS. Generate random filenames to prevent overwriting and path traversal.  
+Store uploaded files outside web root with restricted permissions. Scan files  
+with antivirus when possible. Never execute uploaded files directly. Implement  
+rate limiting on upload endpoints.  
+
+## Secure password reset
+
+Password reset tokens prevent account takeover.  
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "encoding/hex"
+    "fmt"
+    "sync"
+    "time"
+)
+
+type ResetToken struct {
+    Token     string
+    UserEmail string
+    ExpiresAt time.Time
+    Used      bool
+}
+
+type PasswordResetManager struct {
+    tokens map[string]*ResetToken
+    mu     sync.RWMutex
+}
+
+func NewPasswordResetManager() *PasswordResetManager {
+    prm := &PasswordResetManager{
+        tokens: make(map[string]*ResetToken),
+    }
+    go prm.cleanup()
+    return prm
+}
+
+func (prm *PasswordResetManager) GenerateToken(email string) (string, error) {
+    // Generate cryptographically secure token
+    bytes := make([]byte, 32)
+    if _, err := rand.Read(bytes); err != nil {
+        return "", fmt.Errorf("failed to generate token: %w", err)
+    }
+    
+    token := hex.EncodeToString(bytes)
+    
+    resetToken := &ResetToken{
+        Token:     token,
+        UserEmail: email,
+        ExpiresAt: time.Now().Add(1 * time.Hour), // Short expiration
+        Used:      false,
+    }
+    
+    prm.mu.Lock()
+    prm.tokens[token] = resetToken
+    prm.mu.Unlock()
+    
+    return token, nil
+}
+
+func (prm *PasswordResetManager) ValidateToken(token string) (string, error) {
+    prm.mu.Lock()
+    defer prm.mu.Unlock()
+    
+    resetToken, exists := prm.tokens[token]
+    if !exists {
+        return "", fmt.Errorf("invalid reset token")
+    }
+    
+    if resetToken.Used {
+        // Token already used - possible attack
+        delete(prm.tokens, token)
+        return "", fmt.Errorf("token already used")
+    }
+    
+    if time.Now().After(resetToken.ExpiresAt) {
+        delete(prm.tokens, token)
+        return "", fmt.Errorf("token expired")
+    }
+    
+    // Mark as used (single-use tokens)
+    resetToken.Used = true
+    
+    return resetToken.UserEmail, nil
+}
+
+func (prm *PasswordResetManager) InvalidateAllForUser(email string) {
+    prm.mu.Lock()
+    defer prm.mu.Unlock()
+    
+    for token, resetToken := range prm.tokens {
+        if resetToken.UserEmail == email {
+            delete(prm.tokens, token)
+        }
+    }
+}
+
+func (prm *PasswordResetManager) cleanup() {
+    ticker := time.NewTicker(10 * time.Minute)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        prm.mu.Lock()
+        now := time.Now()
+        for token, resetToken := range prm.tokens {
+            if now.After(resetToken.ExpiresAt) {
+                delete(prm.tokens, token)
+            }
+        }
+        prm.mu.Unlock()
+    }
+}
+
+func main() {
+    manager := NewPasswordResetManager()
+    
+    email := "user@example.com"
+    
+    // Generate reset token
+    token, err := manager.GenerateToken(email)
+    if err != nil {
+        fmt.Printf("Failed to generate token: %v\\n", err)
+        return
+    }
+    
+    fmt.Printf("Generated reset token for %s\\n", email)
+    fmt.Printf("Token: %s\\n", token)
+    
+    // Validate token
+    validatedEmail, err := manager.ValidateToken(token)
+    if err != nil {
+        fmt.Printf("Token validation failed: %v\\n", err)
+        return
+    }
+    
+    fmt.Printf("Token validated for email: %s\\n", validatedEmail)
+    
+    // Try to reuse token (should fail)
+    _, err = manager.ValidateToken(token)
+    if err != nil {
+        fmt.Printf("Token reuse prevented: %v\\n", err)
+    }
+    
+    fmt.Println("\\nSecurity best practices:")
+    fmt.Println("- Use cryptographically random tokens")
+    fmt.Println("- Short expiration (1 hour or less)")
+    fmt.Println("- Single-use tokens")
+    fmt.Println("- Invalidate all tokens on successful reset")
+    fmt.Println("- Rate limit reset requests")
+}
+```
+
+This example implements secure password reset with time-limited, single-use  
+tokens. Use cryptographically random tokens and short expiration times. Invalidate  
+tokens after use and all tokens after successful password change. Don't reveal  
+whether an email exists in the system. Implement rate limiting on reset requests.  
+Send tokens via email only to verified addresses. Consider requiring recent  
+login before allowing password change.  
+
+
+## Secure logging practices
+
+Secure logging prevents information leakage while enabling audit trails.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "os"
+    "regexp"
+    "strings"
+    "time"
+)
+
+type SecureLogger struct {
+    logger         *log.Logger
+    sensitiveRegex *regexp.Regexp
+}
+
+func NewSecureLogger() *SecureLogger {
+    return &SecureLogger{
+        logger: log.New(os.Stdout, "", log.LstdFlags),
+        // Pattern to detect sensitive data
+        sensitiveRegex: regexp.MustCompile(`(?i)(password|token|secret|key|api_key)=\S+`),
+    }
+}
+
+func (sl *SecureLogger) sanitize(message string) string {
+    // Redact sensitive patterns
+    message = sl.sensitiveRegex.ReplaceAllString(message, "$1=[REDACTED]")
+    
+    // Mask email addresses (keep domain)
+    emailRegex := regexp.MustCompile(`(\w)(\w+)@(\w+\.\w+)`)
+    message = emailRegex.ReplaceAllString(message, "$1***@$3")
+    
+    // Mask credit card numbers
+    ccRegex := regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`)
+    message = ccRegex.ReplaceAllString(message, "****-****-****-****")
+    
+    return message
+}
+
+func (sl *SecureLogger) Info(message string) {
+    sanitized := sl.sanitize(message)
+    sl.logger.Printf("[INFO] %s", sanitized)
+}
+
+func (sl *SecureLogger) Error(message string, err error) {
+    sanitized := sl.sanitize(message)
+    if err != nil {
+        sl.logger.Printf("[ERROR] %s: %v", sanitized, err)
+    } else {
+        sl.logger.Printf("[ERROR] %s", sanitized)
+    }
+}
+
+func (sl *SecureLogger) Audit(action, user, resource string) {
+    sl.logger.Printf("[AUDIT] action=%s user=%s resource=%s timestamp=%s",
+        action, user, resource, time.Now().Format(time.RFC3339))
+}
+
+func (sl *SecureLogger) Security(event, details string) {
+    sl.logger.Printf("[SECURITY] event=%s details=%s", event, details)
+}
+
+func main() {
+    logger := NewSecureLogger()
+    
+    // These will be sanitized automatically
+    logger.Info("User login with password=secret123")
+    logger.Info("API request with api_key=abc123def456")
+    logger.Info("User email: john.doe@example.com")
+    logger.Info("Payment with card 1234-5678-9012-3456")
+    
+    // Audit logging
+    logger.Audit("LOGIN", "user123", "/dashboard")
+    logger.Audit("DELETE", "admin", "/users/456")
+    
+    // Security events
+    logger.Security("FAILED_LOGIN_ATTEMPT", "user=unknown ip=192.168.1.100")
+    logger.Security("RATE_LIMIT_EXCEEDED", "ip=10.0.0.50")
+    
+    fmt.Println("\\nSecure logging best practices:")
+    fmt.Println("- Never log passwords, tokens, or secrets")
+    fmt.Println("- Sanitize sensitive data before logging")
+    fmt.Println("- Use structured logging for parsing")
+    fmt.Println("- Implement log rotation and retention")
+    fmt.Println("- Secure log storage with encryption")
+    fmt.Println("- Monitor for security events")
+}
+```
+
+This example demonstrates secure logging that prevents sensitive data leakage.  
+Never log passwords, tokens, API keys, or PII in plain text. Implement automatic  
+sanitization of sensitive patterns. Use structured logging for security monitoring.  
+Separate audit logs from application logs. Secure log storage and implement  
+proper retention policies. Monitor logs for security events. Consider using  
+dedicated logging services with encryption.  
+
+## Two-factor authentication (TOTP)
+
+TOTP provides time-based two-factor authentication.  
+
+```go
+package main
+
+import (
+    "crypto/hmac"
+    "crypto/rand"
+    "crypto/sha1"
+    "encoding/base32"
+    "encoding/binary"
+    "fmt"
+    "strings"
+    "time"
+)
+
+type TOTPManager struct {
+    issuer string
+}
+
+func NewTOTPManager(issuer string) *TOTPManager {
+    return &TOTPManager{issuer: issuer}
+}
+
+func (tm *TOTPManager) GenerateSecret() (string, error) {
+    secret := make([]byte, 20)
+    if _, err := rand.Read(secret); err != nil {
+        return "", err
+    }
+    return base32.StdEncoding.EncodeToString(secret), nil
+}
+
+func (tm *TOTPManager) GenerateCode(secret string, timeStep int64) (string, error) {
+    key, err := base32.StdEncoding.DecodeString(strings.ToUpper(secret))
+    if err != nil {
+        return "", err
+    }
+    
+    // Calculate time counter
+    counter := timeStep / 30
+    
+    // Convert counter to bytes
+    buf := make([]byte, 8)
+    binary.BigEndian.PutUint64(buf, uint64(counter))
+    
+    // HMAC-SHA1
+    h := hmac.New(sha1.New, key)
+    h.Write(buf)
+    hash := h.Sum(nil)
+    
+    // Dynamic truncation
+    offset := hash[len(hash)-1] & 0x0F
+    code := binary.BigEndian.Uint32(hash[offset:]) & 0x7FFFFFFF
+    code = code % 1000000
+    
+    return fmt.Sprintf("%06d", code), nil
+}
+
+func (tm *TOTPManager) VerifyCode(secret, code string) (bool, error) {
+    currentTime := time.Now().Unix()
+    
+    // Check current time window
+    generatedCode, err := tm.GenerateCode(secret, currentTime)
+    if err != nil {
+        return false, err
+    }
+    
+    if generatedCode == code {
+        return true, nil
+    }
+    
+    // Check previous time window (30 seconds ago)
+    prevCode, err := tm.GenerateCode(secret, currentTime-30)
+    if err != nil {
+        return false, err
+    }
+    
+    if prevCode == code {
+        return true, nil
+    }
+    
+    // Check next time window (clock skew tolerance)
+    nextCode, err := tm.GenerateCode(secret, currentTime+30)
+    if err != nil {
+        return false, err
+    }
+    
+    return nextCode == code, nil
+}
+
+func (tm *TOTPManager) GenerateProvisioningURI(secret, accountName string) string {
+    return fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s",
+        tm.issuer, accountName, secret, tm.issuer)
+}
+
+func main() {
+    manager := NewTOTPManager("MySecureApp")
+    
+    // Generate secret for user
+    secret, err := manager.GenerateSecret()
+    if err != nil {
+        fmt.Printf("Failed to generate secret: %v\\n", err)
+        return
+    }
+    
+    fmt.Printf("Secret: %s\\n", secret)
+    
+    // Generate provisioning URI for QR code
+    uri := manager.GenerateProvisioningURI(secret, "user@example.com")
+    fmt.Printf("Provisioning URI: %s\\n", uri)
+    fmt.Println("(Generate QR code from this URI for authenticator apps)")
+    
+    // Generate current code
+    code, err := manager.GenerateCode(secret, time.Now().Unix())
+    if err != nil {
+        fmt.Printf("Failed to generate code: %v\\n", err)
+        return
+    }
+    
+    fmt.Printf("\\nCurrent TOTP code: %s\\n", code)
+    
+    // Verify code
+    valid, err := manager.VerifyCode(secret, code)
+    if err != nil {
+        fmt.Printf("Verification error: %v\\n", err)
+        return
+    }
+    
+    fmt.Printf("Code verification: %t\\n", valid)
+    
+    fmt.Println("\\n2FA best practices:")
+    fmt.Println("- Store secrets encrypted")
+    fmt.Println("- Provide backup codes")
+    fmt.Println("- Support multiple 2FA methods")
+    fmt.Println("- Allow time window tolerance")
+}
+```
+
+This example implements TOTP (Time-based One-Time Password) for two-factor  
+authentication compatible with Google Authenticator and similar apps. TOTP  
+generates time-synchronized codes using HMAC-SHA1. Store secrets encrypted  
+and provide backup codes for account recovery. Support time window tolerance  
+for clock skew. Consider using established libraries like `pquerna/otp` for  
+production. Implement rate limiting on 2FA attempts. Support multiple 2FA  
+methods (SMS, hardware keys).  
+
+## Content Security Policy implementation
+
+CSP headers provide defense-in-depth against XSS and injection attacks.  
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "encoding/base64"
+    "fmt"
+    "net/http"
+    "strings"
+)
+
+type CSPConfig struct {
+    DefaultSrc    []string
+    ScriptSrc     []string
+    StyleSrc      []string
+    ImgSrc        []string
+    ConnectSrc    []string
+    FontSrc       []string
+    ObjectSrc     []string
+    MediaSrc      []string
+    FrameSrc      []string
+    FrameAncestors []string
+    BaseURI       []string
+    FormAction    []string
+    ReportURI     string
+    ReportOnly    bool
+}
+
+func DefaultCSPConfig() *CSPConfig {
+    return &CSPConfig{
+        DefaultSrc:     []string{"'self'"},
+        ScriptSrc:      []string{"'self'"},
+        StyleSrc:       []string{"'self'", "'unsafe-inline'"},
+        ImgSrc:         []string{"'self'", "data:", "https:"},
+        ConnectSrc:     []string{"'self'"},
+        FontSrc:        []string{"'self'"},
+        ObjectSrc:      []string{"'none'"},
+        MediaSrc:       []string{"'self'"},
+        FrameSrc:       []string{"'none'"},
+        FrameAncestors: []string{"'none'"},
+        BaseURI:        []string{"'self'"},
+        FormAction:     []string{"'self'"},
+        ReportOnly:     false,
+    }
+}
+
+func (csp *CSPConfig) BuildPolicy() string {
+    var parts []string
+    
+    if len(csp.DefaultSrc) > 0 {
+        parts = append(parts, fmt.Sprintf("default-src %s", strings.Join(csp.DefaultSrc, " ")))
+    }
+    
+    if len(csp.ScriptSrc) > 0 {
+        parts = append(parts, fmt.Sprintf("script-src %s", strings.Join(csp.ScriptSrc, " ")))
+    }
+    
+    if len(csp.StyleSrc) > 0 {
+        parts = append(parts, fmt.Sprintf("style-src %s", strings.Join(csp.StyleSrc, " ")))
+    }
+    
+    if len(csp.ImgSrc) > 0 {
+        parts = append(parts, fmt.Sprintf("img-src %s", strings.Join(csp.ImgSrc, " ")))
+    }
+    
+    if len(csp.ConnectSrc) > 0 {
+        parts = append(parts, fmt.Sprintf("connect-src %s", strings.Join(csp.ConnectSrc, " ")))
+    }
+    
+    if len(csp.FontSrc) > 0 {
+        parts = append(parts, fmt.Sprintf("font-src %s", strings.Join(csp.FontSrc, " ")))
+    }
+    
+    if len(csp.ObjectSrc) > 0 {
+        parts = append(parts, fmt.Sprintf("object-src %s", strings.Join(csp.ObjectSrc, " ")))
+    }
+    
+    if len(csp.FrameAncestors) > 0 {
+        parts = append(parts, fmt.Sprintf("frame-ancestors %s", strings.Join(csp.FrameAncestors, " ")))
+    }
+    
+    if len(csp.BaseURI) > 0 {
+        parts = append(parts, fmt.Sprintf("base-uri %s", strings.Join(csp.BaseURI, " ")))
+    }
+    
+    if len(csp.FormAction) > 0 {
+        parts = append(parts, fmt.Sprintf("form-action %s", strings.Join(csp.FormAction, " ")))
+    }
+    
+    if csp.ReportURI != "" {
+        parts = append(parts, fmt.Sprintf("report-uri %s", csp.ReportURI))
+    }
+    
+    return strings.Join(parts, "; ")
+}
+
+func GenerateNonce() (string, error) {
+    bytes := make([]byte, 16)
+    if _, err := rand.Read(bytes); err != nil {
+        return "", err
+    }
+    return base64.StdEncoding.EncodeToString(bytes), nil
+}
+
+func CSPMiddleware(config *CSPConfig) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            policy := config.BuildPolicy()
+            
+            headerName := "Content-Security-Policy"
+            if config.ReportOnly {
+                headerName = "Content-Security-Policy-Report-Only"
+            }
+            
+            w.Header().Set(headerName, policy)
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+func main() {
+    cspConfig := DefaultCSPConfig()
+    cspConfig.ReportURI = "/csp-report"
+    
+    mux := http.NewServeMux()
+    
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        nonce, _ := GenerateNonce()
+        w.Write([]byte(fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSP Protected Page</title>
+    <script nonce="%s">
+        console.log('This inline script is allowed via nonce');
+    </script>
+</head>
+<body>
+    <h1>Content Security Policy Example</h1>
+    <p>This page is protected by CSP</p>
+</body>
+</html>
+`, nonce)))
+    })
+    
+    mux.HandleFunc("/csp-report", func(w http.ResponseWriter, r *http.Request) {
+        // Handle CSP violation reports
+        fmt.Println("CSP violation reported")
+    })
+    
+    handler := CSPMiddleware(cspConfig)(mux)
+    
+    fmt.Println("Server with CSP running on :8080")
+    fmt.Printf("CSP Policy: %s\\n", cspConfig.BuildPolicy())
+    http.ListenAndServe(":8080", handler)
+}
+```
+
+This example implements Content Security Policy for defense-in-depth against  
+XSS attacks. CSP restricts sources of content the browser can load. Use nonces  
+or hashes for inline scripts. Start with report-only mode to test policies.  
+Monitor CSP reports to identify violations. CSP provides multiple layers of  
+protection but doesn't replace input validation. Modern CSP supports strict  
+policies that block most XSS vectors. Configure CSP per application needs.  
+
+
+## Secure API versioning
+
+API versioning enables security updates without breaking clients.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+)
+
+type APIRouter struct {
+    v1Handlers map[string]http.HandlerFunc
+    v2Handlers map[string]http.HandlerFunc
+}
+
+func NewAPIRouter() *APIRouter {
+    return &APIRouter{
+        v1Handlers: make(map[string]http.HandlerFunc),
+        v2Handlers: make(map[string]http.HandlerFunc),
+    }
+}
+
+func (ar *APIRouter) RegisterV1(path string, handler http.HandlerFunc) {
+    ar.v1Handlers[path] = handler
+}
+
+func (ar *APIRouter) RegisterV2(path string, handler http.HandlerFunc) {
+    ar.v2Handlers[path] = handler
+}
+
+func (ar *APIRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    // Extract version from path or header
+    version := r.Header.Get("X-API-Version")
+    if version == "" {
+        version = "v2" // Default to latest
+    }
+    
+    path := r.URL.Path
+    
+    var handler http.HandlerFunc
+    switch version {
+    case "v1":
+        // v1 deprecated - warn clients
+        w.Header().Set("X-API-Deprecation", "v1 deprecated, use v2")
+        w.Header().Set("X-API-Sunset", "2024-12-31")
+        handler = ar.v1Handlers[path]
+    case "v2":
+        handler = ar.v2Handlers[path]
+    default:
+        http.Error(w, "Unsupported API version", http.StatusBadRequest)
+        return
+    }
+    
+    if handler == nil {
+        http.Error(w, "Not found", http.StatusNotFound)
+        return
+    }
+    
+    handler(w, r)
+}
+
+func main() {
+    router := NewAPIRouter()
+    
+    // V1 endpoints (legacy, less secure)
+    router.RegisterV1("/api/data", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "V1 response (deprecated)\\n")
+    })
+    
+    // V2 endpoints (secure, modern)
+    router.RegisterV2("/api/data", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "V2 response (secure)\\n")
+    })
+    
+    fmt.Println("API versioning server running on :8080")
+    http.ListenAndServe(":8080", router)
+}
+```
+
+This example demonstrates API versioning for security evolution. Version APIs  
+to allow security improvements without breaking clients. Deprecate old versions  
+gracefully with sunset dates. Use headers or URL paths for versioning. Monitor  
+usage of deprecated versions. Provide migration guides. Maintain old versions  
+only for compatibility, not new features.  
+
+## Data encryption at rest
+
+Encrypting data at rest protects against unauthorized file system access.  
+
+```go
+package main
+
+import (
+    "crypto/aes"
+    "crypto/cipher"
+    "crypto/rand"
+    "encoding/json"
+    "fmt"
+    "io"
+    "os"
+)
+
+type EncryptedStorage struct {
+    key []byte
+}
+
+func NewEncryptedStorage(key []byte) (*EncryptedStorage, error) {
+    if len(key) != 32 {
+        return nil, fmt.Errorf("key must be 32 bytes")
+    }
+    return &EncryptedStorage{key: key}, nil
+}
+
+func (es *EncryptedStorage) SaveEncrypted(filename string, data interface{}) error {
+    // Marshal data
+    jsonData, err := json.Marshal(data)
+    if err != nil {
+        return fmt.Errorf("marshal failed: %w", err)
+    }
+    
+    // Encrypt
+    encrypted, err := es.encrypt(jsonData)
+    if err != nil {
+        return fmt.Errorf("encryption failed: %w", err)
+    }
+    
+    // Write to file
+    if err := os.WriteFile(filename, encrypted, 0600); err != nil {
+        return fmt.Errorf("write failed: %w", err)
+    }
+    
+    return nil
+}
+
+func (es *EncryptedStorage) LoadEncrypted(filename string, target interface{}) error {
+    // Read file
+    encrypted, err := os.ReadFile(filename)
+    if err != nil {
+        return fmt.Errorf("read failed: %w", err)
+    }
+    
+    // Decrypt
+    decrypted, err := es.decrypt(encrypted)
+    if err != nil {
+        return fmt.Errorf("decryption failed: %w", err)
+    }
+    
+    // Unmarshal
+    if err := json.Unmarshal(decrypted, target); err != nil {
+        return fmt.Errorf("unmarshal failed: %w", err)
+    }
+    
+    return nil
+}
+
+func (es *EncryptedStorage) encrypt(plaintext []byte) ([]byte, error) {
+    block, err := aes.NewCipher(es.key)
+    if err != nil {
+        return nil, err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+    
+    nonce := make([]byte, gcm.NonceSize())
+    if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+        return nil, err
+    }
+    
+    ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+    return ciphertext, nil
+}
+
+func (es *EncryptedStorage) decrypt(ciphertext []byte) ([]byte, error) {
+    block, err := aes.NewCipher(es.key)
+    if err != nil {
+        return nil, err
+    }
+    
+    gcm, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+    
+    nonceSize := gcm.NonceSize()
+    if len(ciphertext) < nonceSize {
+        return nil, fmt.Errorf("ciphertext too short")
+    }
+    
+    nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+    plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    return plaintext, nil
+}
+
+func main() {
+    key := make([]byte, 32)
+    rand.Read(key)
+    
+    storage, _ := NewEncryptedStorage(key)
+    
+    // Save encrypted data
+    data := map[string]string{
+        "username": "admin",
+        "api_key":  "secret-key-123",
+    }
+    
+    storage.SaveEncrypted("encrypted.dat", data)
+    fmt.Println("Data saved encrypted")
+    
+    // Load encrypted data
+    var loaded map[string]string
+    storage.LoadEncrypted("encrypted.dat", &loaded)
+    fmt.Printf("Loaded data: %v\\n", loaded)
+    
+    os.Remove("encrypted.dat")
+}
+```
+
+This example implements encryption at rest for sensitive data files. Always  
+encrypt sensitive data before storing. Use authenticated encryption (AES-GCM).  
+Secure key management is critical—never store keys with encrypted data. Consider  
+using key derivation from user passwords or hardware security modules. Implement  
+key rotation. Set proper file permissions. For databases, use transparent data  
+encryption (TDE) when available.  
+
+## Dependency vulnerability scanning
+
+Regular security scanning prevents supply chain attacks.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os/exec"
+)
+
+type VulnerabilityScanner struct {
+    tool string
+}
+
+type ScanResult struct {
+    Package         string
+    Vulnerability   string
+    Severity        string
+    FixedVersion    string
+    Description     string
+}
+
+func NewVulnerabilityScanner() *VulnerabilityScanner {
+    return &VulnerabilityScanner{
+        tool: "govulncheck",
+    }
+}
+
+func (vs *VulnerabilityScanner) ScanDependencies() ([]ScanResult, error) {
+    // Run govulncheck
+    cmd := exec.Command("govulncheck", "-json", "./...")
+    output, err := cmd.Output()
+    if err != nil {
+        return nil, fmt.Errorf("scan failed: %w", err)
+    }
+    
+    var results []ScanResult
+    // Parse JSON output
+    // This is a simplified example
+    if err := json.Unmarshal(output, &results); err != nil {
+        return nil, fmt.Errorf("parse failed: %w", err)
+    }
+    
+    return results, nil
+}
+
+func (vs *VulnerabilityScanner) CheckCriticalVulnerabilities(results []ScanResult) []ScanResult {
+    var critical []ScanResult
+    for _, result := range results {
+        if result.Severity == "CRITICAL" || result.Severity == "HIGH" {
+            critical = append(critical, result)
+        }
+    }
+    return critical
+}
+
+func main() {
+    scanner := NewVulnerabilityScanner()
+    
+    fmt.Println("Dependency Security Scanning")
+    fmt.Println("============================")
+    fmt.Println()
+    fmt.Println("Tools for Go security scanning:")
+    fmt.Println("- govulncheck: Official Go vulnerability scanner")
+    fmt.Println("- nancy: Check dependencies against OSS Index")
+    fmt.Println("- snyk: Commercial tool with free tier")
+    fmt.Println("- trivy: Container and dependency scanner")
+    fmt.Println()
+    fmt.Println("Best practices:")
+    fmt.Println("- Scan dependencies regularly in CI/CD")
+    fmt.Println("- Update dependencies promptly")
+    fmt.Println("- Use go.mod replace for patches")
+    fmt.Println("- Monitor security advisories")
+    fmt.Println("- Minimize dependencies")
+    fmt.Println()
+    fmt.Println("Example commands:")
+    fmt.Println("  $ go install golang.org/x/vuln/cmd/govulncheck@latest")
+    fmt.Println("  $ govulncheck ./...")
+    fmt.Println("  $ go list -m all | nancy sleuth")
+}
+```
+
+This example demonstrates dependency vulnerability scanning for supply chain  
+security. Regularly scan dependencies for known vulnerabilities. Use `govulncheck`  
+for Go-specific vulnerabilities. Integrate scanning into CI/CD pipelines. Set  
+policies for vulnerability severity. Keep dependencies up to date. Minimize  
+dependency count. Use `go mod vendor` for reproducible builds. Monitor security  
+advisories for your dependencies.  
+
+## Audit logging for compliance
+
+Comprehensive audit logs support security investigations and compliance.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "time"
+)
+
+type AuditEvent struct {
+    Timestamp    time.Time              `json:"timestamp"`
+    EventType    string                 `json:"event_type"`
+    Actor        string                 `json:"actor"`
+    Action       string                 `json:"action"`
+    Resource     string                 `json:"resource"`
+    Result       string                 `json:"result"`
+    IPAddress    string                 `json:"ip_address"`
+    UserAgent    string                 `json:"user_agent"`
+    Metadata     map[string]interface{} `json:"metadata"`
+}
+
+type AuditLogger struct {
+    file *os.File
+}
+
+func NewAuditLogger(filename string) (*AuditLogger, error) {
+    file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &AuditLogger{file: file}, nil
+}
+
+func (al *AuditLogger) Log(event *AuditEvent) error {
+    event.Timestamp = time.Now()
+    
+    data, err := json.Marshal(event)
+    if err != nil {
+        return err
+    }
+    
+    _, err = al.file.Write(append(data, '\n'))
+    return err
+}
+
+func (al *AuditLogger) LogAccess(actor, action, resource, result string, metadata map[string]interface{}) error {
+    event := &AuditEvent{
+        EventType: "ACCESS",
+        Actor:     actor,
+        Action:    action,
+        Resource:  resource,
+        Result:    result,
+        Metadata:  metadata,
+    }
+    return al.Log(event)
+}
+
+func (al *AuditLogger) LogAuthentication(actor, result, ipAddress string) error {
+    event := &AuditEvent{
+        EventType: "AUTHENTICATION",
+        Actor:     actor,
+        Action:    "LOGIN",
+        Result:    result,
+        IPAddress: ipAddress,
+    }
+    return al.Log(event)
+}
+
+func (al *AuditLogger) LogDataChange(actor, action, resource string, before, after interface{}) error {
+    event := &AuditEvent{
+        EventType: "DATA_CHANGE",
+        Actor:     actor,
+        Action:    action,
+        Resource:  resource,
+        Result:    "SUCCESS",
+        Metadata: map[string]interface{}{
+            "before": before,
+            "after":  after,
+        },
+    }
+    return al.Log(event)
+}
+
+func (al *AuditLogger) Close() error {
+    return al.file.Close()
+}
+
+func main() {
+    logger, err := NewAuditLogger("audit.log")
+    if err != nil {
+        fmt.Printf("Failed to create audit logger: %v\\n", err)
+        return
+    }
+    defer logger.Close()
+    
+    // Log authentication
+    logger.LogAuthentication("user123", "SUCCESS", "192.168.1.100")
+    logger.LogAuthentication("admin", "FAILED", "10.0.0.50")
+    
+    // Log access
+    logger.LogAccess("user123", "READ", "/api/users/456", "SUCCESS", map[string]interface{}{
+        "request_id": "req-789",
+    })
+    
+    // Log data changes
+    before := map[string]string{"role": "user"}
+    after := map[string]string{"role": "admin"}
+    logger.LogDataChange("admin", "UPDATE", "/users/123", before, after)
+    
+    fmt.Println("Audit events logged to audit.log")
+    fmt.Println("\\nAudit logging best practices:")
+    fmt.Println("- Log all security-relevant events")
+    fmt.Println("- Include who, what, when, where")
+    fmt.Println("- Use structured logging (JSON)")
+    fmt.Println("- Protect audit logs from tampering")
+    fmt.Println("- Implement log retention policies")
+    fmt.Println("- Regular review and monitoring")
+}
+```
+
+This example implements comprehensive audit logging for security and compliance.  
+Log all authentication attempts, access to sensitive resources, and data modifications.  
+Include actor, action, resource, timestamp, and result. Use structured format  
+(JSON) for parsing. Protect audit logs with restricted permissions and integrity  
+checks. Implement retention policies per compliance requirements. Forward logs  
+to SIEM systems for analysis.  
+
+## Secure error handling
+
+Proper error handling prevents information leakage to attackers.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+)
+
+type SecureErrorHandler struct {
+    debug bool
+}
+
+func NewSecureErrorHandler(debug bool) *SecureErrorHandler {
+    return &SecureErrorHandler{debug: debug}
+}
+
+// UserError represents errors safe to show users
+type UserError struct {
+    Message    string
+    StatusCode int
+}
+
+func (e *UserError) Error() string {
+    return e.Message
+}
+
+// InternalError represents errors that should be logged but not shown
+type InternalError struct {
+    Message string
+    Cause   error
+}
+
+func (e *InternalError) Error() string {
+    if e.Cause != nil {
+        return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+    }
+    return e.Message
+}
+
+func (seh *SecureErrorHandler) HandleError(w http.ResponseWriter, err error) {
+    // Log internal details
+    log.Printf("[ERROR] %v", err)
+    
+    // Determine what to show user
+    switch e := err.(type) {
+    case *UserError:
+        // Safe to show user
+        http.Error(w, e.Message, e.StatusCode)
+    case *InternalError:
+        // Don't expose internal details
+        if seh.debug {
+            http.Error(w, e.Error(), http.StatusInternalServerError)
+        } else {
+            http.Error(w, "Internal server error", http.StatusInternalServerError)
+        }
+    default:
+        // Unknown error - be cautious
+        http.Error(w, "An error occurred", http.StatusInternalServerError)
+    }
+}
+
+func (seh *SecureErrorHandler) WrapHandler(handler func(w http.ResponseWriter, r *http.Request) error) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        if err := handler(w, r); err != nil {
+            seh.HandleError(w, err)
+        }
+    }
+}
+
+func main() {
+    handler := NewSecureErrorHandler(false) // Production mode
+    
+    http.HandleFunc("/user", handler.WrapHandler(func(w http.ResponseWriter, r *http.Request) error {
+        userID := r.URL.Query().Get("id")
+        
+        if userID == "" {
+            return &UserError{
+                Message:    "User ID is required",
+                StatusCode: http.StatusBadRequest,
+            }
+        }
+        
+        // Simulate internal error
+        if userID == "error" {
+            return &InternalError{
+                Message: "Database connection failed",
+                Cause:   fmt.Errorf("connection timeout"),
+            }
+        }
+        
+        fmt.Fprintf(w, "User: %s\\n", userID)
+        return nil
+    }))
+    
+    fmt.Println("Secure error handling server on :8080")
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+This example demonstrates secure error handling that prevents information leakage.  
+Differentiate between user-safe errors and internal errors. Log detailed errors  
+internally but show generic messages externally. Never expose stack traces,  
+database errors, or file paths to users. In production, use generic error messages.  
+Implement error codes for support. Monitor error rates for security incidents.  
+
+## Security headers best practices
+
+Implementing comprehensive security headers strengthens application security.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "time"
+)
+
+type ComprehensiveSecurityHeaders struct{}
+
+func (csh *ComprehensiveSecurityHeaders) Apply(w http.ResponseWriter, r *http.Request) {
+    // Content Security Policy
+    w.Header().Set("Content-Security-Policy",
+        "default-src 'self'; "+
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "+
+            "style-src 'self' 'unsafe-inline'; "+
+            "img-src 'self' data: https:; "+
+            "font-src 'self'; "+
+            "connect-src 'self'; "+
+            "frame-ancestors 'none'; "+
+            "base-uri 'self'; "+
+            "form-action 'self'")
+    
+    // Prevent clickjacking
+    w.Header().Set("X-Frame-Options", "DENY")
+    
+    // Prevent MIME sniffing
+    w.Header().Set("X-Content-Type-Options", "nosniff")
+    
+    // Enable XSS protection (legacy browsers)
+    w.Header().Set("X-XSS-Protection", "1; mode=block")
+    
+    // HSTS - Force HTTPS
+    if r.TLS != nil {
+        w.Header().Set("Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains; preload")
+    }
+    
+    // Control referrer information
+    w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+    
+    // Feature policy / Permissions policy
+    w.Header().Set("Permissions-Policy",
+        "geolocation=(), "+
+            "microphone=(), "+
+            "camera=(), "+
+            "payment=(), "+
+            "usb=(), "+
+            "magnetometer=()")
+    
+    // Expect-CT for certificate transparency
+    w.Header().Set("Expect-CT",
+        "max-age=86400, enforce")
+    
+    // Remove server identification
+    w.Header().Del("Server")
+    w.Header().Del("X-Powered-By")
+    
+    // Prevent caching of sensitive data
+    if r.URL.Path == "/api/sensitive" {
+        w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+        w.Header().Set("Pragma", "no-cache")
+        w.Header().Set("Expires", "0")
+    }
+}
+
+func SecurityHeadersMiddleware(next http.Handler) http.Handler {
+    headers := &ComprehensiveSecurityHeaders{}
+    
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        headers.Apply(w, r)
+        next.ServeHTTP(w, r)
+    })
+}
+
+func main() {
+    mux := http.NewServeMux()
+    
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Secure page with comprehensive security headers\\n")
+    })
+    
+    handler := SecurityHeadersMiddleware(mux)
+    
+    server := &http.Server{
+        Addr:         ":8080",
+        Handler:      handler,
+        ReadTimeout:  15 * time.Second,
+        WriteTimeout: 15 * time.Second,
+        IdleTimeout:  60 * time.Second,
+    }
+    
+    fmt.Println("Server with comprehensive security headers on :8080")
+    server.ListenAndServe()
+}
+```
+
+This example implements comprehensive HTTP security headers as defense-in-depth.  
+Security headers provide browser-level protection against various attacks. CSP  
+prevents XSS, X-Frame-Options prevents clickjacking, HSTS enforces HTTPS,  
+and other headers provide additional protections. Test headers with tools like  
+securityheaders.com. Adjust CSP based on application needs. Monitor CSP reports.  
+
+## Secure defaults and principle of least privilege
+
+Implementing secure defaults minimizes attack surface.  
+
+```go
+package main
+
+import (
+    "crypto/tls"
+    "fmt"
+    "net/http"
+    "time"
+)
+
+type SecureServerConfig struct {
+    server *http.Server
+}
+
+func NewSecureServer(addr string, handler http.Handler) *SecureServerConfig {
+    // TLS configuration with secure defaults
+    tlsConfig := &tls.Config{
+        MinVersion:               tls.VersionTLS13,
+        CurvePreferences:         []tls.CurveID{tls.X25519, tls.CurveP256},
+        PreferServerCipherSuites: true,
+        CipherSuites: []uint16{
+            tls.TLS_AES_128_GCM_SHA256,
+            tls.TLS_AES_256_GCM_SHA384,
+            tls.TLS_CHACHA20_POLY1305_SHA256,
+        },
+    }
+    
+    // HTTP server with secure defaults
+    server := &http.Server{
+        Addr:              addr,
+        Handler:           handler,
+        TLSConfig:         tlsConfig,
+        ReadTimeout:       15 * time.Second,
+        ReadHeaderTimeout: 5 * time.Second,
+        WriteTimeout:      15 * time.Second,
+        IdleTimeout:       60 * time.Second,
+        MaxHeaderBytes:    1 << 20, // 1 MB
+    }
+    
+    return &SecureServerConfig{server: server}
+}
+
+func main() {
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "Secure server with safe defaults\\n")
+    })
+    
+    server := NewSecureServer(":8443", mux)
+    
+    fmt.Println("Secure defaults configuration:")
+    fmt.Println("- TLS 1.3 minimum")
+    fmt.Println("- Strong cipher suites only")
+    fmt.Println("- Proper timeouts configured")
+    fmt.Println("- Request size limits")
+    fmt.Println("- Modern curve preferences")
+    fmt.Println()
+    fmt.Println("Best practices:")
+    fmt.Println("- Default deny, explicit allow")
+    fmt.Println("- Principle of least privilege")
+    fmt.Println("- Fail securely")
+    fmt.Println("- Defense in depth")
+    fmt.Println("- Secure by default")
+    
+    // server.server.ListenAndServeTLS("cert.pem", "key.pem")
+}
+```
+
+This final example demonstrates implementing secure defaults following security  
+best practices. Configure systems with security as the default state. Use modern  
+TLS versions, strong ciphers, and proper timeouts. Apply principle of least  
+privilege—grant minimum necessary permissions. Fail securely—errors should not  
+compromise security. Implement defense in depth with multiple security layers.  
+Review and update security configurations regularly as threats evolve.  
+
+---
+
+## Conclusion
+
+This comprehensive guide has covered 60 production-ready Go security examples  
+spanning secrets management, cryptography, TLS, JWT, API security, and advanced  
+patterns. Security is an ongoing process requiring constant vigilance, regular  
+updates, and staying informed about emerging threats.  
+
+Key takeaways:  
+
+**Secrets Management**: Never hardcode secrets, use environment variables or  
+dedicated secret management systems, implement rotation, and secure storage.  
+
+**Cryptography**: Use established algorithms and libraries, never implement  
+custom crypto, use authenticated encryption, and manage keys properly.  
+
+**TLS/SSL**: Always use TLS for network communication, validate certificates,  
+use modern versions and ciphers, and consider mutual TLS for service-to-service.  
+
+**Authentication**: Implement proper password hashing with bcrypt or argon2,  
+use JWTs correctly with proper verification, implement 2FA, and secure session  
+management.  
+
+**API Security**: Implement rate limiting, input validation, CORS, CSRF protection,  
+authentication, and authorization. Use API versioning for evolution.  
+
+**Best Practices**: Follow principle of least privilege, defense in depth,  
+secure defaults, proper error handling, comprehensive logging, and regular  
+security scanning.  
+
+Stay updated with security advisories, regularly update dependencies, perform  
+security audits, and continuously improve your security posture. Security is  
+everyone's responsibility.  
+
