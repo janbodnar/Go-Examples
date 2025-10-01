@@ -2088,9 +2088,9 @@ powers of 2, and right shift (>>) divides by powers of 2. The practical
 examples show common bit manipulation patterns: checking, setting, clearing,  
 and toggling individual bits using bit masks and shift operations. These  
 operations are essential for flags, permissions, and packed data structures.  
-```
 
-### Example 22: Bit Manipulation Functions and Utilities
+
+### Bit Manipulation Functions and Utilities
 
 ```go
 package main
@@ -2212,7 +2212,7 @@ func main() {
 }
 ```
 
-### Example 23: Bit Fields and Packed Data Structures
+### Bit Fields and Packed Data Structures
 
 ```go
 package main
