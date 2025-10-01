@@ -446,6 +446,14 @@ transform data, with XOR being its own inverse operation for decryption.
 
 ### Example 7: Byte Slice Growing and Shrinking
 
+This example demonstrates how byte slices grow and shrink in Go. It covers
+the `append()` function, which dynamically increases slice capacity as needed,
+and shows how to pre-allocate memory with `make()` for better performance.
+The shrinking operations illustrate how to create sub-slices to remove
+elements from the beginning, end, or middle of a byte slice. An efficient,
+in-place removal function is also provided, which is useful for managing
+dynamic byte arrays without excessive memory allocation.
+
 ```go
 package main
 
@@ -506,6 +514,18 @@ func main() {
 ```
 
 ### Example 8: Memory-Efficient Byte Operations
+
+This example highlights the importance of memory efficiency when performing
+byte operations. It contrasts an inefficient concatenation method, which creates
+many intermediate slices and triggers frequent garbage collection, with an
+efficient approach using a pre-allocated slice. The memory usage comparison
+demonstrates how pre-allocation significantly reduces memory churn.
+
+The example also introduces a custom byte slice pool, a common optimization
+pattern for high-performance applications. By reusing slices, the pool
+minimizes allocations and garbage collection overhead, leading to more
+predictable and efficient memory usage, especially in scenarios with frequent
+byte processing tasks.
 
 ```go
 package main
@@ -594,6 +614,16 @@ func main() {
 
 ### Example 9: Byte Slice Sorting and Ordering
 
+This example demonstrates how to sort byte slices in Go. It shows how to
+sort a slice of byte slices lexicographically using `sort.Slice` with
+`bytes.Compare`. The code also illustrates custom sorting logic, such as
+ordering by length first and then alphabetically.
+
+Additionally, the example covers sorting the individual bytes within a single
+slice and performing a reverse sort. These techniques are essential for data
+normalization, ordered processing, and implementing algorithms that rely on
+sorted byte sequences.
+
 ```go
 package main
 
@@ -677,6 +707,18 @@ func main() {
 ```
 
 ### Example 10: Advanced Byte Slice Patterns
+
+This example showcases three advanced byte slice patterns for building robust
+and efficient applications. The circular buffer demonstrates a fixed-size queue
+that overwrites old data, which is useful for streaming and logging. The byte
+slice interning pattern shows how to reduce memory usage by caching and reusing
+identical byte slices, similar to string interning.
+
+Finally, the custom byte builder provides an efficient way to construct byte
+slices incrementally. It pre-allocates memory and minimizes re-allocations,
+offering better performance than repeated `append()` calls on a zero-capacity
+slice. These patterns are valuable for optimizing memory and performance in
+data-intensive Go programs.
 
 ```go
 package main
@@ -939,6 +981,18 @@ of file and is expected in file reading operations.
 
 ### Example 12: Binary File Writing with Different Methods
 
+This example demonstrates four essential methods for writing binary data to
+files in Go. The first method, `os.WriteFile()`, is the simplest way to write
+an entire byte slice at once and is suitable for small files. The second
+method uses `os.Create()` and `file.Write()` for more control over the writing
+process.
+
+The third method introduces `bufio.NewWriter()` for buffered I/O, which is
+highly recommended for performance when writing in small, frequent chunks.
+Finally, the example shows how to append data to an existing file using
+`os.OpenFile()` with the `O_APPEND` flag. These techniques cover a wide range
+of use cases, from simple writes to high-performance, buffered output.
+
 ```go
 package main
 
@@ -1048,6 +1102,18 @@ func verifyFiles() {
 ```
 
 ### Example 13: Random Access Binary File Operations
+
+This example demonstrates random access file operations, which allow reading
+from and writing to any part of a file directly. It uses `os.OpenFile()` with
+read-write permissions and the `file.Seek()` method to move the file cursor to
+specific positions. The `io.SeekStart`, `io.SeekEnd`, and `io.SeekCurrent`
+constants are used to seek from the beginning, end, or current position of
+the file.
+
+This capability is crucial for applications like databases, file editors, and
+any system that needs to modify parts of a file without rewriting it entirely.
+The example shows how to read from an offset, write to a specific location,
+and verify the changes.
 
 ```go
 package main
@@ -1173,6 +1239,18 @@ func createTestFile() {
 
 ### Example 14: Binary File Streaming and Pipes
 
+This example demonstrates efficient binary data streaming using Go's `io`
+package. It showcases `io.Copy()` for high-performance, memory-efficient file
+copying, which reads data in chunks and avoids loading the entire file into
+memory. The `io.LimitReader` is used to create a stream that reads only a
+specified number of bytes from the source, which is useful for processing
+file headers or partial content.
+
+The example also introduces `io.TeeReader`, a powerful tool that splits a
+stream into two. As data is read from the source, it is simultaneously
+written to a secondary destination, making it ideal for tasks like logging,
+checksum calculation, or creating backups during data processing.
+
 ```go
 package main
 
@@ -1268,6 +1346,18 @@ func main() {
 ```
 
 ### Example 15: Reading Structured Binary Data
+
+This example demonstrates how to read structured binary data using the
+`encoding/binary` package. It defines a `FileHeader` struct and uses
+`binary.Read()` to parse a binary file directly into the struct's fields.
+This approach is highly efficient for fixed-layout data formats, as it avoids
+manual byte-by-byte parsing.
+
+The example also shows how to handle endianness (in this case, Little Endian)
+to ensure correct interpretation of multi-byte integers. An alternative manual
+approach is also shown, where individual fields are read one by one. This
+technique is essential for parsing binary protocols, file headers, and other
+structured data formats.
 
 ```go
 package main
@@ -1378,6 +1468,18 @@ func createStructuredFile() {
 ```
 
 ### Example 16: File Copying with Progress and Checksums
+
+This example demonstrates a practical approach to copying large files while
+providing real-time progress feedback and verifying data integrity. It uses a
+custom `ProgressReader` that wraps an `io.Reader` to track the number of bytes
+read and calculate copy speed. This is essential for user-facing applications
+that handle large file operations.
+
+To ensure the copied file is identical to the original, the example calculates
+the MD5 checksum of both files. Checksums are a reliable way to detect data
+corruption that might occur during file transfer or storage. This combination
+of progress tracking and integrity validation is a robust pattern for any
+application that manages important binary data.
 
 ```go
 package main
@@ -1523,6 +1625,18 @@ func calculateMD5(filename string) ([]byte, error) {
 
 ### Example 17: Memory-Mapped File Operations
 
+This example demonstrates memory-mapped file I/O, a high-performance technique
+that maps a file's content directly into the application's address space. This
+allows the file to be accessed like an in-memory byte slice, avoiding the
+overhead of system calls for read and write operations. The operating system
+handles the loading of file data into memory and writing changes back to disk.
+
+The code uses the `syscall` package to perform the mapping, which is platform-
+specific (this example is for Unix/Linux). It also shows how to use `unsafe`
+to interpret the memory-mapped data as different types, such as a slice of
+`uint32`. Memory-mapped files are ideal for very large files and inter-process
+communication, offering significant performance benefits.
+
 ```go
 package main
 
@@ -1610,6 +1724,17 @@ func createTestFile() {
 ```
 
 ### Example 18: Concurrent File Processing
+
+This example demonstrates how to process multiple files concurrently using Go's
+goroutines and wait groups. It contrasts a sequential approach with a concurrent
+one, showing the performance benefits of parallel processing for I/O-bound
+tasks. By launching a separate goroutine for each file, the program can overlap
+the waiting time for file operations, leading to a significant speedup.
+
+The `sync.WaitGroup` is used to ensure that the main program waits for all
+file processing goroutines to complete before proceeding. This pattern is
+highly effective for tasks like batch processing, data aggregation, and any
+scenario where multiple independent files need to be handled efficiently.
 
 ```go
 package main
@@ -1729,6 +1854,17 @@ func processFile(filename string) int {
 ```
 
 ### Example 19: Binary File Compression and Decompression
+
+This example demonstrates how to compress and decompress binary files using
+Go's standard library. It uses the `compress/gzip` package to create a Gzip
+writer that compresses data streamed from a source file and a Gzip reader
+that decompresses data on the fly. The `io.Copy` function is used to handle
+the streaming process efficiently.
+
+The code shows how to calculate the compression ratio and verify that the
+decompressed data is identical to the original. This is a common requirement
+for reducing storage space and network bandwidth. The techniques shown are
+applicable to other compression formats available in Go, such as zlib and bzip2.
 
 ```go
 package main
@@ -1863,6 +1999,17 @@ func decompressFile(src, dst string) error {
 ```
 
 ### Example 20: File Format Detection and Validation
+
+This example demonstrates how to detect and validate file formats by examining
+their "magic numbers" – a sequence of bytes at the beginning of a file that
+identifies its type. It defines a list of common file signatures (PNG, JPEG,
+PDF, etc.) and checks the header of a file against these signatures.
+
+The code also includes a simple heuristic to guess whether a file is text-based
+or binary by analyzing its byte content. This technique is fundamental for
+file processing applications, security scanners, and any system that needs to
+identify and handle different file types correctly without relying on file
+extensions, which can be unreliable.
 
 ```go
 package main
@@ -2092,6 +2239,17 @@ operations are essential for flags, permissions, and packed data structures.
 
 ### Bit Manipulation Functions and Utilities
 
+This example provides a collection of utility functions for common bit
+manipulation tasks. It includes functions to set, clear, toggle, and check
+individual bits, making bitwise operations more readable and less error-prone.
+The code also demonstrates more advanced utilities, such as counting the number
+of set bits (population count), reversing the bits in a byte, and performing
+left and right bit rotations.
+
+These functions are fundamental building blocks for low-level programming,
+data compression, cryptography, and any domain where compact data representation
+and efficient bit-level operations are required.
+
 ```go
 package main
 
@@ -2213,6 +2371,18 @@ func main() {
 ```
 
 ### Bit Fields and Packed Data Structures
+
+This example demonstrates how to use bit fields to pack multiple data values
+into a single integer, saving memory and enabling efficient data representation.
+It showcases three practical use cases: packing an ARGB color into a `uint32`,
+managing file permissions within a single byte, and representing TCP header
+flags.
+
+The code uses bitwise shifting and masking to encode and decode the individual
+fields. This technique is essential for working with hardware registers, network
+protocols, and any application where data needs to be stored compactly. The
+use of constants and methods provides a clean and type-safe interface for
+manipulating the packed data.
 
 ```go
 package main
@@ -2394,6 +2564,17 @@ func main() {
 
 ### Example 24: Bitwise Algorithms and Tricks
 
+This example showcases a variety of clever bitwise algorithms and tricks that
+are highly efficient and widely used in low-level programming. It includes
+methods for detecting powers of two, performing fast multiplication and division
+by powers of two, and swapping variables without a temporary variable using XOR.
+
+The code also demonstrates advanced techniques like finding the unique number
+in a list of duplicates, counting trailing zeros, finding the next power of
+two, and implementing Morton encoding for interleaving bits. These tricks
+leverage the properties of bitwise operations to solve common problems with
+optimal performance.
+
 ```go
 package main
 
@@ -2542,6 +2723,18 @@ func grayToBinary(gray byte) byte {
 ```
 
 ### Example 25: Bit Vectors and Sets
+
+This example implements a `BitSet`, a memory-efficient data structure that uses
+a slice of `uint64` to represent a set of integers. Each bit corresponds to an
+integer's presence or absence in the set, making it highly compact. The code
+provides methods for setting, clearing, and testing bits, as well as performing
+set operations like union and intersection.
+
+The example demonstrates the power of bit vectors with two practical applications:
+the Sieve of Eratosthenes for finding prime numbers and a simple Bloom filter
+for probabilistic membership testing. These showcases highlight how bit sets can
+dramatically reduce memory usage compared to traditional data structures like
+maps or slices of booleans.
 
 ```go
 package main
@@ -2776,6 +2969,17 @@ func main() {
 
 ### Example 26: Bit Streaming and Bit-Level I/O
 
+This example implements `BitWriter` and `BitReader` to demonstrate bit-level
+I/O operations. These utilities allow writing and reading individual bits to
+and from a stream, which is essential for data compression, custom binary
+formats, and network protocols where every bit matters. The `BitWriter` buffers
+bits until a full byte is formed, while the `BitReader` reads one byte at a
+time and serves individual bits.
+
+A practical application is shown with a simple compression scheme where
+characters are represented by 2 bits instead of 8, demonstrating how bit-level
+I/O can significantly reduce data size.
+
 ```go
 package main
 
@@ -3002,6 +3206,17 @@ func decompressString(data []byte) string {
 
 ### Example 27: Hamming Codes and Error Detection
 
+This example demonstrates how to implement error detection and correction
+techniques using bitwise operations. It includes a simple Hamming(7,4) code
+that can detect and correct single-bit errors in a 4-bit data nibble. The
+code shows how to calculate parity bits for encoding and use a syndrome to
+identify and fix the error bit during decoding.
+
+Additionally, the example provides functions for calculating checksums, CRC-8,
+and parity bits, which are common methods for detecting data corruption in
+transmissions and storage. These techniques are fundamental to ensuring data
+integrity in unreliable environments.
+
 ```go
 package main
 
@@ -3201,6 +3416,17 @@ func main() {
 ```
 
 ### Example 28: Bitwise Cryptographic Operations
+
+This example demonstrates several fundamental cryptographic operations that rely
+on bitwise manipulation. It includes a simple XOR cipher, which is a basic symmetric
+encryption algorithm, and a linear feedback shift register (LFSR) for generating
+pseudorandom numbers. The code also shows how to implement a substitution cipher
+using an S-box and a simplified Feistel network, which is the basis for many
+modern block ciphers.
+
+These examples illustrate how bitwise operations like XOR, shifting, and
+rotation are the building blocks of cryptographic algorithms, used for creating
+confusion and diffusion to secure data.
 
 ```go
 package main
@@ -3423,6 +3649,16 @@ func main() {
 ```
 
 ### Example 29: Binary Data Compression Techniques
+
+This example demonstrates several fundamental data compression techniques that
+work directly with binary data. It includes run-length encoding (RLE), which is
+effective for data with repeating byte sequences, and Huffman coding, a widely
+used algorithm that assigns variable-length codes based on frequency.
+
+The code also shows delta encoding, which stores the differences between
+consecutive values, and bit packing for storing small integers efficiently.
+These techniques are foundational to understanding how modern compression
+algorithms reduce data size by removing redundancy.
 
 ```go
 package main
@@ -3740,6 +3976,17 @@ func main() {
 ```
 
 ### Example 30: Advanced Bit Manipulation Patterns
+
+This example explores a collection of advanced bit manipulation patterns and
+"bit twiddling hacks" used for high-performance computing. It includes highly
+optimized functions for common tasks like checking for powers of two, counting
+set bits (population count), and reversing bits. The code also demonstrates
+branchless algorithms for operations like finding the minimum of two integers
+or calculating an absolute value, which can be faster than traditional conditional
+logic.
+
+These patterns are often found in performance-critical code, such as graphics
+processing, cryptography, and systems programming, where every CPU cycle counts.
 
 ```go
 package main
@@ -6734,6 +6981,17 @@ func countPunctuation(s string) int {
 
 ### Example 40: MIME and Content Encoding
 
+This example demonstrates how to work with MIME (Multipurpose Internet Mail
+Extensions) and content encoding in Go. It covers detecting MIME types by file
+extension and content, which is crucial for web servers and email clients. The
+code also shows how to use Quoted-Printable encoding for text that is mostly
+ASCII but contains some special characters.
+
+A key part of the example is the creation of a multipart MIME email, complete
+with headers, a text body, and Base64-encoded binary attachments. It also
+illustrates how to encode non-ASCII characters in email headers using RFC 2047,
+ensuring they are handled correctly by mail systems.
+
 ```go
 package main
 
@@ -7049,6 +7307,2236 @@ func urlEncode(s string) string {
         }
     }
     return result.String()
+}
+```
+
+---
+
+## Buffer Operations and Management
+
+### Example 41: Using bytes.Buffer for Dynamic Buffering
+
+This example introduces `bytes.Buffer`, a versatile and efficient in-memory
+byte buffer. It demonstrates how to write different data types, including
+strings, bytes, and individual bytes, into the buffer. The buffer grows
+dynamically as more data is added. The example also shows how to read data
+back from the buffer, check its size, and convert its contents to a string.
+`bytes.Buffer` is ideal for building byte sequences incrementally without
+the overhead of frequent slice re-allocations.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+)
+
+func main() {
+    // Create a new buffer
+    var buffer bytes.Buffer
+
+    // Write strings and bytes to the buffer
+    buffer.WriteString("Hello, ")
+    buffer.Write([]byte("World!"))
+    buffer.WriteByte(' ')
+
+    // Write formatted string
+    fmt.Fprintf(&buffer, "The year is %d.", 2023)
+
+    fmt.Printf("Buffer content: %s\n", buffer.String())
+    fmt.Printf("Buffer length: %d bytes\n", buffer.Len())
+    fmt.Printf("Buffer capacity: %d bytes\n", buffer.Cap())
+
+    // Read from the buffer
+    first5 := make([]byte, 5)
+    buffer.Read(first5)
+    fmt.Printf("Read first 5 bytes: %s\n", string(first5))
+    fmt.Printf("Remaining buffer: %s\n", buffer.String())
+
+    // Reset the buffer for reuse
+    buffer.Reset()
+    fmt.Printf("After reset, length is %d\n", buffer.Len())
+}
+```
+
+### Example 42: bufio.Reader for Buffered Reading
+
+This example demonstrates how to use `bufio.Reader` to add buffering to any
+`io.Reader`. Buffered reading is much more efficient than reading small amounts
+of data directly from the source, as it reduces the number of system calls.
+The code shows how to read bytes, lines, and delimited strings. The `Peek()`
+method is used to look ahead in the stream without consuming the bytes, which
+is useful for parsing and validation tasks.
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "io"
+    "strings"
+)
+
+func main() {
+    // Use a string as our source reader
+    source := strings.NewReader("line1\nline2 with, a comma\nline3")
+    reader := bufio.NewReader(source)
+
+    // Read a line
+    line1, err := reader.ReadString('\n')
+    if err != nil {
+        fmt.Printf("Error reading line: %v\n", err)
+    }
+    fmt.Printf("Read line: %s", line1)
+
+    // Peek at the next few bytes
+    peeked, err := reader.Peek(5)
+    if err != nil {
+        fmt.Printf("Error peeking: %v\n", err)
+    }
+    fmt.Printf("Peeked: %s\n", string(peeked))
+
+    // Read until a delimiter
+    untilComma, err := reader.ReadString(',')
+    if err != nil {
+        fmt.Printf("Error reading until comma: %v\n", err)
+    }
+    fmt.Printf("Read until comma: %s\n", untilComma)
+
+    // Read remaining content
+    remaining, err := io.ReadAll(reader)
+    if err != nil {
+        fmt.Printf("Error reading remaining: %v\n", err)
+    }
+    fmt.Printf("Remaining: %s\n", string(remaining))
+}
+```
+
+### Example 43: bufio.Writer for Buffered Writing
+
+This example showcases `bufio.Writer`, which provides buffered I/O for any
+`io.Writer`. Writing data in small chunks can be inefficient due to frequent
+system calls. `bufio.Writer` accumulates data in an internal buffer and writes
+it to the underlying writer in larger blocks. The `Flush()` method is critical;
+it ensures that any data remaining in the buffer is written to the destination.
+This example demonstrates writing strings and bytes and shows the state of the
+buffer before and after flushing.
+
+```go
+package main
+
+import (
+    "bufio"
+    "bytes"
+    "fmt"
+)
+
+func main() {
+    var buffer bytes.Buffer
+    writer := bufio.NewWriter(&buffer)
+
+    // Write some data
+    writer.WriteString("Buffered write\n")
+    writer.WriteByte('!')
+    writer.WriteRune('🚀')
+
+    fmt.Printf("Buffer size before flush: %d\n", buffer.Len())
+    fmt.Printf("Buffered writer buffered: %d\n", writer.Buffered())
+
+    // Flush data to the underlying writer (the bytes.Buffer)
+    err := writer.Flush()
+    if err != nil {
+        fmt.Printf("Error flushing: %v\n", err)
+    }
+
+    fmt.Printf("Buffer size after flush: %d\n", buffer.Len())
+    fmt.Printf("Buffered writer buffered: %d\n", writer.Buffered())
+    fmt.Printf("Final content: %s\n", buffer.String())
+}
+```
+
+### Example 44: Using bufio.Scanner for Tokenization
+
+This example demonstrates `bufio.Scanner`, a powerful tool for tokenizing input
+by splitting it into lines, words, or custom-defined chunks. It is generally
+more convenient and often more efficient than manual line-by-line reading.
+The code shows how to scan input line by line and word by word. It also
+implements a custom split function to tokenize a comma-separated string,
+showcasing the flexibility of the scanner.
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "strings"
+)
+
+func main() {
+    input := "The quick brown fox\njumps over the lazy dog\napple,banana,cherry"
+
+    // Scan by lines
+    fmt.Println("Scanning by lines:")
+    scanner := bufio.NewScanner(strings.NewReader(input))
+    for scanner.Scan() {
+        fmt.Printf("  - %s\n", scanner.Text())
+    }
+
+    // Scan by words
+    fmt.Println("\nScanning by words:")
+    scanner = bufio.NewScanner(strings.NewReader(input))
+    scanner.Split(bufio.ScanWords)
+    for scanner.Scan() {
+        fmt.Printf("  - %s\n", scanner.Text())
+    }
+
+    // Custom split function for CSV
+    fmt.Println("\nScanning with custom splitter (CSV):")
+    csvInput := "apple,banana,cherry"
+    scanner = bufio.NewScanner(strings.NewReader(csvInput))
+    scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+        if atEOF && len(data) == 0 {
+            return 0, nil, nil
+        }
+        if i := strings.Index(string(data), ","); i >= 0 {
+            return i + 1, data[0:i], nil
+        }
+        if atEOF {
+            return len(data), data, nil
+        }
+        return 0, nil, nil
+    })
+    for scanner.Scan() {
+        fmt.Printf("  - %s\n", scanner.Text())
+    }
+}
+```
+
+### Example 45: bytes.Reader for Reading from Byte Slices
+
+This example introduces `bytes.Reader`, which implements the `io.Reader`,
+`io.Seeker`, and other `io` interfaces for reading from a byte slice. It allows
+you to treat a static byte slice like a file, enabling seeking and reading
+from different positions. This is incredibly useful for parsing binary data
+held in memory without needing to write it to a temporary file. The code
+demonstrates reading, seeking to different offsets, and checking the reader's
+current position and size.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "io"
+)
+
+func main() {
+    data := []byte("This is a byte slice that we will read from.")
+    reader := bytes.NewReader(data)
+
+    fmt.Printf("Reader size: %d\n", reader.Size())
+
+    // Read first 4 bytes
+    p := make([]byte, 4)
+    reader.Read(p)
+    fmt.Printf("Read: %s\n", string(p))
+
+    // Seek to a new position
+    reader.Seek(10, io.SeekStart)
+    reader.Read(p)
+    fmt.Printf("Read after seeking to 10: %s\n", string(p))
+
+    // Get current position
+    pos, _ := reader.Seek(0, io.SeekCurrent)
+    fmt.Printf("Current position: %d\n", pos)
+
+    // Read from an offset
+    p2 := make([]byte, 5)
+    reader.ReadAt(p2, 5) // Read 5 bytes starting at index 5
+    fmt.Printf("ReadAt(5): %s\n", string(p2))
+    fmt.Printf("Current position is unchanged: %d\n", reader.Len())
+}
+```
+
+### Example 46: Buffer Growth and Memory Management
+
+This example explores the memory management of `bytes.Buffer`. It shows how the
+buffer's capacity grows automatically as data is written, typically doubling
+in size to minimize the number of allocations. The `Grow()` method is demonstrated
+as a way to pre-allocate memory, which is a key optimization for performance-
+critical code where the final size is known or can be estimated. Pre-allocation
+avoids the overhead of repeated resizing and copying.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+)
+
+func main() {
+    var buffer bytes.Buffer
+    fmt.Printf("Initial: len=%d, cap=%d\n", buffer.Len(), buffer.Cap())
+
+    // Observe growth
+    for i := 0; i < 5; i++ {
+        buffer.WriteString("abcdefghijklm") // 13 bytes
+        fmt.Printf("After write %d: len=%d, cap=%d\n", i+1, buffer.Len(), buffer.Cap())
+    }
+
+    // Pre-allocate with Grow
+    var buffer2 bytes.Buffer
+    buffer2.Grow(100) // Ensure capacity for at least 100 bytes
+    fmt.Printf("\nWith Grow(100): len=%d, cap=%d\n", buffer2.Len(), buffer2.Cap())
+    buffer2.WriteString("This string fits without reallocation.")
+    fmt.Printf("After write: len=%d, cap=%d\n", buffer2.Len(), buffer2.Cap())
+}
+```
+
+### Example 47: Reusing Buffers with Reset
+
+This example demonstrates a crucial optimization pattern: buffer reuse. Creating
+and garbage-collecting buffers can be expensive in high-performance or long-running
+applications. The `bytes.Buffer.Reset()` method allows a buffer to be cleared
+for reuse without de-allocating its underlying memory. This means the buffer
+retains its capacity, making subsequent operations that fit within that capacity
+highly efficient. This technique is widely used in network servers and data
+processing pipelines to reduce memory churn.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+)
+
+func processData(data string, buffer *bytes.Buffer) {
+    buffer.Reset() // Reset for reuse
+    fmt.Fprintf(buffer, "Processing: %s (len: %d)", data, len(data))
+    // Simulate using the buffer
+    fmt.Println(buffer.String())
+}
+
+func main() {
+    var buffer bytes.Buffer
+    buffer.Grow(128) // Pre-allocate
+    fmt.Printf("Initial capacity: %d\n\n", buffer.Cap())
+
+    // Process multiple items using the same buffer
+    processData("short string", &buffer)
+    fmt.Printf("Capacity after short string: %d\n\n", buffer.Cap())
+
+    longString := "this is a much longer string that will likely cause the buffer to grow"
+    processData(longString, &buffer)
+    fmt.Printf("Capacity after long string: %d\n\n", buffer.Cap())
+
+    // The buffer's capacity is now larger and will be reused
+    processData("another short string", &buffer)
+    fmt.Printf("Capacity after another short string: %d\n\n", buffer.Cap())
+}
+```
+
+### Example 48: Using sync.Pool to Reuse Buffers
+
+This example demonstrates an advanced technique for managing and reusing buffers
+in concurrent applications: `sync.Pool`. A `sync.Pool` provides a cache of
+allocated but unused items (in this case, `bytes.Buffer`) that can be safely
+shared among goroutines. This significantly reduces allocation overhead and
+garbage collector pressure in high-throughput systems. The `Get()` method
+retrieves a buffer from the pool, and `Put()` returns it after use.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "sync"
+)
+
+var bufferPool = sync.Pool{
+    New: func() interface{} {
+        // The New function is called when a new instance is needed
+        return new(bytes.Buffer)
+    },
+}
+
+func processWithPool(data string) {
+    buffer := bufferPool.Get().(*bytes.Buffer)
+    defer bufferPool.Put(buffer) // Ensure buffer is returned to the pool
+
+    buffer.Reset() // Reset before use
+    buffer.WriteString("Processing: ")
+    buffer.WriteString(data)
+
+    fmt.Println(buffer.String())
+}
+
+func main() {
+    var wg sync.WaitGroup
+    tasks := []string{"task1", "task2", "task3", "task4", "task5"}
+
+    for _, task := range tasks {
+        wg.Add(1)
+        go func(t string) {
+            defer wg.Done()
+            processWithPool(t)
+        }(task)
+    }
+
+    wg.Wait()
+}
+```
+
+### Example 49: Combining Readers and Writers with io.Pipe
+
+This example showcases `io.Pipe`, a powerful tool for connecting an `io.Writer`
+to an `io.Reader` in memory. It creates a synchronous pipe where data written
+to the writer is immediately available to be read from the reader. This is
+extremely useful for decoupling different parts of an application, especially
+in concurrent scenarios. The example shows how a goroutine can write data to
+the pipe while the main goroutine reads it, simulating a producer-consumer
+workflow without needing an intermediate buffer.
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "time"
+)
+
+func main() {
+    pr, pw := io.Pipe()
+
+    // Producer goroutine
+    go func() {
+        defer pw.Close()
+        for i := 1; i <= 3; i++ {
+            fmt.Fprintf(pw, "Data packet %d\n", i)
+            time.Sleep(500 * time.Millisecond)
+        }
+    }()
+
+    // Consumer in the main goroutine
+    fmt.Println("Reading from pipe...")
+    buffer := make([]byte, 1024)
+    n, err := pr.Read(buffer)
+    if err != nil {
+        fmt.Printf("Error reading from pipe: %v\n", err)
+    }
+
+    fmt.Printf("Read %d bytes:\n%s", n, string(buffer[:n]))
+}
+```
+
+### Example 50: Advanced Buffer and I/O Patterns
+
+This example combines several advanced I/O patterns. It uses `io.MultiWriter` to
+write to multiple destinations simultaneously (a file and standard output).
+It then uses `io.MultiReader` to create a single reader from multiple sources
+(a string and a file), and `io.TeeReader` to capture the data as it is being
+read. This demonstrates how to build complex I/O pipelines by composing simple
+`io` interfaces, a core design principle in Go. These patterns are highly
+effective for logging, data validation, and creating flexible data processing workflows.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "io"
+    "os"
+    "strings"
+)
+
+func main() {
+    // 1. MultiWriter: Write to multiple destinations
+    var buffer bytes.Buffer
+    multiWriter := io.MultiWriter(os.Stdout, &buffer)
+    fmt.Fprintln(multiWriter, "This message goes to stdout and a buffer.")
+    fmt.Printf("Buffer content: %s", buffer.String())
+
+    // 2. MultiReader: Read from multiple sources sequentially
+    r1 := strings.NewReader("first part | ")
+    r2 := strings.NewReader("second part | ")
+    r3 := strings.NewReader("third part")
+    multiReader := io.MultiReader(r1, r2, r3)
+
+    fmt.Println("\nReading from multi-reader:")
+    io.Copy(os.Stdout, multiReader)
+    fmt.Println()
+
+    // 3. TeeReader: Read from source and write to a writer simultaneously
+    source := strings.NewReader("This data will be read and also captured.")
+    var captured bytes.Buffer
+    teeReader := io.TeeReader(source, &captured)
+
+    fmt.Println("\nReading from tee-reader:")
+    // Data read from teeReader goes to stdout
+    io.Copy(os.Stdout, teeReader)
+    fmt.Println()
+
+    // The data was also captured in the buffer
+    fmt.Printf("Captured data: %s\n", captured.String())
+}
+```
+
+---
+
+## Endianness Handling
+
+### Example 51: Checking System Endianness
+
+This example demonstrates how to determine the native endianness of the host
+system. Since Go's `encoding/binary` package requires explicit byte order,
+this check is more for educational purposes or for interfacing with C code that
+relies on native order. The code uses `unsafe` pointers to interpret a `uint32`
+value as a byte array, allowing inspection of the first byte to determine if the
+system is little-endian or big-endian.
+
+```go
+package main
+
+import (
+    "fmt"
+    "unsafe"
+)
+
+func main() {
+    var i uint32 = 0x01020304
+    // Use unsafe to get a pointer to the first byte of the integer
+    b := (*[4]byte)(unsafe.Pointer(&i))
+
+    var endianness string
+    if b[0] == 0x04 {
+        endianness = "Little Endian"
+    } else {
+        endianness = "Big Endian"
+    }
+
+    fmt.Printf("Value: 0x%08X\n", i)
+    fmt.Printf("Byte representation: %v\n", *b)
+    fmt.Printf("System Endianness: %s\n", endianness)
+}
+```
+
+### Example 52: Writing Data in Big and Little Endian
+
+This example demonstrates how to write multi-byte integers in both big-endian
+and little-endian formats using the `encoding/binary` package. Big-endian, also
+known as network byte order, places the most significant byte first. Little-endian
+places the least significant byte first. The code writes a `uint32` value into
+separate byte slices using `binary.BigEndian.PutUint32` and
+`binary.LittleEndian.PutUint32`, clearly showing the difference in the resulting
+byte patterns.
+
+```go
+package main
+
+import (
+    "encoding/binary"
+    "fmt"
+)
+
+func main() {
+    value := uint32(0xDEADBEEF)
+
+    // Big Endian (most significant byte first)
+    be_buf := make([]byte, 4)
+    binary.BigEndian.PutUint32(be_buf, value)
+
+    // Little Endian (least significant byte first)
+    le_buf := make([]byte, 4)
+    binary.LittleEndian.PutUint32(le_buf, value)
+
+    fmt.Printf("Original value: 0x%X\n", value)
+    fmt.Printf("Big Endian bytes:    %v\n", be_buf)
+    fmt.Printf("Little Endian bytes: %v\n", le_buf)
+}
+```
+
+### Example 53: Reading Data in Big and Little Endian
+
+This example shows how to read binary data in both big-endian and little-endian
+formats. It takes two byte slices, one in each format, and uses
+`binary.BigEndian.Uint32` and `binary.LittleEndian.Uint32` to convert them
+back into `uint32` integers. This demonstrates the importance of knowing the
+endianness of the source data to interpret it correctly. Reading with the wrong
+endianness will result in a completely different and incorrect value.
+
+```go
+package main
+
+import (
+    "encoding/binary"
+    "fmt"
+)
+
+func main() {
+    // Big Endian data (e.g., from a network stream)
+    be_data := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+
+    // Little Endian data (e.g., from an x86 system)
+    le_data := []byte{0xEF, 0xBE, 0xAD, 0xDE}
+
+    val_be := binary.BigEndian.Uint32(be_data)
+    val_le := binary.LittleEndian.Uint32(le_data)
+
+    fmt.Printf("Big Endian bytes:    %v -> Value: 0x%X\n", be_data, val_be)
+    fmt.Printf("Little Endian bytes: %v -> Value: 0x%X\n", le_data, val_le)
+
+    // Reading with the wrong endianness
+    wrong_val := binary.LittleEndian.Uint32(be_data)
+    fmt.Printf("\nReading Big Endian data as Little Endian: 0x%X\n", wrong_val)
+}
+```
+
+### Example 54: Using binary.Read and binary.Write with Endianness
+
+This example demonstrates a more convenient way to read and write binary data
+using `binary.Read` and `binary.Write`. These functions can handle multiple data
+types and work directly with `io.Reader` and `io.Writer`. The desired endianness
+is passed as an argument, making the code clean and readable. The example writes
+a struct containing different integer types to a buffer and then reads it back,
+ensuring the data is correctly interpreted according to the specified byte order.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+)
+
+type DataPacket struct {
+    ID      uint16
+    Value   int32
+    Timestamp uint64
+}
+
+func main() {
+    var buffer bytes.Buffer
+
+    packet := DataPacket{
+        ID:      101,
+        Value:   -123456,
+        Timestamp: 1678886400,
+    }
+
+    // Write the struct using Big Endian
+    err := binary.Write(&buffer, binary.BigEndian, &packet)
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("Written data (Big Endian): %v\n", buffer.Bytes())
+
+    // Read the struct back
+    var receivedPacket DataPacket
+    reader := bytes.NewReader(buffer.Bytes())
+    err = binary.Read(reader, binary.BigEndian, &receivedPacket)
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("Read packet: %+v\n", receivedPacket)
+    fmt.Printf("Data integrity check: %t\n", packet == receivedPacket)
+}
+```
+
+### Example 55: Manual Byte Order Conversion
+
+This example demonstrates how to manually convert the byte order of a `uint32`
+value. While `encoding/binary` is usually the preferred way, understanding the
+underlying bitwise operations is valuable. The code manually swaps the bytes of
+a `uint32` by shifting and masking to convert it from one endianness to the other.
+This technique provides insight into how endian conversions work at a low level.
+
+```go
+package main
+
+import (
+    "fmt"
+)
+
+func swapEndianness(val uint32) uint32 {
+    return (val&0x000000FF)<<24 | // Move first byte to last
+           (val&0x0000FF00)<<8  | // Move second byte to third
+           (val&0x00FF0000)>>8  | // Move third byte to second
+           (val&0xFF000000)>>24   // Move last byte to first
+}
+
+func main() {
+    le_value := uint32(0x12345678) // Assume this is Little Endian
+
+    fmt.Printf("Original (Little Endian): 0x%08X\n", le_value)
+
+    be_value := swapEndianness(le_value)
+    fmt.Printf("Converted (Big Endian):   0x%08X\n", be_value)
+
+    // Convert back
+    original_again := swapEndianness(be_value)
+    fmt.Printf("Converted back:           0x%08X\n", original_again)
+}
+```
+
+### Example 56: Generic Function for Endianness
+
+This example shows how to write a generic function that can work with any byte
+order by accepting the `binary.ByteOrder` interface. This makes the code reusable
+for both big-endian and little-endian data. The function `writeAndRead` takes a
+`binary.ByteOrder` as an argument and uses it for both writing and reading a
+value, demonstrating a flexible and robust programming pattern.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+)
+
+func writeAndRead(order binary.ByteOrder, value uint32) (uint32, error) {
+    var buf bytes.Buffer
+
+    // Write with the given order
+    if err := binary.Write(&buf, order, value); err != nil {
+        return 0, err
+    }
+
+    fmt.Printf("Written with %T: %v\n", order, buf.Bytes())
+
+    // Read with the same order
+    var result uint32
+    if err := binary.Read(&buf, order, &result); err != nil {
+        return 0, err
+    }
+
+    return result, nil
+}
+
+func main() {
+    value := uint32(0xAABBCCDD)
+
+    fmt.Println("--- Using Big Endian ---")
+    be_result, _ := writeAndRead(binary.BigEndian, value)
+    fmt.Printf("Result: 0x%X\n", be_result)
+
+    fmt.Println("\n--- Using Little Endian ---")
+    le_result, _ := writeAndRead(binary.LittleEndian, value)
+    fmt.Printf("Result: 0x%X\n", le_result)
+}
+```
+
+### Example 57: Endianness with Floating-Point Numbers
+
+This example demonstrates that endianness also applies to floating-point numbers.
+It writes a `float64` value to a buffer in both big-endian and little-endian
+formats. The `math.Float64bits` function is used to get the IEEE 754 binary
+representation of the float as a `uint64`, which is then written to the buffer.
+The example clearly shows that the byte representation of a float is dependent
+on the chosen endianness.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+    "math"
+)
+
+func main() {
+    value := 3.1415926535
+    bits := math.Float64bits(value)
+
+    var be_buf bytes.Buffer
+    var le_buf bytes.Buffer
+
+    // Write as Big Endian
+    binary.Write(&be_buf, binary.BigEndian, bits)
+
+    // Write as Little Endian
+    binary.Write(&le_buf, binary.LittleEndian, bits)
+
+    fmt.Printf("Original float: %f\n", value)
+    fmt.Printf("As uint64 bits: 0x%X\n", bits)
+    fmt.Printf("Big Endian bytes:    %v\n", be_buf.Bytes())
+    fmt.Printf("Little Endian bytes: %v\n", le_buf.Bytes())
+
+    // Read back
+    read_be_bits := binary.BigEndian.Uint64(be_buf.Bytes())
+    read_be_float := math.Float64frombits(read_be_bits)
+    fmt.Printf("Read from Big Endian: %f\n", read_be_float)
+}
+```
+
+### Example 58: Real-world Scenario - PNG Chunk
+
+This example simulates reading a chunk from a PNG file, which uses big-endian
+(network byte order) for all its integer fields. The code defines a struct to
+represent a PNG chunk's header (Length and Type) and reads it from a sample
+byte stream. This is a practical demonstration of why understanding endianness
+is crucial when working with standardized file formats and network protocols,
+as they almost always specify a required byte order.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+)
+
+// PNG chunks are always Big Endian
+// Format: 4-byte Length, 4-byte Chunk Type, Data, 4-byte CRC
+
+func main() {
+    // Sample IHDR chunk from a PNG file
+    png_chunk := []byte{
+        0x00, 0x00, 0x00, 0x0D, // Length (13 bytes)
+        0x49, 0x48, 0x44, 0x52, // Type ("IHDR")
+        // ... 13 bytes of data and 4 bytes of CRC would follow
+    }
+
+    reader := bytes.NewReader(png_chunk)
+
+    var length uint32
+    err := binary.Read(reader, binary.BigEndian, &length)
+    if err != nil {
+        panic(err)
+    }
+
+    chunkTypeBytes := make([]byte, 4)
+    _, err = reader.Read(chunkTypeBytes)
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("Reading PNG chunk header:\n")
+    fmt.Printf("Chunk Length: %d\n", length)
+    fmt.Printf("Chunk Type: %s\n", string(chunkTypeBytes))
+}
+```
+
+### Example 59: Mixed Endianness in a Single Format
+
+While uncommon, some binary formats might use mixed endianness. This example
+simulates a hypothetical format where the header is big-endian, but the payload
+is little-endian. It demonstrates how to handle such cases by switching the
+`binary.ByteOrder` interface used for reading different parts of the data
+stream. This showcases the flexibility of the `encoding/binary` package in
+handling complex or non-standard binary layouts.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+)
+
+type MixedEndianPacket struct {
+    HeaderID   uint16 // Big Endian
+    PayloadLen uint16 // Big Endian
+    Payload    int32  // Little Endian
+}
+
+func main() {
+    // Manually construct the mixed-endian byte stream
+    var buf bytes.Buffer
+    binary.Write(&buf, binary.BigEndian, uint16(0xABCD)) // HeaderID
+    binary.Write(&buf, binary.BigEndian, uint16(4))      // PayloadLen
+    binary.Write(&buf, binary.LittleEndian, int32(1000)) // Payload
+
+    data := buf.Bytes()
+    fmt.Printf("Mixed-endian byte stream: %v\n", data)
+
+    // Read the data back, respecting the mixed endianness
+    var packet MixedEndianPacket
+    reader := bytes.NewReader(data)
+
+    binary.Read(reader, binary.BigEndian, &packet.HeaderID)
+    binary.Read(reader, binary.BigEndian, &packet.PayloadLen)
+    binary.Read(reader, binary.LittleEndian, &packet.Payload)
+
+    fmt.Printf("Decoded packet: %+v\n", packet)
+}
+```
+
+### Example 60: Endianness in Network Protocols (IP Header)
+
+This example demonstrates the importance of endianness in network protocols by
+parsing a simplified IPv4 header, which uses network byte order (big-endian).
+The code defines a struct for the header and reads a sample byte stream into it.
+This is a classic real-world use case where all participants in the network must
+agree on a single byte order to ensure interoperability. Failing to use the correct
+endianness would lead to misinterpretation of fields like IP addresses and packet lengths.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+    "net"
+)
+
+type IPv4Header struct {
+    VersionIHL      byte
+    TOS             byte
+    TotalLength     uint16
+    ID              uint16
+    FlagsFragOffset uint16
+    TTL             byte
+    Protocol        byte
+    Checksum        uint16
+    SrcIP           [4]byte
+    DestIP          [4]byte
+}
+
+func main() {
+    // A sample IPv4 header (source: 127.0.0.1, dest: 8.8.8.8)
+    headerBytes := []byte{
+        0x45, 0x00, 0x00, 0x34, 0x12, 0x34, 0x00, 0x00,
+        0x40, 0x06, 0x7c, 0x2c, 0x7f, 0x00, 0x00, 0x01,
+        0x08, 0x08, 0x08, 0x08,
+    }
+
+    var header IPv4Header
+    reader := bytes.NewReader(headerBytes)
+
+    // Network protocols are typically Big Endian
+    err := binary.Read(reader, binary.BigEndian, &header)
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Println("Parsed IPv4 Header:")
+    fmt.Printf("  Version: %d\n", header.VersionIHL>>4)
+    fmt.Printf("  Header Length: %d bytes\n", (header.VersionIHL&0x0F)*4)
+    fmt.Printf("  Total Length: %d bytes\n", header.TotalLength)
+    fmt.Printf("  TTL: %d\n", header.TTL)
+    fmt.Printf("  Protocol: %d\n", header.Protocol)
+    fmt.Printf("  Source IP: %s\n", net.IP(header.SrcIP[:]))
+    fmt.Printf("  Destination IP: %s\n", net.IP(header.DestIP[:]))
+}
+```
+
+---
+
+## Advanced Binary Manipulation
+
+### Example 61: Parsing Nested and Dynamic Binary Structures
+
+This example demonstrates how to parse a more complex binary format that includes a header, a variable-length payload, and nested structures. The format uses a tag-length-value (TLV) encoding for metadata, where each piece of metadata has a type, a length, and a value. This requires a more dynamic parsing strategy than fixed-struct formats and is common in extensible protocols and file formats.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+)
+
+// Packet structure: Header (8 bytes) + Metadata (variable) + Payload (variable)
+type Packet struct {
+    Magic    uint32
+    Version  uint16
+    Flags    uint16
+    Metadata map[uint8]string
+    Payload  []byte
+}
+
+func (p *Packet) Encode() []byte {
+    var buf bytes.Buffer
+    binary.Write(&buf, binary.BigEndian, p.Magic)
+    binary.Write(&buf, binary.BigEndian, p.Version)
+    binary.Write(&buf, binary.BigEndian, p.Flags)
+
+    // Encode metadata
+    var metaBuf bytes.Buffer
+    for tag, value := range p.Metadata {
+        metaBuf.WriteByte(tag)
+        metaBuf.WriteByte(byte(len(value)))
+        metaBuf.WriteString(value)
+    }
+
+    // Write metadata length and data
+    binary.Write(&buf, binary.BigEndian, uint16(metaBuf.Len()))
+    buf.Write(metaBuf.Bytes())
+
+    // Write payload
+    buf.Write(p.Payload)
+
+    return buf.Bytes()
+}
+
+func (p *Packet) Decode(data []byte) error {
+    reader := bytes.NewReader(data)
+    binary.Read(reader, binary.BigEndian, &p.Magic)
+    binary.Read(reader, binary.BigEndian, &p.Version)
+    binary.Read(reader, binary.BigEndian, &p.Flags)
+
+    var metaLen uint16
+    binary.Read(reader, binary.BigEndian, &metaLen)
+
+    // Read metadata
+    p.Metadata = make(map[uint8]string)
+    metaBytes := make([]byte, metaLen)
+    reader.Read(metaBytes)
+    metaReader := bytes.NewReader(metaBytes)
+    for metaReader.Len() > 0 {
+        tag, _ := metaReader.ReadByte()
+        valLen, _ := metaReader.ReadByte()
+        valBytes := make([]byte, valLen)
+        metaReader.Read(valBytes)
+        p.Metadata[tag] = string(valBytes)
+    }
+
+    // Read payload
+    payload := make([]byte, reader.Len())
+    reader.Read(payload)
+    p.Payload = payload
+
+    return nil
+}
+
+func main() {
+    packet := &Packet{
+        Magic:   0xCAFEBABE,
+        Version: 1,
+        Flags:   0,
+        Metadata: map[uint8]string{
+            1: "SourceA",
+            2: "DestB",
+        },
+        Payload: []byte("This is the main payload."),
+    }
+
+    encoded := packet.Encode()
+    fmt.Printf("Encoded packet (%d bytes): %x\n", len(encoded), encoded)
+
+    var decodedPacket Packet
+    decodedPacket.Decode(encoded)
+
+    fmt.Printf("\nDecoded packet:\n")
+    fmt.Printf("  Magic: 0x%X\n", decodedPacket.Magic)
+    fmt.Printf("  Version: %d\n", decodedPacket.Version)
+    fmt.Printf("  Metadata: %v\n", decodedPacket.Metadata)
+    fmt.Printf("  Payload: %s\n", string(decodedPacket.Payload))
+}
+```
+
+### Example 62: Zero-Copy Conversions with `unsafe`
+
+This example demonstrates zero-copy conversions between byte slices and other slice types using the `unsafe` package. While extremely powerful and fast, this technique is dangerous as it bypasses Go's type safety and memory guarantees. It should only be used in performance-critical sections of code where the data layout is well-understood. The example shows how to convert a `[]byte` to a `[]uint32` and back without allocating new memory.
+
+```go
+package main
+
+import (
+    "fmt"
+    "unsafe"
+)
+
+func main() {
+    // Create a byte slice (must be a multiple of the target type size)
+    byteSlice := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+    fmt.Printf("Original byte slice: %v\n", byteSlice)
+
+    // Zero-copy conversion to []uint32
+    // WARNING: This is unsafe and platform-dependent
+    uint32Slice := unsafe.Slice((*uint32)(unsafe.Pointer(&byteSlice[0])), len(byteSlice)/4)
+
+    fmt.Printf("As uint32 slice: %v\n", uint32Slice)
+
+    // Modify the uint32 slice
+    uint32Slice[0] = 0xFFFFFFFF
+
+    // The change is reflected in the original byte slice
+    fmt.Printf("Byte slice after modification: %v\n", byteSlice)
+
+    // String to byte slice zero-copy
+    str := "hello world"
+    // This is safer in Go 1.22+
+    stringBytes := unsafe.Slice(unsafe.StringData(str), len(str))
+    fmt.Printf("\nString: %s\n", str)
+    fmt.Printf("Zero-copy bytes: %v -> %s\n", stringBytes, string(stringBytes))
+    // stringBytes is read-only. Modifying it will cause a crash.
+}
+```
+
+### Example 63: Implementing Custom Binary Marshal/Unmarshal
+
+This example shows how to implement the `encoding.BinaryMarshaler` and `encoding.BinaryUnmarshaler` interfaces for a custom type. This allows the type to control its own binary representation, which is useful for complex data structures or when a specific binary layout is required. By implementing these interfaces, the custom type can be used directly with functions like `binary.Read` and `binary.Write`, making the code more modular and idiomatic.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "errors"
+    "fmt"
+)
+
+type CustomTime struct {
+    Year  uint16
+    Month byte
+    Day   byte
+    Hour  byte
+    Min   byte
+    Sec   byte
+}
+
+// MarshalBinary implements the encoding.BinaryMarshaler interface.
+func (ct *CustomTime) MarshalBinary() ([]byte, error) {
+    buf := new(bytes.Buffer)
+    binary.Write(buf, binary.BigEndian, ct.Year)
+    buf.WriteByte(ct.Month)
+    buf.WriteByte(ct.Day)
+    buf.WriteByte(ct.Hour)
+    buf.WriteByte(ct.Min)
+    buf.WriteByte(ct.Sec)
+    return buf.Bytes(), nil
+}
+
+// UnmarshalBinary implements the encoding.BinaryUnmarshaler interface.
+func (ct *CustomTime) UnmarshalBinary(data []byte) error {
+    if len(data) < 7 {
+        return errors.New("CustomTime: invalid data length")
+    }
+    reader := bytes.NewReader(data)
+    binary.Read(reader, binary.BigEndian, &ct.Year)
+    ct.Month, _ = reader.ReadByte()
+    ct.Day, _ = reader.ReadByte()
+    ct.Hour, _ = reader.ReadByte()
+    ct.Min, _ = reader.ReadByte()
+    ct.Sec, _ = reader.ReadByte()
+    return nil
+}
+
+func main() {
+    now := CustomTime{
+        Year: 2023, Month: 10, Day: 27,
+        Hour: 10, Min: 30, Sec: 0,
+    }
+
+    // Marshal the custom type
+    binaryData, err := now.MarshalBinary()
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("Marshaled data: %x\n", binaryData)
+
+    // Unmarshal back
+    var decodedTime CustomTime
+    err = decodedTime.UnmarshalBinary(binaryData)
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("Unmarshaled: %+v\n", decodedTime)
+}
+```
+
+### Example 64: Creating a Bitmask for Feature Flags
+
+This example demonstrates a common and powerful use of binary data: feature flags. It defines a set of flags as powers of two and uses bitwise operations (OR, AND, XOR) to create a bitmask. This allows multiple boolean options to be stored compactly in a single integer. The code shows how to set, clear, toggle, and check for flags, a technique widely used in operating systems, graphics programming, and application configuration.
+
+```go
+package main
+
+import "fmt"
+
+type FeatureFlags uint32
+
+const (
+    FeatureA FeatureFlags = 1 << iota // 1
+    FeatureB                          // 2
+    FeatureC                          // 4
+    FeatureD                          // 8
+    FeatureE                          // 16
+)
+
+func (f FeatureFlags) IsSet(flag FeatureFlags) bool {
+    return f&flag != 0
+}
+
+func (f *FeatureFlags) Set(flag FeatureFlags) {
+    *f |= flag
+}
+
+func (f *FeatureFlags) Clear(flag FeatureFlags) {
+    *f &^= flag
+}
+
+func (f *FeatureFlags) Toggle(flag FeatureFlags) {
+    *f ^= flag
+}
+
+func main() {
+    var config FeatureFlags
+    fmt.Printf("Initial config: %08b\n", config)
+
+    // Enable features
+    config.Set(FeatureA | FeatureC)
+    fmt.Printf("Enabled A & C:  %08b\n", config)
+
+    // Check for a feature
+    fmt.Printf("Is Feature C enabled? %t\n", config.IsSet(FeatureC))
+    fmt.Printf("Is Feature B enabled? %t\n", config.IsSet(FeatureB))
+
+    // Enable another feature
+    config.Set(FeatureD)
+    fmt.Printf("Enabled D:      %08b\n", config)
+
+    // Toggle a feature
+    config.Toggle(FeatureA)
+    fmt.Printf("Toggled A:      %08b\n", config)
+
+    // Clear a feature
+    config.Clear(FeatureC)
+    fmt.Printf("Cleared C:      %08b\n", config)
+}
+```
+
+### Example 65: Binary Search in a Sorted Byte Slice
+
+This example demonstrates how to perform a binary search on a sorted slice of byte slices. `sort.Search` is a generic and powerful function that can be used for this purpose. It works by repeatedly bisecting the search space until the target is found or determined to be absent. This is far more efficient (O(log n)) than a linear scan (O(n)) for large datasets. The example shows how to search for an exact match in a lexicographically sorted list of words.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "sort"
+)
+
+func main() {
+    // A sorted slice of byte slices
+    data := [][]byte{
+        []byte("apple"),
+        []byte("banana"),
+        []byte("cherry"),
+        []byte("grape"),
+        []byte("orange"),
+        []byte("peach"),
+    }
+
+    target := []byte("cherry")
+
+    // Use sort.Search to find the index
+    index := sort.Search(len(data), func(i int) bool {
+        // The function should return true if data[i] is >= target
+        return bytes.Compare(data[i], target) >= 0
+    })
+
+    // Verify if the target was actually found
+    if index < len(data) && bytes.Equal(data[index], target) {
+        fmt.Printf("Found '%s' at index %d\n", target, index)
+    } else {
+        fmt.Printf("'%s' not found. Insertion point would be %d\n", target, index)
+    }
+
+    // Search for a non-existent item
+    target = []byte("kiwi")
+    index = sort.Search(len(data), func(i int) bool {
+        return bytes.Compare(data[i], target) >= 0
+    })
+    if index < len(data) && bytes.Equal(data[index], target) {
+        fmt.Printf("Found '%s' at index %d\n", target, index)
+    } else {
+        fmt.Printf("'%s' not found. Insertion point would be %d\n", target, index)
+    }
+}
+```
+
+### Example 66: Reading Fixed-Size Records from a File
+
+This example demonstrates how to read a file composed of fixed-size binary records. This is a common pattern for simple databases or data logs. The code defines a struct for the record and calculates its size using `binary.Size()`. It then reads the file record by record in a loop, decoding each chunk of bytes into a struct instance. This technique is efficient for structured data and allows for easy random access by calculating the offset (`record_index * record_size`).
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+    "io"
+)
+
+type StockRecord struct {
+    Symbol [8]byte // 8-byte stock symbol
+    Price  float64 // 8-byte price
+    Volume uint32  // 4-byte volume
+}
+
+func main() {
+    var buf bytes.Buffer
+
+    // Create some sample records
+    records := []StockRecord{
+        {Symbol: [8]byte{'G', 'O', 'O', 'G'}, Price: 150.75, Volume: 10000},
+        {Symbol: [8]byte{'A', 'P', 'P', 'L'}, Price: 180.50, Volume: 15000},
+        {Symbol: [8]byte{'M', 'S', 'F', 'T'}, Price: 300.25, Volume: 12000},
+    }
+
+    // Write records to a buffer (simulating a file)
+    for _, rec := range records {
+        binary.Write(&buf, binary.LittleEndian, &rec)
+    }
+
+    reader := bytes.NewReader(buf.Bytes())
+    recordSize := binary.Size(StockRecord{})
+
+    fmt.Printf("Reading fixed-size records (size: %d bytes)\n", recordSize)
+
+    // Read records back one by one
+    for {
+        var record StockRecord
+        err := binary.Read(reader, binary.LittleEndian, &record)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            panic(err)
+        }
+        fmt.Printf("Read: Symbol=%s, Price=%.2f, Volume=%d\n",
+            bytes.Trim(record.Symbol[:], "\x00"), record.Price, record.Volume)
+    }
+}
+```
+
+### Example 67: Using io.ReadFull to Ensure Complete Reads
+
+This example highlights a common pitfall in binary data processing: partial reads. A standard `Read` call is not guaranteed to fill the entire buffer. `io.ReadFull` solves this by ensuring that the provided buffer is completely filled with data from the reader. It returns an error (`io.ErrUnexpectedEOF`) if the stream ends before the buffer is full. This is essential for reliably reading fixed-size headers or data blocks from a stream where message boundaries must be respected.
+
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "io"
+)
+
+func main() {
+    // A reader with less data than we want to read
+    data := []byte{1, 2, 3, 4, 5}
+    reader := bytes.NewReader(data)
+
+    buffer := make([]byte, 10)
+
+    // Attempting a standard Read
+    n, err := reader.Read(buffer)
+    fmt.Printf("Standard Read: read %d bytes, err: %v\n", n, err)
+
+    // Reset reader and use ReadFull
+    reader.Seek(0, io.SeekStart)
+    fmt.Println("\nAttempting to ReadFull:")
+    n, err = io.ReadFull(reader, buffer)
+    fmt.Printf("ReadFull: read %d bytes, err: %v\n", n, err)
+
+    // Successful ReadFull
+    reader.Seek(0, io.SeekStart)
+    smallBuffer := make([]byte, 5)
+    fmt.Println("\nSuccessful ReadFull:")
+    n, err = io.ReadFull(reader, smallBuffer)
+    fmt.Printf("ReadFull: read %d bytes, data: %v, err: %v\n", n, smallBuffer, err)
+}
+```
+
+### Example 68: Creating a Custom Binary Encoder/Decoder
+
+This example goes beyond using `encoding/binary` to build a custom encoder and decoder. This provides maximum control over the binary format, allowing for optimizations like variable-length integers (varints) or custom string encoding. The code defines `Encoder` and `Decoder` types with methods for writing and reading specific data types according to a user-defined protocol. This approach is ideal for designing highly optimized, bespoke binary formats.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+)
+
+type Encoder struct {
+    buf *bytes.Buffer
+}
+func NewEncoder() *Encoder { return &Encoder{buf: new(bytes.Buffer)} }
+func (e *Encoder) WriteString(s string) {
+    binary.Write(e.buf, binary.BigEndian, uint16(len(s)))
+    e.buf.WriteString(s)
+}
+func (e *Encoder) WriteInt32(v int32) {
+    binary.Write(e.buf, binary.BigEndian, v)
+}
+func (e *Encoder) Bytes() []byte { return e.buf.Bytes() }
+
+type Decoder struct {
+    r *bytes.Reader
+}
+func NewDecoder(data []byte) *Decoder { return &Decoder{r: bytes.NewReader(data)} }
+func (d *Decoder) ReadString() string {
+    var len uint16
+    binary.Read(d.r, binary.BigEndian, &len)
+    data := make([]byte, len)
+    d.r.Read(data)
+    return string(data)
+}
+func (d *Decoder) ReadInt32() int32 {
+    var v int32
+    binary.Read(d.r, binary.BigEndian, &v)
+    return v
+}
+
+func main() {
+    // Encode data
+    encoder := NewEncoder()
+    encoder.WriteString("Player1")
+    encoder.WriteInt32(1500)
+
+    encodedData := encoder.Bytes()
+    fmt.Printf("Encoded data: %x\n", encodedData)
+
+    // Decode data
+    decoder := NewDecoder(encodedData)
+    name := decoder.ReadString()
+    score := decoder.ReadInt32()
+
+    fmt.Printf("Decoded: Name=%s, Score=%d\n", name, score)
+}
+```
+
+### Example 69: Versioning a Binary Format
+
+This example demonstrates a crucial practice for long-term data storage: versioning. By embedding a version number in the binary format, you can evolve the format over time while maintaining backward compatibility. The code shows how to write a version byte at the beginning of the data. When decoding, the program checks the version and handles the data accordingly. This allows you to add new fields or change layouts in future versions without breaking older clients.
+
+```go
+package main
+
+import (
+    "bytes"
+    "encoding/binary"
+    "fmt"
+)
+
+type UserV1 struct {
+    ID   uint32
+    Name [16]byte
+}
+
+type UserV2 struct {
+    ID    uint32
+    Name  [16]byte
+    Email [32]byte // New field in V2
+}
+
+func encode(user interface{}) []byte {
+    buf := new(bytes.Buffer)
+    switch u := user.(type) {
+    case UserV1:
+        buf.WriteByte(1) // Version 1
+        binary.Write(buf, binary.LittleEndian, &u)
+    case UserV2:
+        buf.WriteByte(2) // Version 2
+        binary.Write(buf, binary.LittleEndian, &u)
+    }
+    return buf.Bytes()
+}
+
+func decode(data []byte) {
+    reader := bytes.NewReader(data)
+    version, _ := reader.ReadByte()
+    fmt.Printf("Detected version: %d\n", version)
+
+    switch version {
+    case 1:
+        var user UserV1
+        binary.Read(reader, binary.LittleEndian, &user)
+        fmt.Printf("Decoded V1 User: ID=%d, Name=%s\n", user.ID, user.Name)
+    case 2:
+        var user UserV2
+        binary.Read(reader, binary.LittleEndian, &user)
+        fmt.Printf("Decoded V2 User: ID=%d, Name=%s, Email=%s\n", user.ID, user.Name, user.Email)
+    default:
+        fmt.Println("Unknown version")
+    }
+}
+
+func main() {
+    user1 := UserV1{ID: 1, Name: [16]byte{'A', 'l', 'i', 'c', 'e'}}
+    user2 := UserV2{ID: 2, Name: [16]byte{'B', 'o', 'b'}, Email: [32]byte{'b', 'o', 'b', '@', 'e', 'x'}}
+
+    encodedV1 := encode(user1)
+    encodedV2 := encode(user2)
+
+    fmt.Println("--- Decoding V1 Data ---")
+    decode(encodedV1)
+
+    fmt.Println("\n--- Decoding V2 Data ---")
+    decode(encodedV2)
+}
+```
+
+### Example 70: Creating a Hex Dump Utility
+
+This example builds a simple hex dump utility, a fundamental tool for inspecting the contents of any binary file or data stream. The utility formats the output into three columns: the offset in the stream, the hexadecimal representation of the bytes, and the printable ASCII representation. This visual layout is invaluable for debugging binary formats, reverse-engineering protocols, or simply understanding the low-level structure of data.
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "strings"
+)
+
+func HexDump(reader io.Reader, bytesPerLine int) {
+    buffer := make([]byte, bytesPerLine)
+    offset := 0
+
+    for {
+        n, err := io.ReadFull(reader, buffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil && err != io.ErrUnexpectedEOF {
+            fmt.Printf("Error reading: %v\n", err)
+            break
+        }
+
+        // Print offset
+        fmt.Printf("%08x  ", offset)
+
+        // Print hex values
+        for i := 0; i < bytesPerLine; i++ {
+            if i < n {
+                fmt.Printf("%02x ", buffer[i])
+            } else {
+                fmt.Print("   ")
+            }
+            if i == bytesPerLine/2-1 {
+                fmt.Print(" ")
+            }
+        }
+
+        // Print ASCII representation
+        fmt.Printf(" |%s|\n", formatASCII(buffer[:n]))
+
+        offset += n
+        if err == io.ErrUnexpectedEOF {
+            break
+        }
+    }
+}
+
+func formatASCII(data []byte) string {
+    var result strings.Builder
+    for _, b := range data {
+        if b >= 32 && b <= 126 {
+            result.WriteByte(b)
+        } else {
+            result.WriteByte('.')
+        }
+    }
+    return result.String()
+}
+
+func main() {
+    data := "Hello, World! This is a test of the hex dump utility. It includes numbers 12345 and symbols !@#$%."
+    reader := strings.NewReader(data)
+
+    HexDump(reader, 16)
+}
+```
+
+---
+
+## Real-world Binary Data Scenarios
+
+### Example 71: Parsing a BMP File Header
+
+This example demonstrates how to parse the header of a BMP (Bitmap) image file. BMP files have a well-defined structure, starting with a file header and an info header. The code defines structs for these headers and reads them from a sample byte slice using `binary.Read` with little-endian byte order, which is standard for BMP files. This is a classic example of parsing a real-world file format.
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
+
+// BMPFileHeader corresponds to BITMAPFILEHEADER
+type BMPFileHeader struct {
+	Type     [2]byte // "BM"
+	Size     uint32
+	Reserved uint32
+	Offset   uint32
+}
+
+// BMPInfoHeader corresponds to BITMAPINFOHEADER
+type BMPInfoHeader struct {
+	Size          uint32
+	Width         int32
+	Height        int32
+	Planes        uint16
+	BitCount      uint16
+	Compression   uint32
+	SizeImage     uint32
+	XPelsPerMeter int32
+	YPelsPerMeter int32
+	ClrUsed       uint32
+	ClrImportant  uint32
+}
+
+func main() {
+	// A mock BMP file header for a 1x1 pixel image
+	bmpData := []byte{
+		'B', 'M', // Type
+		0x46, 0x00, 0x00, 0x00, // Size (70 bytes)
+		0x00, 0x00, 0x00, 0x00, // Reserved
+		0x36, 0x00, 0x00, 0x00, // Offset to pixel data (54 bytes)
+		// InfoHeader starts here
+		0x28, 0x00, 0x00, 0x00, // Size of InfoHeader (40 bytes)
+		0x01, 0x00, 0x00, 0x00, // Width (1)
+		0x01, 0x00, 0x00, 0x00, // Height (1)
+		0x01, 0x00, // Planes (1)
+		0x18, 0x00, // BitCount (24-bit)
+		0x00, 0x00, 0x00, 0x00, // Compression (none)
+		0x10, 0x00, 0x00, 0x00, // SizeImage
+		// ... rest of header and pixel data
+	}
+
+	reader := bytes.NewReader(bmpData)
+	var fileHeader BMPFileHeader
+	var infoHeader BMPInfoHeader
+
+	// BMP format uses Little Endian
+	if err := binary.Read(reader, binary.LittleEndian, &fileHeader); err != nil {
+		panic(err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &infoHeader); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Parsed BMP Header:")
+	fmt.Printf("  File Type: %s\n", string(fileHeader.Type[:]))
+	fmt.Printf("  File Size: %d bytes\n", fileHeader.Size)
+	fmt.Printf("  Image Dimensions: %d x %d\n", infoHeader.Width, infoHeader.Height)
+	fmt.Printf("  Bits Per Pixel: %d\n", infoHeader.BitCount)
+}
+```
+
+### Example 72: Creating a Simple Key-Value Store File
+
+This example implements a very simple disk-based key-value store. Each record is prefixed with the length of the key and the length of the value, allowing for dynamic data sizes. The code demonstrates how to write records to a file and then read them back, parsing the length prefixes to correctly extract each key-value pair. This is a foundational concept for creating custom storage engines and databases.
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"io"
+)
+
+func WriteKeyValue(w io.Writer, key string, value []byte) error {
+	// Write key length (1 byte) and key
+	if err := binary.Write(w, binary.BigEndian, uint8(len(key))); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(key)); err != nil {
+		return err
+	}
+
+	// Write value length (4 bytes) and value
+	if err := binary.Write(w, binary.BigEndian, uint32(len(value))); err != nil {
+		return err
+	}
+	if _, err := w.Write(value); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ReadKeyValue(r io.Reader) (string, []byte, error) {
+	var keyLen uint8
+	if err := binary.Read(r, binary.BigEndian, &keyLen); err != nil {
+		return "", nil, err
+	}
+
+	keyBytes := make([]byte, keyLen)
+	if _, err := io.ReadFull(r, keyBytes); err != nil {
+		return "", nil, err
+	}
+
+	var valLen uint32
+	if err := binary.Read(r, binary.BigEndian, &valLen); err != nil {
+		return "", nil, err
+	}
+
+	valBytes := make([]byte, valLen)
+	if _, err := io.ReadFull(r, valBytes); err != nil {
+		return "", nil, err
+	}
+
+	return string(keyBytes), valBytes, nil
+}
+
+func main() {
+	var buf bytes.Buffer
+	db := map[string][]byte{
+		"key1": []byte("this is a value"),
+		"key2": {1, 2, 3, 4, 5},
+	}
+
+	// Write to buffer
+	for k, v := range db {
+		WriteKeyValue(&buf, k, v)
+	}
+
+	fmt.Printf("Database file content (hex): %x\n", buf.Bytes())
+
+	// Read from buffer
+	reader := bytes.NewReader(buf.Bytes())
+	for {
+		key, value, err := ReadKeyValue(reader)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Read: key='%s', value=%v\n", key, value)
+	}
+}
+```
+
+### Example 73: Reading ID3 Tags from an MP3 File
+
+This example demonstrates how to parse ID3v2 tags, which are commonly found at the beginning of MP3 files to store metadata like artist and song title. The ID3 header has a fixed structure, including a size field that uses a special "synchsafe" integer format. The code reads the header, decodes the synchsafe integer to get the total tag size, and then prints the metadata. This showcases handling non-standard integer formats.
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
+
+type ID3v2Header struct {
+	Identifier [3]byte // "ID3"
+	Version    [2]byte
+	Flags      byte
+	Size       [4]byte // Synchsafe integer
+}
+
+func decodeSynchsafe(b [4]byte) uint32 {
+	return uint32(b[3]) | uint32(b[2])<<7 | uint32(b[1])<<14 | uint32(b[0])<<21
+}
+
+func main() {
+	// A mock ID3v2.3 tag header
+	id3Data := []byte{
+		'I', 'D', '3', // Identifier
+		0x03, 0x00, // Version 2.3.0
+		0x00,       // Flags
+		0x00, 0x00, 0x02, 0x01, // Size (257 bytes)
+	}
+
+	var header ID3v2Header
+	reader := bytes.NewReader(id3Data)
+	binary.Read(reader, binary.BigEndian, &header)
+
+	tagSize := decodeSynchsafe(header.Size)
+
+	fmt.Println("Parsed ID3v2 Header:")
+	fmt.Printf("  Identifier: %s\n", string(header.Identifier[:]))
+	fmt.Printf("  Version: 2.%d.%d\n", header.Version[0], header.Version[1])
+	fmt.Printf("  Tag Size: %d bytes\n", tagSize)
+}
+```
+
+### Example 74: Simulating a Network Packet Assembler
+
+This example simulates a system that receives fragmented network packets and reassembles them. Packets can arrive out of order, so each fragment has a sequence number. The code uses a map to store fragments as they arrive and a finalizer function to assemble the complete message once all fragments are received. This demonstrates managing out-of-order binary data, a common challenge in networking.
+
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"sort"
+)
+
+type Fragment struct {
+	ID       uint32
+	Seq      uint16
+	Total    uint16
+	Data     []byte
+}
+
+type Assembler struct {
+	fragments map[uint16]Fragment
+	total     uint16
+}
+
+func (a *Assembler) AddFragment(f Fragment) (string, bool) {
+	if a.fragments == nil {
+		a.fragments = make(map[uint16]Fragment)
+	}
+	a.fragments[f.Seq] = f
+	a.total = f.Total
+
+	if len(a.fragments) == int(a.total) {
+		// Assemble the full message
+		var keys []int
+		for k := range a.fragments {
+			keys = append(keys, int(k))
+		}
+		sort.Ints(keys)
+
+		var message bytes.Buffer
+		for _, k := range keys {
+			message.Write(a.fragments[uint16(k)].Data)
+		}
+		return message.String(), true
+	}
+	return "", false
+}
+
+func main() {
+	assembler := &Assembler{}
+
+	// Simulate receiving fragments out of order
+	fragments := []Fragment{
+		{ID: 1, Seq: 2, Total: 3, Data: []byte("World!")},
+		{ID: 1, Seq: 0, Total: 3, Data: []byte("Hello, ")},
+		{ID: 1, Seq: 1, Total: 3, Data: []byte("Cruel ")},
+	}
+
+	for _, f := range fragments {
+		fmt.Printf("Received fragment %d/%d\n", f.Seq+1, f.Total)
+		if msg, ok := assembler.AddFragment(f); ok {
+			fmt.Printf("\nMessage assembled: %s\n", msg)
+		}
+	}
+}
+```
+
+### Example 75: Working with a Custom Game Save Format
+
+This example creates a simple binary format for a game save file. It includes a player's stats, inventory (as a fixed-size array), and current position. The data is written to and read from a buffer, simulating file I/O. This demonstrates how to design and manage a custom binary format for storing application state, which is often more compact and faster to parse than text-based formats like JSON or XML.
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
+
+type GameSave struct {
+	Version      uint8
+	PlayerName   [16]byte
+	Level        uint16
+	Health       float32
+	PosX, PosY   int32
+	Inventory    [10]uint32 // 10 item IDs
+}
+
+func main() {
+	save := GameSave{
+		Version:    1,
+		Level:      15,
+		Health:     85.5,
+		PosX:       1024,
+		PosY:       -512,
+		Inventory:  [10]uint32{1, 5, 0, 0, 12, 0, 0, 0, 0, 0},
+	}
+	copy(save.PlayerName[:], "Adventurer")
+
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.LittleEndian, &save); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Game save data (%d bytes): %x\n", len(buf.Bytes()), buf.Bytes())
+
+	var loadedSave GameSave
+	reader := bytes.NewReader(buf.Bytes())
+	if err := binary.Read(reader, binary.LittleEndian, &loadedSave); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("\nLoaded Game Save:")
+	fmt.Printf("  Player: %s\n", bytes.Trim(loadedSave.PlayerName[:], "\x00"))
+	fmt.Printf("  Level: %d\n", loadedSave.Level)
+	fmt.Printf("  Health: %.1f\n", loadedSave.Health)
+	fmt.Printf("  Position: (%d, %d)\n", loadedSave.PosX, loadedSave.PosY)
+}
+```
+
+### Example 76: Parsing a WAV Audio File Header
+
+This example demonstrates how to parse the header of a WAV audio file, a common format for uncompressed audio. The code defines a struct that matches the WAV header layout and reads a sample byte stream into it. It correctly handles the "RIFF" and "WAVE" identifiers and extracts metadata like the audio format, number of channels, and sample rate. This is another practical example of interpreting a well-defined binary file format.
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
+
+type WavHeader struct {
+	RiffID      [4]byte // "RIFF"
+	FileSize    uint32
+	WaveID      [4]byte // "WAVE"
+	FmtID       [4]byte // "fmt "
+	FmtSize     uint32
+	AudioFormat uint16
+	NumChannels uint16
+	SampleRate  uint32
+	ByteRate    uint32
+	BlockAlign  uint16
+	BitsPerSample uint16
+}
+
+func main() {
+	// A mock WAV file header
+	wavData := []byte{
+		'R', 'I', 'F', 'F', 0x24, 0xf0, 0xff, 0xff, 'W', 'A', 'V', 'E',
+		'f', 'm', 't', ' ', 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00,
+		0x44, 0xac, 0x00, 0x00, 0x10, 0xb1, 0x02, 0x00, 0x04, 0x00, 0x10, 0x00,
+	}
+
+	var header WavHeader
+	reader := bytes.NewReader(wavData)
+	if err := binary.Read(reader, binary.LittleEndian, &header); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Parsed WAV Header:")
+	fmt.Printf("  Audio Format: %d (1=PCM)\n", header.AudioFormat)
+	fmt.Printf("  Channels: %d\n", header.NumChannels)
+	fmt.Printf("  Sample Rate: %d Hz\n", header.SampleRate)
+	fmt.Printf("  Bits Per Sample: %d\n", header.BitsPerSample)
+}
+```
+
+### Example 77: Creating a TAR File Archive (Simplified)
+
+This example demonstrates how to create a simplified TAR (Tape Archive) file. The TAR format consists of 512-byte headers followed by file data, also in 512-byte blocks. The code defines a struct for the header and populates it with file metadata like name, size, and mode. It then writes the header and file content to a buffer, padding the content to a 512-byte boundary. This showcases how to construct a well-known archive format from scratch.
+
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"strconv"
+)
+
+type TarHeader struct {
+	Name    [100]byte
+	Mode    [8]byte
+	UID     [8]byte
+	GID     [8]byte
+	Size    [12]byte
+	Mtime   [12]byte
+	Chksum  [8]byte
+	Typeflag byte
+	Linkname [100]byte
+	Magic   [6]byte // "ustar"
+	Version [2]byte
+	Uname   [32]byte
+	Gname   [32]byte
+	Devmajor [8]byte
+	Devminor [8]byte
+	Prefix  [155]byte
+}
+
+func main() {
+	fileName := "test.txt"
+	fileContent := "This is the content of the test file."
+
+	header := TarHeader{
+		Typeflag: '0', // Regular file
+		Magic:    [6]byte{'u', 's', 't', 'a', 'r', ' '},
+		Version:  [2]byte{' ', ' '},
+	}
+	copy(header.Name[:], fileName)
+	copy(header.Mode[:], fmt.Sprintf("%07o", 0644))
+	copy(header.Size[:], fmt.Sprintf("%011o", len(fileContent)))
+	copy(header.Mtime[:], fmt.Sprintf("%011o", 0))
+
+	// Calculate and set checksum
+	var checksum uint32
+	// Temporarily set checksum field to spaces for calculation
+	copy(header.Chksum[:], "        ")
+	headerBytes := new(bytes.Buffer)
+	binary.Write(headerBytes, binary.LittleEndian, header)
+	for _, b := range headerBytes.Bytes() {
+		checksum += uint32(b)
+	}
+	copy(header.Chksum[:], fmt.Sprintf("%06o\x00 ", checksum))
+
+	// Create the final TAR archive
+	var tarball bytes.Buffer
+	binary.Write(&tarball, binary.LittleEndian, header)
+	tarball.Write([]byte(fileContent))
+
+	// Pad to 512-byte boundary
+	padding := 512 - (tarball.Len() % 512)
+	if padding < 512 {
+		tarball.Write(make([]byte, padding))
+	}
+
+	fmt.Printf("Created TAR archive for '%s' (%d bytes)\n", fileName, tarball.Len())
+	fmt.Printf("Header (first 512 bytes hex): %x\n", tarball.Bytes()[:512])
+}
+```
+
+### Example 78: Implementing a Simple BitTorrent Handshake
+
+This example simulates the initial handshake of the BitTorrent protocol. The handshake is a fixed-format message that includes the protocol name, some reserved bytes, the torrent's info hash, and a peer ID. The code constructs this binary message and then parses it back, demonstrating how to implement a specific network protocol's binary message format. This is a common task in peer-to-peer and other custom networking applications.
+
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+)
+
+type Handshake struct {
+	Pstrlen  byte
+	Pstr     [19]byte
+	Reserved [8]byte
+	InfoHash [20]byte
+	PeerID   [20]byte
+}
+
+func main() {
+	handshakeMsg := Handshake{
+		Pstrlen:  19,
+		Pstr:     [19]byte{'B', 'i', 't', 'T', 'o', 'r', 'r', 'e', 'n', 't', ' ', 'p', 'r', 'o', 't', 'o', 'c', 'o', 'l'},
+		InfoHash: [20]byte{0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef},
+		PeerID:   [20]byte{'-', 'G', 'O', '0', '0', '0', '1', '-', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'},
+	}
+
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.BigEndian, handshakeMsg)
+
+	fmt.Printf("BitTorrent Handshake Message (%d bytes):\n%x\n", len(buf.Bytes()), buf.Bytes())
+
+	// Parse it back
+	var parsedMsg Handshake
+	reader := bytes.NewReader(buf.Bytes())
+	binary.Read(reader, binary.BigEndian, &parsedMsg)
+
+	fmt.Println("\nParsed Handshake:")
+	fmt.Printf("  Protocol: %s\n", string(parsedMsg.Pstr[:]))
+	fmt.Printf("  Info Hash (first 4 bytes): %x\n", parsedMsg.InfoHash[:4])
+	fmt.Printf("  Peer ID: %s\n", string(parsedMsg.PeerID[:]))
+}
+```
+
+### Example 79: Decoding a DNS Query Packet
+
+This example demonstrates how to decode a simplified DNS (Domain Name System) query packet. The DNS protocol uses a binary format with various fields for headers, flags, and the question section. The code defines structs for the header and question, reads a sample DNS query, and parses out important information like the transaction ID and the domain name being queried. It also shows how domain names are encoded as a sequence of length-prefixed labels.
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"strings"
+)
+
+type DNSHeader struct {
+	ID      uint16
+	Flags   uint16
+	QDCount uint16 // Question count
+	ANCount uint16 // Answer count
+	NSCount uint16 // Authority count
+	ARCount uint16 // Additional count
+}
+
+func decodeDNSName(reader *bytes.Reader) (string, error) {
+	var parts []string
+	for {
+		length, err := reader.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		if length == 0 {
+			break
+		}
+		// Pointer check (simplified)
+		if length&0xC0 == 0xC0 {
+			// In a real implementation, we would seek and read the pointer
+			_, _ = reader.ReadByte() // Skip the offset
+			parts = append(parts, "<pointer>")
+			break
+		}
+
+		part := make([]byte, length)
+		if _, err := reader.Read(part); err != nil {
+			return "", err
+		}
+		parts = append(parts, string(part))
+	}
+	return strings.Join(parts, "."), nil
+}
+
+func main() {
+	// A mock DNS query for "www.example.com"
+	dnsQuery := []byte{
+		0x12, 0x34, // Transaction ID
+		0x01, 0x00, // Flags (standard query)
+		0x00, 0x01, // Questions: 1
+		0x00, 0x00, // Answers: 0
+		0x00, 0x00, // Authority RRs: 0
+		0x00, 0x00, // Additional RRs: 0
+		// Query Name
+		0x03, 'w', 'w', 'w',
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00, // End of name
+		// Query Type and Class
+		0x00, 0x01, // Type: A (Host Address)
+		0x00, 0x01, // Class: IN (Internet)
+	}
+
+	reader := bytes.NewReader(dnsQuery)
+	var header DNSHeader
+	binary.Read(reader, binary.BigEndian, &header)
+
+	domain, _ := decodeDNSName(reader)
+
+	var qtype, qclass uint16
+	binary.Read(reader, binary.BigEndian, &qtype)
+	binary.Read(reader, binary.BigEndian, &qclass)
+
+	fmt.Println("Parsed DNS Query:")
+	fmt.Printf("  Transaction ID: 0x%x\n", header.ID)
+	fmt.Printf("  Questions: %d\n", header.QDCount)
+	fmt.Printf("  Query for: %s\n", domain)
+	fmt.Printf("  Query Type: %d (A)\n", qtype)
+	fmt.Printf("  Query Class: %d (IN)\n", qclass)
+}
+```
+
+### Example 80: Building an Index File for Fast Data Lookup
+
+This example demonstrates how to create an index file to allow for fast lookups in a larger data file. The index file stores key-to-offset mappings. Instead of scanning the data file, the program first loads the smaller index into memory, finds the offset for a given key, and then seeks directly to that position in the data file. This is a fundamental technique used in databases and search engines to achieve high-performance data retrieval.
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"io"
+)
+
+type IndexEntry struct {
+	Key    [16]byte // Fixed-size key
+	Offset int64
+	Length int32
+}
+
+func main() {
+	var dataFile, indexFile bytes.Buffer
+
+	// 1. Create data and index files
+	index := make(map[string]IndexEntry)
+
+	entries := map[string]string{
+		"user:101": "Alice's data...",
+		"user:102": "Bob's much larger data block...",
+		"user:103": "Charlie's info...",
+	}
+
+	for key, value := range entries {
+		offset, _ := dataFile.Seek(0, io.SeekEnd)
+
+		// Write data
+		dataFile.WriteString(value)
+
+		// Create index entry
+		var entry IndexEntry
+		copy(entry.Key[:], key)
+		entry.Offset = offset
+		entry.Length = int32(len(value))
+		index[key] = entry
+	}
+
+	// Write index file
+	for _, entry := range index {
+		binary.Write(&indexFile, binary.LittleEndian, &entry)
+	}
+
+	fmt.Printf("Data file size: %d, Index file size: %d\n\n", dataFile.Len(), indexFile.Len())
+
+	// 2. Use the index to look up data
+	// Load index into memory
+	loadedIndex := make(map[string]IndexEntry)
+	indexReader := bytes.NewReader(indexFile.Bytes())
+	for {
+		var entry IndexEntry
+		err := binary.Read(indexReader, binary.LittleEndian, &entry)
+		if err == io.EOF {
+			break
+		}
+		loadedIndex[string(bytes.Trim(entry.Key[:], "\x00"))] = entry
+	}
+
+	// Lookup "user:102"
+	keyToFind := "user:102"
+	if entry, ok := loadedIndex[keyToFind]; ok {
+		fmt.Printf("Found '%s' in index: offset=%d, length=%d\n", keyToFind, entry.Offset, entry.Length)
+
+		// Seek and read from the data file
+		dataReader := bytes.NewReader(dataFile.Bytes())
+		dataReader.Seek(entry.Offset, io.SeekStart)
+		data := make([]byte, entry.Length)
+		dataReader.Read(data)
+
+		fmt.Printf("Retrieved data: '%s'\n", string(data))
+	}
 }
 ```
 
