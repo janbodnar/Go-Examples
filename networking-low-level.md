@@ -3181,3 +3181,2161 @@ Length-prefixed framing writes a 4-byte length header before each message.
 The reader first reads the length, then reads exactly that many bytes. This  
 enables reliable message boundary detection in byte streams.  
 
+## Delimited Message Protocol
+
+Delimiter-based protocols use special characters to mark message boundaries,  
+simpler than length-prefixed framing for text protocols.  
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "log"
+    "net"
+    "strings"
+)
+
+const Delimiter = '\n'
+
+func main() {
+    go startDelimitedServer()
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    defer conn.Close()
+    
+    writer := bufio.NewWriter(conn)
+    reader := bufio.NewReader(conn)
+    
+    messages := []string{
+        "Hello server",
+        "How are you",
+        "Goodbye",
+    }
+    
+    for _, msg := range messages {
+        _, err := writer.WriteString(msg + string(Delimiter))
+        if err != nil {
+            log.Printf("Write error: %v", err)
+            break
+        }
+        
+        err = writer.Flush()
+        if err != nil {
+            log.Printf("Flush error: %v", err)
+            break
+        }
+        
+        fmt.Printf("Sent: %s\n", msg)
+        
+        response, err := reader.ReadString(Delimiter)
+        if err != nil {
+            log.Printf("Read error: %v", err)
+            break
+        }
+        
+        fmt.Printf("Received: %s", response)
+    }
+}
+
+func startDelimitedServer() {
+    listener, err := net.Listen("tcp", ":8080")
+    if err != nil {
+        return
+    }
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    reader := bufio.NewReader(conn)
+    writer := bufio.NewWriter(conn)
+    
+    for {
+        line, err := reader.ReadString(Delimiter)
+        if err != nil {
+            return
+        }
+        
+        response := strings.ToUpper(line)
+        writer.WriteString(response)
+        writer.Flush()
+    }
+}
+```
+
+Delimiter-based protocols use newlines, nulls, or custom characters to separate  
+messages. This is common in text protocols like HTTP and SMTP. Care must be  
+taken to escape delimiters in message content.  
+
+## Stream Compression
+
+Compression reduces bandwidth usage for large data transfers over network  
+connections.  
+
+```go
+package main
+
+import (
+    "compress/gzip"
+    "fmt"
+    "io"
+    "log"
+    "net"
+)
+
+func sendCompressed(conn net.Conn, data []byte) error {
+    gzipWriter := gzip.NewWriter(conn)
+    defer gzipWriter.Close()
+    
+    _, err := gzipWriter.Write(data)
+    if err != nil {
+        return err
+    }
+    
+    return gzipWriter.Close()
+}
+
+func receiveCompressed(conn net.Conn) ([]byte, error) {
+    gzipReader, err := gzip.NewReader(conn)
+    if err != nil {
+        return nil, err
+    }
+    defer gzipReader.Close()
+    
+    return io.ReadAll(gzipReader)
+}
+
+func main() {
+    go startCompressionServer()
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    defer conn.Close()
+    
+    data := make([]byte, 10000)
+    for i := range data {
+        data[i] = byte(i % 256)
+    }
+    
+    fmt.Printf("Sending %d bytes (uncompressed)\n", len(data))
+    
+    err = sendCompressed(conn, data)
+    if err != nil {
+        log.Fatalf("Send failed: %v", err)
+    }
+    
+    fmt.Println("Data sent with compression")
+}
+
+func startCompressionServer() {
+    listener, err := net.Listen("tcp", ":8080")
+    if err != nil {
+        return
+    }
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    data, err := receiveCompressed(conn)
+    if err != nil {
+        log.Printf("Receive error: %v", err)
+        return
+    }
+    
+    fmt.Printf("Server received %d bytes (decompressed)\n", len(data))
+}
+```
+
+Compression wraps the connection with gzip writers/readers, transparently  
+compressing data during transmission. This significantly reduces bandwidth  
+for compressible data but adds CPU overhead.  
+
+## Connection Retry Logic
+
+Automatic retry with exponential backoff improves reliability in unreliable  
+network environments.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net"
+    "time"
+)
+
+type RetryConfig struct {
+    MaxRetries     int
+    InitialBackoff time.Duration
+    MaxBackoff     time.Duration
+    BackoffFactor  float64
+}
+
+func DialWithRetry(network, address string, config RetryConfig) (net.Conn, error) {
+    var lastErr error
+    backoff := config.InitialBackoff
+    
+    for attempt := 0; attempt <= config.MaxRetries; attempt++ {
+        if attempt > 0 {
+            fmt.Printf("Retry attempt %d after %v\n", attempt, backoff)
+            time.Sleep(backoff)
+            
+            backoff = time.Duration(float64(backoff) * config.BackoffFactor)
+            if backoff > config.MaxBackoff {
+                backoff = config.MaxBackoff
+            }
+        }
+        
+        conn, err := net.DialTimeout(network, address, 5*time.Second)
+        if err == nil {
+            fmt.Printf("Connected successfully on attempt %d\n", attempt+1)
+            return conn, nil
+        }
+        
+        lastErr = err
+        fmt.Printf("Attempt %d failed: %v\n", attempt+1, err)
+    }
+    
+    return nil, fmt.Errorf("failed after %d attempts: %w", 
+        config.MaxRetries+1, lastErr)
+}
+
+func main() {
+    config := RetryConfig{
+        MaxRetries:     5,
+        InitialBackoff: 100 * time.Millisecond,
+        MaxBackoff:     5 * time.Second,
+        BackoffFactor:  2.0,
+    }
+    
+    go func() {
+        time.Sleep(2 * time.Second)
+        listener, _ := net.Listen("tcp", ":8080")
+        defer listener.Close()
+        
+        conn, _ := listener.Accept()
+        conn.Close()
+    }()
+    
+    conn, err := DialWithRetry("tcp", "localhost:8080", config)
+    if err != nil {
+        log.Fatalf("Connection failed: %v", err)
+    }
+    defer conn.Close()
+    
+    fmt.Println("Connection established")
+}
+```
+
+Exponential backoff gradually increases wait time between retries, preventing  
+network flooding while allowing recovery from transient failures. The maximum  
+backoff prevents excessive delays.  
+
+## Echo Server with Line Protocol
+
+Echo servers are fundamental testing tools that return received data,  
+demonstrating basic request-response patterns.  
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "log"
+    "net"
+    "strings"
+    "time"
+)
+
+type EchoServer struct {
+    listener net.Listener
+    clients  int
+}
+
+func NewEchoServer(addr string) (*EchoServer, error) {
+    listener, err := net.Listen("tcp", addr)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &EchoServer{listener: listener}, nil
+}
+
+func (es *EchoServer) Start() {
+    fmt.Printf("Echo server listening on %s\n", es.listener.Addr())
+    
+    for {
+        conn, err := es.listener.Accept()
+        if err != nil {
+            log.Printf("Accept error: %v", err)
+            continue
+        }
+        
+        es.clients++
+        clientID := es.clients
+        
+        go es.handleClient(conn, clientID)
+    }
+}
+
+func (es *EchoServer) handleClient(conn net.Conn, id int) {
+    defer conn.Close()
+    
+    fmt.Printf("Client %d connected: %s\n", id, conn.RemoteAddr())
+    
+    scanner := bufio.NewScanner(conn)
+    
+    for scanner.Scan() {
+        line := scanner.Text()
+        
+        if strings.TrimSpace(line) == "QUIT" {
+            conn.Write([]byte("Goodbye\n"))
+            break
+        }
+        
+        timestamp := time.Now().Format("15:04:05")
+        response := fmt.Sprintf("[%s] Echo: %s\n", timestamp, line)
+        
+        _, err := conn.Write([]byte(response))
+        if err != nil {
+            log.Printf("Client %d write error: %v", id, err)
+            break
+        }
+    }
+    
+    if err := scanner.Err(); err != nil {
+        log.Printf("Client %d scanner error: %v", id, err)
+    }
+    
+    fmt.Printf("Client %d disconnected\n", id)
+}
+
+func main() {
+    server, err := NewEchoServer(":8080")
+    if err != nil {
+        log.Fatalf("Failed to create server: %v", err)
+    }
+    
+    server.Start()
+}
+```
+
+Echo servers demonstrate fundamental patterns: accepting connections, reading  
+lines, processing commands, and sending responses. The QUIT command provides  
+graceful disconnection.  
+
+## Chat Server Implementation
+
+Chat servers broadcast messages to multiple connected clients, demonstrating  
+multi-client coordination.  
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "log"
+    "net"
+    "sync"
+)
+
+type ChatServer struct {
+    listener net.Listener
+    clients  map[net.Conn]string
+    mu       sync.RWMutex
+    messages chan string
+}
+
+func NewChatServer(addr string) (*ChatServer, error) {
+    listener, err := net.Listen("tcp", addr)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &ChatServer{
+        listener: listener,
+        clients:  make(map[net.Conn]string),
+        messages: make(chan string, 100),
+    }, nil
+}
+
+func (cs *ChatServer) Start() {
+    fmt.Printf("Chat server listening on %s\n", cs.listener.Addr())
+    
+    go cs.broadcast()
+    
+    for {
+        conn, err := cs.listener.Accept()
+        if err != nil {
+            log.Printf("Accept error: %v", err)
+            continue
+        }
+        
+        go cs.handleClient(conn)
+    }
+}
+
+func (cs *ChatServer) broadcast() {
+    for msg := range cs.messages {
+        cs.mu.RLock()
+        for client := range cs.clients {
+            client.Write([]byte(msg))
+        }
+        cs.mu.RUnlock()
+    }
+}
+
+func (cs *ChatServer) handleClient(conn net.Conn) {
+    defer conn.Close()
+    
+    conn.Write([]byte("Enter your name: "))
+    
+    scanner := bufio.NewScanner(conn)
+    if !scanner.Scan() {
+        return
+    }
+    
+    name := scanner.Text()
+    
+    cs.mu.Lock()
+    cs.clients[conn] = name
+    cs.mu.Unlock()
+    
+    cs.messages <- fmt.Sprintf("%s joined the chat\n", name)
+    
+    for scanner.Scan() {
+        msg := scanner.Text()
+        cs.messages <- fmt.Sprintf("%s: %s\n", name, msg)
+    }
+    
+    cs.mu.Lock()
+    delete(cs.clients, conn)
+    cs.mu.Unlock()
+    
+    cs.messages <- fmt.Sprintf("%s left the chat\n", name)
+}
+
+func main() {
+    server, err := NewChatServer(":8080")
+    if err != nil {
+        log.Fatalf("Failed to create server: %v", err)
+    }
+    
+    server.Start()
+}
+```
+
+The chat server maintains a client registry and broadcasts messages through  
+a channel. A dedicated goroutine distributes messages to all clients,  
+demonstrating fan-out messaging patterns.  
+
+## Connection Pooling with Health Checks
+
+Advanced connection pools monitor connection health and automatically replace  
+failed connections.  
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+    "net"
+    "sync"
+    "time"
+)
+
+type HealthyConn struct {
+    conn      net.Conn
+    lastCheck time.Time
+    healthy   bool
+}
+
+type HealthCheckPool struct {
+    address      string
+    maxSize      int
+    checkInterval time.Duration
+    pool         chan *HealthyConn
+    mu           sync.Mutex
+    closed       bool
+}
+
+func NewHealthCheckPool(address string, size int) *HealthCheckPool {
+    p := &HealthCheckPool{
+        address:      address,
+        maxSize:      size,
+        checkInterval: 30 * time.Second,
+        pool:         make(chan *HealthyConn, size),
+    }
+    
+    go p.healthChecker()
+    
+    return p
+}
+
+func (p *HealthCheckPool) Get() (net.Conn, error) {
+    p.mu.Lock()
+    if p.closed {
+        p.mu.Unlock()
+        return nil, errors.New("pool closed")
+    }
+    p.mu.Unlock()
+    
+    select {
+    case hc := <-p.pool:
+        if hc.healthy {
+            return hc.conn, nil
+        }
+        hc.conn.Close()
+        return p.createConnection()
+    default:
+        return p.createConnection()
+    }
+}
+
+func (p *HealthCheckPool) Put(conn net.Conn) {
+    if conn == nil {
+        return
+    }
+    
+    p.mu.Lock()
+    if p.closed {
+        p.mu.Unlock()
+        conn.Close()
+        return
+    }
+    p.mu.Unlock()
+    
+    hc := &HealthyConn{
+        conn:      conn,
+        lastCheck: time.Now(),
+        healthy:   true,
+    }
+    
+    select {
+    case p.pool <- hc:
+    default:
+        conn.Close()
+    }
+}
+
+func (p *HealthCheckPool) createConnection() (net.Conn, error) {
+    return net.DialTimeout("tcp", p.address, 5*time.Second)
+}
+
+func (p *HealthCheckPool) healthChecker() {
+    ticker := time.NewTicker(p.checkInterval)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        p.mu.Lock()
+        if p.closed {
+            p.mu.Unlock()
+            return
+        }
+        p.mu.Unlock()
+        
+        size := len(p.pool)
+        for i := 0; i < size; i++ {
+            select {
+            case hc := <-p.pool:
+                if p.checkConnection(hc.conn) {
+                    hc.healthy = true
+                    hc.lastCheck = time.Now()
+                    p.pool <- hc
+                } else {
+                    hc.conn.Close()
+                }
+            default:
+                return
+            }
+        }
+    }
+}
+
+func (p *HealthCheckPool) checkConnection(conn net.Conn) bool {
+    conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+    _, err := conn.Write([]byte("PING\n"))
+    return err == nil
+}
+
+func (p *HealthCheckPool) Close() {
+    p.mu.Lock()
+    defer p.mu.Unlock()
+    
+    p.closed = true
+    close(p.pool)
+    
+    for hc := range p.pool {
+        hc.conn.Close()
+    }
+}
+
+func main() {
+    pool := NewHealthCheckPool("localhost:8080", 5)
+    defer pool.Close()
+    
+    conn, err := pool.Get()
+    if err != nil {
+        fmt.Printf("Get failed: %v\n", err)
+        return
+    }
+    
+    pool.Put(conn)
+    fmt.Println("Connection pool with health checks initialized")
+}
+```
+
+The health check pool periodically verifies connection health using PING  
+messages. Unhealthy connections are removed and replaced automatically,  
+ensuring the pool contains only viable connections.  
+
+## Streaming Data Transfer
+
+Streaming efficiently transfers large datasets without loading everything  
+into memory.  
+
+```go
+package main
+
+import (
+    "crypto/rand"
+    "fmt"
+    "io"
+    "log"
+    "net"
+)
+
+func streamLargeData(conn net.Conn, size int64) error {
+    chunkSize := 8192
+    buffer := make([]byte, chunkSize)
+    
+    var sent int64
+    
+    for sent < size {
+        toSend := int64(chunkSize)
+        if size-sent < toSend {
+            toSend = size - sent
+        }
+        
+        _, err := rand.Read(buffer[:toSend])
+        if err != nil {
+            return err
+        }
+        
+        n, err := conn.Write(buffer[:toSend])
+        if err != nil {
+            return err
+        }
+        
+        sent += int64(n)
+        
+        if sent%(1024*1024) == 0 {
+            fmt.Printf("Sent: %d MB\n", sent/1024/1024)
+        }
+    }
+    
+    fmt.Printf("Transfer complete: %d bytes\n", sent)
+    return nil
+}
+
+func receiveStream(conn net.Conn) error {
+    buffer := make([]byte, 8192)
+    var received int64
+    
+    for {
+        n, err := conn.Read(buffer)
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            return err
+        }
+        
+        received += int64(n)
+        
+        if received%(1024*1024) == 0 {
+            fmt.Printf("Received: %d MB\n", received/1024/1024)
+        }
+    }
+    
+    fmt.Printf("Receive complete: %d bytes\n", received)
+    return nil
+}
+
+func main() {
+    go startStreamServer()
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    defer conn.Close()
+    
+    dataSize := int64(10 * 1024 * 1024)
+    
+    err = streamLargeData(conn, dataSize)
+    if err != nil {
+        log.Fatalf("Stream failed: %v", err)
+    }
+}
+
+func startStreamServer() {
+    listener, err := net.Listen("tcp", ":8080")
+    if err != nil {
+        return
+    }
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    receiveStream(conn)
+}
+```
+
+Streaming processes data in chunks, keeping memory usage constant regardless  
+of transfer size. This is essential for handling large files or continuous  
+data feeds efficiently.  
+
+## Connection Load Balancing
+
+Load balancing distributes connections across multiple backend servers for  
+scalability and reliability.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "sync/atomic"
+)
+
+type LoadBalancer struct {
+    backends []string
+    current  uint32
+}
+
+func NewLoadBalancer(backends []string) *LoadBalancer {
+    return &LoadBalancer{
+        backends: backends,
+    }
+}
+
+func (lb *LoadBalancer) NextBackend() string {
+    n := atomic.AddUint32(&lb.current, 1)
+    return lb.backends[int(n-1)%len(lb.backends)]
+}
+
+func (lb *LoadBalancer) Handle(clientConn net.Conn) {
+    defer clientConn.Close()
+    
+    backend := lb.NextBackend()
+    
+    backendConn, err := net.Dial("tcp", backend)
+    if err != nil {
+        log.Printf("Backend connection failed: %v", err)
+        return
+    }
+    defer backendConn.Close()
+    
+    fmt.Printf("Forwarding to %s\n", backend)
+    
+    done := make(chan struct{}, 2)
+    
+    go func() {
+        io.Copy(backendConn, clientConn)
+        done <- struct{}{}
+    }()
+    
+    go func() {
+        io.Copy(clientConn, backendConn)
+        done <- struct{}{}
+    }()
+    
+    <-done
+}
+
+func main() {
+    go startBackend(":9001")
+    go startBackend(":9002")
+    go startBackend(":9003")
+    
+    backends := []string{
+        "localhost:9001",
+        "localhost:9002",
+        "localhost:9003",
+    }
+    
+    lb := NewLoadBalancer(backends)
+    
+    listener, err := net.Listen("tcp", ":8080")
+    if err != nil {
+        log.Fatalf("Listen failed: %v", err)
+    }
+    defer listener.Close()
+    
+    fmt.Println("Load balancer listening on :8080")
+    
+    for {
+        conn, err := listener.Accept()
+        if err != nil {
+            log.Printf("Accept error: %v", err)
+            continue
+        }
+        
+        go lb.Handle(conn)
+    }
+}
+
+func startBackend(addr string) {
+    listener, err := net.Listen("tcp", addr)
+    if err != nil {
+        return
+    }
+    defer listener.Close()
+    
+    for {
+        conn, err := listener.Accept()
+        if err != nil {
+            continue
+        }
+        
+        go func(c net.Conn) {
+            defer c.Close()
+            
+            buffer := make([]byte, 1024)
+            n, _ := c.Read(buffer)
+            
+            response := fmt.Sprintf("Backend %s: %s", addr, string(buffer[:n]))
+            c.Write([]byte(response))
+        }(conn)
+    }
+}
+```
+
+Round-robin load balancing distributes connections evenly across backends.  
+The balancer proxies data bidirectionally between clients and backends using  
+`io.Copy` in separate goroutines.  
+
+## Transparent Proxy
+
+A transparent proxy forwards traffic while inspecting or modifying data  
+in transit.  
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "strings"
+)
+
+type Proxy struct {
+    listenAddr string
+    targetAddr string
+}
+
+func NewProxy(listen, target string) *Proxy {
+    return &Proxy{
+        listenAddr: listen,
+        targetAddr: target,
+    }
+}
+
+func (p *Proxy) Start() error {
+    listener, err := net.Listen("tcp", p.listenAddr)
+    if err != nil {
+        return err
+    }
+    defer listener.Close()
+    
+    fmt.Printf("Proxy listening on %s, forwarding to %s\n", 
+        p.listenAddr, p.targetAddr)
+    
+    for {
+        clientConn, err := listener.Accept()
+        if err != nil {
+            log.Printf("Accept error: %v", err)
+            continue
+        }
+        
+        go p.handleConnection(clientConn)
+    }
+}
+
+func (p *Proxy) handleConnection(clientConn net.Conn) {
+    defer clientConn.Close()
+    
+    targetConn, err := net.Dial("tcp", p.targetAddr)
+    if err != nil {
+        log.Printf("Target connection failed: %v", err)
+        return
+    }
+    defer targetConn.Close()
+    
+    fmt.Printf("Client %s <-> Target %s\n", 
+        clientConn.RemoteAddr(), p.targetAddr)
+    
+    done := make(chan struct{}, 2)
+    
+    go func() {
+        p.forwardWithLogging(targetConn, clientConn, "Client->Target")
+        done <- struct{}{}
+    }()
+    
+    go func() {
+        p.forwardWithLogging(clientConn, targetConn, "Target->Client")
+        done <- struct{}{}
+    }()
+    
+    <-done
+}
+
+func (p *Proxy) forwardWithLogging(dst, src net.Conn, direction string) {
+    reader := bufio.NewReader(src)
+    
+    for {
+        line, err := reader.ReadString('\n')
+        if err != nil {
+            if err != io.EOF {
+                log.Printf("Read error (%s): %v", direction, err)
+            }
+            return
+        }
+        
+        fmt.Printf("[%s] %s", direction, line)
+        
+        modified := strings.ToUpper(line)
+        
+        _, err = dst.Write([]byte(modified))
+        if err != nil {
+            log.Printf("Write error (%s): %v", direction, err)
+            return
+        }
+    }
+}
+
+func main() {
+    go startTargetServer()
+    
+    proxy := NewProxy(":8080", "localhost:9000")
+    
+    if err := proxy.Start(); err != nil {
+        log.Fatalf("Proxy failed: %v", err)
+    }
+}
+
+func startTargetServer() {
+    listener, err := net.Listen("tcp", ":9000")
+    if err != nil {
+        return
+    }
+    defer listener.Close()
+    
+    for {
+        conn, err := listener.Accept()
+        if err != nil {
+            continue
+        }
+        
+        go func(c net.Conn) {
+            defer c.Close()
+            io.Copy(c, c)
+        }(conn)
+    }
+}
+```
+
+The transparent proxy intercepts and logs traffic while forwarding it to the  
+target. It can modify data in transit, enabling protocol translation,  
+content filtering, or debugging.  
+
+## Unix Domain Sockets
+
+Unix domain sockets provide efficient IPC on the same host without network  
+overhead.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "os"
+)
+
+const SocketPath = "/tmp/go-socket.sock"
+
+func main() {
+    os.Remove(SocketPath)
+    
+    go startUnixServer()
+    
+    conn, err := net.Dial("unix", SocketPath)
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    defer conn.Close()
+    
+    message := "Hello via Unix socket\n"
+    _, err = conn.Write([]byte(message))
+    if err != nil {
+        log.Fatalf("Write failed: %v", err)
+    }
+    
+    fmt.Printf("Sent: %s", message)
+    
+    buffer := make([]byte, 1024)
+    n, err := conn.Read(buffer)
+    if err != nil && err != io.EOF {
+        log.Fatalf("Read failed: %v", err)
+    }
+    
+    fmt.Printf("Received: %s", string(buffer[:n]))
+    
+    os.Remove(SocketPath)
+}
+
+func startUnixServer() {
+    listener, err := net.Listen("unix", SocketPath)
+    if err != nil {
+        log.Fatalf("Listen failed: %v", err)
+    }
+    defer listener.Close()
+    
+    fmt.Println("Unix socket server listening")
+    
+    conn, err := listener.Accept()
+    if err != nil {
+        log.Printf("Accept error: %v", err)
+        return
+    }
+    defer conn.Close()
+    
+    buffer := make([]byte, 1024)
+    n, err := conn.Read(buffer)
+    if err != nil {
+        log.Printf("Read error: %v", err)
+        return
+    }
+    
+    fmt.Printf("Server received: %s", string(buffer[:n]))
+    
+    conn.Write([]byte("Unix socket response\n"))
+}
+```
+
+Unix domain sockets use filesystem paths instead of IP addresses and ports.  
+They're faster than TCP sockets for local communication and support passing  
+file descriptors between processes.  
+
+## TLS/SSL Secure Connections
+
+TLS encryption secures network communication against eavesdropping and  
+tampering.  
+
+```go
+package main
+
+import (
+    "crypto/tls"
+    "crypto/x509"
+    "fmt"
+    "io"
+    "log"
+)
+
+func main() {
+    go startTLSServer()
+    
+    cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+    if err != nil {
+        fmt.Printf("Note: TLS example requires certificates\n")
+        fmt.Printf("Generate with: openssl req -x509 -newkey rsa:4096 " +
+            "-keyout server.key -out server.crt -days 365 -nodes\n")
+        return
+    }
+    
+    config := &tls.Config{
+        Certificates:       []tls.Certificate{cert},
+        InsecureSkipVerify: true,
+    }
+    
+    conn, err := tls.Dial("tcp", "localhost:8443", config)
+    if err != nil {
+        log.Printf("Dial failed: %v", err)
+        return
+    }
+    defer conn.Close()
+    
+    fmt.Println("TLS connection established")
+    
+    _, err = conn.Write([]byte("Secure message\n"))
+    if err != nil {
+        log.Printf("Write failed: %v", err)
+        return
+    }
+    
+    buffer := make([]byte, 1024)
+    n, err := conn.Read(buffer)
+    if err != nil && err != io.EOF {
+        log.Printf("Read failed: %v", err)
+        return
+    }
+    
+    fmt.Printf("Received: %s", string(buffer[:n]))
+}
+
+func startTLSServer() {
+    cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+    if err != nil {
+        return
+    }
+    
+    config := &tls.Config{
+        Certificates: []tls.Certificate{cert},
+    }
+    
+    listener, err := tls.Listen("tcp", ":8443", config)
+    if err != nil {
+        return
+    }
+    defer listener.Close()
+    
+    conn, err := listener.Accept()
+    if err != nil {
+        return
+    }
+    defer conn.Close()
+    
+    buffer := make([]byte, 1024)
+    n, _ := conn.Read(buffer)
+    
+    conn.Write([]byte(fmt.Sprintf("Echo: %s", string(buffer[:n]))))
+}
+```
+
+TLS wraps TCP connections with encryption, providing confidentiality and  
+authentication. Certificates verify server identity. For production, use  
+proper certificate validation instead of InsecureSkipVerify.  
+
+## Connection Timeout Handling
+
+Comprehensive timeout handling prevents resource leaks from hanging  
+connections.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net"
+    "time"
+)
+
+type TimeoutConn struct {
+    conn         net.Conn
+    readTimeout  time.Duration
+    writeTimeout time.Duration
+}
+
+func NewTimeoutConn(conn net.Conn, read, write time.Duration) *TimeoutConn {
+    return &TimeoutConn{
+        conn:         conn,
+        readTimeout:  read,
+        writeTimeout: write,
+    }
+}
+
+func (tc *TimeoutConn) Read(b []byte) (int, error) {
+    if tc.readTimeout > 0 {
+        tc.conn.SetReadDeadline(time.Now().Add(tc.readTimeout))
+    }
+    return tc.conn.Read(b)
+}
+
+func (tc *TimeoutConn) Write(b []byte) (int, error) {
+    if tc.writeTimeout > 0 {
+        tc.conn.SetWriteDeadline(time.Now().Add(tc.writeTimeout))
+    }
+    return tc.conn.Write(b)
+}
+
+func (tc *TimeoutConn) Close() error {
+    return tc.conn.Close()
+}
+
+func main() {
+    go startTimeoutServer()
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    
+    timeoutConn := NewTimeoutConn(conn, 2*time.Second, 2*time.Second)
+    defer timeoutConn.Close()
+    
+    _, err = timeoutConn.Write([]byte("Test message\n"))
+    if err != nil {
+        log.Printf("Write error: %v", err)
+        return
+    }
+    
+    buffer := make([]byte, 1024)
+    n, err := timeoutConn.Read(buffer)
+    if err != nil {
+        log.Printf("Read error: %v", err)
+        return
+    }
+    
+    fmt.Printf("Received: %s", string(buffer[:n]))
+}
+
+func startTimeoutServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    buffer := make([]byte, 1024)
+    n, _ := conn.Read(buffer)
+    conn.Write(buffer[:n])
+}
+```
+
+The timeout wrapper automatically sets deadlines before each I/O operation,  
+providing a consistent timeout interface. This simplifies timeout management  
+throughout application code.  
+
+## Heartbeat Protocol
+
+Heartbeats detect connection failures and maintain connection liveness in  
+long-running sessions.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net"
+    "time"
+)
+
+type HeartbeatConn struct {
+    conn     net.Conn
+    interval time.Duration
+    timeout  time.Duration
+    stopChan chan struct{}
+}
+
+func NewHeartbeatConn(conn net.Conn, interval, timeout time.Duration) *HeartbeatConn {
+    hc := &HeartbeatConn{
+        conn:     conn,
+        interval: interval,
+        timeout:  timeout,
+        stopChan: make(chan struct{}),
+    }
+    
+    go hc.sender()
+    go hc.receiver()
+    
+    return hc
+}
+
+func (hc *HeartbeatConn) sender() {
+    ticker := time.NewTicker(hc.interval)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ticker.C:
+            hc.conn.SetWriteDeadline(time.Now().Add(hc.timeout))
+            _, err := hc.conn.Write([]byte("HEARTBEAT\n"))
+            if err != nil {
+                fmt.Printf("Heartbeat send failed: %v\n", err)
+                return
+            }
+        case <-hc.stopChan:
+            return
+        }
+    }
+}
+
+func (hc *HeartbeatConn) receiver() {
+    buffer := make([]byte, 128)
+    
+    for {
+        select {
+        case <-hc.stopChan:
+            return
+        default:
+            hc.conn.SetReadDeadline(time.Now().Add(hc.interval * 2))
+            n, err := hc.conn.Read(buffer)
+            if err != nil {
+                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                    fmt.Println("Heartbeat timeout - connection lost")
+                    return
+                }
+                return
+            }
+            
+            if string(buffer[:n]) == "HEARTBEAT\n" {
+                fmt.Println("Heartbeat received")
+            }
+        }
+    }
+}
+
+func (hc *HeartbeatConn) Close() {
+    close(hc.stopChan)
+    hc.conn.Close()
+}
+
+func main() {
+    go startHeartbeatServer()
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    
+    hbConn := NewHeartbeatConn(conn, 2*time.Second, 1*time.Second)
+    defer hbConn.Close()
+    
+    time.Sleep(10 * time.Second)
+}
+
+func startHeartbeatServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    hbConn := NewHeartbeatConn(conn, 2*time.Second, 1*time.Second)
+    defer hbConn.Close()
+    
+    time.Sleep(15 * time.Second)
+}
+```
+
+Heartbeat protocols send periodic HEARTBEAT messages to verify connection  
+liveness. Missing heartbeats beyond the timeout indicate connection failure,  
+allowing prompt detection and recovery.  
+
+## Message Acknowledgment Protocol
+
+Acknowledgments ensure reliable message delivery in unreliable transports.  
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "log"
+    "net"
+    "strconv"
+    "strings"
+    "time"
+)
+
+type AckMessage struct {
+    ID      int
+    Content string
+}
+
+func sendWithAck(conn net.Conn, msg AckMessage) error {
+    line := fmt.Sprintf("%d:%s\n", msg.ID, msg.Content)
+    
+    _, err := conn.Write([]byte(line))
+    if err != nil {
+        return err
+    }
+    
+    conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+    
+    reader := bufio.NewReader(conn)
+    ack, err := reader.ReadString('\n')
+    if err != nil {
+        return err
+    }
+    
+    expectedAck := fmt.Sprintf("ACK:%d\n", msg.ID)
+    if strings.TrimSpace(ack) != strings.TrimSpace(expectedAck) {
+        return fmt.Errorf("invalid ack: got %s, want %s", ack, expectedAck)
+    }
+    
+    return nil
+}
+
+func main() {
+    go startAckServer()
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    defer conn.Close()
+    
+    messages := []AckMessage{
+        {ID: 1, Content: "First message"},
+        {ID: 2, Content: "Second message"},
+        {ID: 3, Content: "Third message"},
+    }
+    
+    for _, msg := range messages {
+        err := sendWithAck(conn, msg)
+        if err != nil {
+            log.Printf("Send failed for message %d: %v", msg.ID, err)
+            continue
+        }
+        
+        fmt.Printf("Message %d acknowledged\n", msg.ID)
+    }
+}
+
+func startAckServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    scanner := bufio.NewScanner(conn)
+    
+    for scanner.Scan() {
+        line := scanner.Text()
+        parts := strings.SplitN(line, ":", 2)
+        
+        if len(parts) != 2 {
+            continue
+        }
+        
+        id, err := strconv.Atoi(parts[0])
+        if err != nil {
+            continue
+        }
+        
+        fmt.Printf("Received message %d: %s\n", id, parts[1])
+        
+        ack := fmt.Sprintf("ACK:%d\n", id)
+        conn.Write([]byte(ack))
+    }
+}
+```
+
+Acknowledgment protocols require receivers to confirm message receipt.  
+Senders wait for ACKs before considering messages delivered successfully.  
+This enables retransmission on timeout for reliability.  
+
+## Connection Metrics Collection
+
+Collecting metrics provides insights into connection behavior and performance.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "io"
+    "net"
+    "sync/atomic"
+    "time"
+)
+
+type ConnectionMetrics struct {
+    bytesRead      uint64
+    bytesWritten   uint64
+    messagesRead   uint64
+    messagesWritten uint64
+    startTime      time.Time
+    lastActivity   time.Time
+    errors         uint64
+}
+
+func NewConnectionMetrics() *ConnectionMetrics {
+    now := time.Now()
+    return &ConnectionMetrics{
+        startTime:    now,
+        lastActivity: now,
+    }
+}
+
+func (cm *ConnectionMetrics) RecordRead(bytes int) {
+    atomic.AddUint64(&cm.bytesRead, uint64(bytes))
+    atomic.AddUint64(&cm.messagesRead, 1)
+    cm.lastActivity = time.Now()
+}
+
+func (cm *ConnectionMetrics) RecordWrite(bytes int) {
+    atomic.AddUint64(&cm.bytesWritten, uint64(bytes))
+    atomic.AddUint64(&cm.messagesWritten, 1)
+    cm.lastActivity = time.Now()
+}
+
+func (cm *ConnectionMetrics) RecordError() {
+    atomic.AddUint64(&cm.errors, 1)
+}
+
+func (cm *ConnectionMetrics) Report() {
+    duration := time.Since(cm.startTime).Seconds()
+    
+    bytesRead := atomic.LoadUint64(&cm.bytesRead)
+    bytesWritten := atomic.LoadUint64(&cm.bytesWritten)
+    messagesRead := atomic.LoadUint64(&cm.messagesRead)
+    messagesWritten := atomic.LoadUint64(&cm.messagesWritten)
+    errors := atomic.LoadUint64(&cm.errors)
+    
+    fmt.Println("=== Connection Metrics ===")
+    fmt.Printf("Duration: %.2f seconds\n", duration)
+    fmt.Printf("Bytes read: %d (%.2f KB/s)\n", bytesRead, float64(bytesRead)/duration/1024)
+    fmt.Printf("Bytes written: %d (%.2f KB/s)\n", bytesWritten, float64(bytesWritten)/duration/1024)
+    fmt.Printf("Messages read: %d (%.2f/s)\n", messagesRead, float64(messagesRead)/duration)
+    fmt.Printf("Messages written: %d (%.2f/s)\n", messagesWritten, float64(messagesWritten)/duration)
+    fmt.Printf("Errors: %d\n", errors)
+    fmt.Printf("Last activity: %v ago\n", time.Since(cm.lastActivity))
+}
+
+func main() {
+    go startMetricsServer()
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        fmt.Printf("Dial failed: %v\n", err)
+        return
+    }
+    defer conn.Close()
+    
+    metrics := NewConnectionMetrics()
+    
+    data := make([]byte, 1024)
+    for i := 0; i < 10; i++ {
+        n, err := conn.Write(data)
+        if err != nil {
+            metrics.RecordError()
+            break
+        }
+        metrics.RecordWrite(n)
+        
+        time.Sleep(100 * time.Millisecond)
+    }
+    
+    time.Sleep(500 * time.Millisecond)
+    metrics.Report()
+}
+
+func startMetricsServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    io.Copy(io.Discard, conn)
+}
+```
+
+Connection metrics track throughput, message counts, error rates, and timing  
+information. Regular metrics reporting enables performance monitoring and  
+capacity planning.  
+
+## Custom Connection Wrapper
+
+Wrapping connections enables adding cross-cutting concerns like logging,  
+metrics, or compression.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "net"
+    "time"
+)
+
+type WrappedConn struct {
+    conn   net.Conn
+    logger func(string, ...interface{})
+}
+
+func WrapConnection(conn net.Conn, logger func(string, ...interface{})) *WrappedConn {
+    return &WrappedConn{
+        conn:   conn,
+        logger: logger,
+    }
+}
+
+func (wc *WrappedConn) Read(b []byte) (int, error) {
+    wc.logger("Read called with buffer size %d", len(b))
+    
+    start := time.Now()
+    n, err := wc.conn.Read(b)
+    duration := time.Since(start)
+    
+    if err != nil {
+        wc.logger("Read error: %v", err)
+    } else {
+        wc.logger("Read %d bytes in %v", n, duration)
+    }
+    
+    return n, err
+}
+
+func (wc *WrappedConn) Write(b []byte) (int, error) {
+    wc.logger("Write called with %d bytes", len(b))
+    
+    start := time.Now()
+    n, err := wc.conn.Write(b)
+    duration := time.Since(start)
+    
+    if err != nil {
+        wc.logger("Write error: %v", err)
+    } else {
+        wc.logger("Wrote %d bytes in %v", n, duration)
+    }
+    
+    return n, err
+}
+
+func (wc *WrappedConn) Close() error {
+    wc.logger("Closing connection")
+    return wc.conn.Close()
+}
+
+func main() {
+    go startWrappedServer()
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        fmt.Printf("Dial failed: %v\n", err)
+        return
+    }
+    
+    logger := func(format string, args ...interface{}) {
+        fmt.Printf("[LOG] "+format+"\n", args...)
+    }
+    
+    wrapped := WrapConnection(conn, logger)
+    defer wrapped.Close()
+    
+    wrapped.Write([]byte("Test message\n"))
+    
+    buffer := make([]byte, 1024)
+    wrapped.Read(buffer)
+}
+
+func startWrappedServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    buffer := make([]byte, 1024)
+    n, _ := conn.Read(buffer)
+    conn.Write(buffer[:n])
+}
+```
+
+Connection wrappers implement the `net.Conn` interface while adding behavior.  
+This decorator pattern enables composing multiple wrappers for layered  
+functionality like logging, encryption, and compression.  
+
+## Protocol Negotiation
+
+Protocol negotiation allows clients and servers to agree on communication  
+format and features.  
+
+```go
+package main
+
+import (
+    "bufio"
+    "fmt"
+    "log"
+    "net"
+    "strings"
+)
+
+const (
+    ProtocolV1 = "PROTO/1.0"
+    ProtocolV2 = "PROTO/2.0"
+)
+
+type ProtocolHandler interface {
+    HandleMessage(msg string) string
+}
+
+type V1Handler struct{}
+
+func (h *V1Handler) HandleMessage(msg string) string {
+    return strings.ToUpper(msg)
+}
+
+type V2Handler struct{}
+
+func (h *V2Handler) HandleMessage(msg string) string {
+    return fmt.Sprintf("[v2] %s", strings.ToUpper(msg))
+}
+
+func negotiateProtocol(conn net.Conn) (ProtocolHandler, error) {
+    conn.Write([]byte("PROTO?\n"))
+    
+    reader := bufio.NewReader(conn)
+    response, err := reader.ReadString('\n')
+    if err != nil {
+        return nil, err
+    }
+    
+    protocol := strings.TrimSpace(response)
+    
+    switch protocol {
+    case ProtocolV1:
+        fmt.Println("Negotiated protocol v1")
+        return &V1Handler{}, nil
+    case ProtocolV2:
+        fmt.Println("Negotiated protocol v2")
+        return &V2Handler{}, nil
+    default:
+        return nil, fmt.Errorf("unsupported protocol: %s", protocol)
+    }
+}
+
+func main() {
+    go startNegotiationServer()
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    defer conn.Close()
+    
+    reader := bufio.NewReader(conn)
+    
+    request, _ := reader.ReadString('\n')
+    if strings.TrimSpace(request) == "PROTO?" {
+        conn.Write([]byte(ProtocolV2 + "\n"))
+    }
+    
+    conn.Write([]byte("test message\n"))
+    
+    response, _ := reader.ReadString('\n')
+    fmt.Printf("Response: %s", response)
+}
+
+func startNegotiationServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    handler, err := negotiateProtocol(conn)
+    if err != nil {
+        log.Printf("Negotiation failed: %v", err)
+        return
+    }
+    
+    scanner := bufio.NewScanner(conn)
+    for scanner.Scan() {
+        msg := scanner.Text()
+        response := handler.HandleMessage(msg)
+        conn.Write([]byte(response + "\n"))
+    }
+}
+```
+
+Protocol negotiation exchanges version information at connection start,  
+allowing both parties to agree on capabilities. This enables backward  
+compatibility and feature detection.  
+
+## Streaming JSON Protocol
+
+Streaming JSON enables efficient transmission of structured data over  
+network connections.  
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net"
+)
+
+type Message struct {
+    Type    string      `json:"type"`
+    ID      int         `json:"id"`
+    Payload interface{} `json:"payload"`
+}
+
+func sendJSON(conn net.Conn, msg Message) error {
+    encoder := json.NewEncoder(conn)
+    return encoder.Encode(msg)
+}
+
+func receiveJSON(conn net.Conn) (*Message, error) {
+    var msg Message
+    decoder := json.NewDecoder(conn)
+    err := decoder.Decode(&msg)
+    return &msg, err
+}
+
+func main() {
+    go startJSONServer()
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        log.Fatalf("Dial failed: %v", err)
+    }
+    defer conn.Close()
+    
+    messages := []Message{
+        {Type: "greeting", ID: 1, Payload: "Hello"},
+        {Type: "data", ID: 2, Payload: map[string]int{"value": 42}},
+        {Type: "close", ID: 3, Payload: nil},
+    }
+    
+    for _, msg := range messages {
+        err := sendJSON(conn, msg)
+        if err != nil {
+            log.Printf("Send error: %v", err)
+            break
+        }
+        
+        fmt.Printf("Sent: %+v\n", msg)
+        
+        response, err := receiveJSON(conn)
+        if err != nil {
+            log.Printf("Receive error: %v", err)
+            break
+        }
+        
+        fmt.Printf("Received: %+v\n", response)
+    }
+}
+
+func startJSONServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    for {
+        msg, err := receiveJSON(conn)
+        if err != nil {
+            return
+        }
+        
+        response := Message{
+            Type:    "ack",
+            ID:      msg.ID,
+            Payload: fmt.Sprintf("Processed %s", msg.Type),
+        }
+        
+        sendJSON(conn, response)
+        
+        if msg.Type == "close" {
+            break
+        }
+    }
+}
+```
+
+Streaming JSON uses `json.Encoder` and `json.Decoder` for efficient  
+serialization directly to network connections. This is cleaner than  
+marshaling to bytes first and supports streaming of multiple objects.  
+
+## Circuit Breaker Pattern
+
+Circuit breakers prevent cascading failures by temporarily blocking requests  
+to failing services.  
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+    "net"
+    "sync"
+    "time"
+)
+
+type CircuitState int
+
+const (
+    StateClosed CircuitState = iota
+    StateOpen
+    StateHalfOpen
+)
+
+type CircuitBreaker struct {
+    maxFailures  int
+    resetTimeout time.Duration
+    
+    mu           sync.RWMutex
+    state        CircuitState
+    failures     int
+    lastFailTime time.Time
+}
+
+func NewCircuitBreaker(maxFailures int, resetTimeout time.Duration) *CircuitBreaker {
+    return &CircuitBreaker{
+        maxFailures:  maxFailures,
+        resetTimeout: resetTimeout,
+        state:        StateClosed,
+    }
+}
+
+func (cb *CircuitBreaker) Call(fn func() error) error {
+    cb.mu.Lock()
+    
+    if cb.state == StateOpen {
+        if time.Since(cb.lastFailTime) > cb.resetTimeout {
+            cb.state = StateHalfOpen
+            fmt.Println("Circuit breaker: half-open")
+        } else {
+            cb.mu.Unlock()
+            return errors.New("circuit breaker open")
+        }
+    }
+    
+    cb.mu.Unlock()
+    
+    err := fn()
+    
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+    
+    if err != nil {
+        cb.failures++
+        cb.lastFailTime = time.Now()
+        
+        if cb.failures >= cb.maxFailures {
+            cb.state = StateOpen
+            fmt.Printf("Circuit breaker: opened after %d failures\n", cb.failures)
+        }
+        
+        return err
+    }
+    
+    if cb.state == StateHalfOpen {
+        cb.state = StateClosed
+        cb.failures = 0
+        fmt.Println("Circuit breaker: closed")
+    }
+    
+    return nil
+}
+
+func main() {
+    cb := NewCircuitBreaker(3, 5*time.Second)
+    
+    connect := func() error {
+        conn, err := net.DialTimeout("tcp", "localhost:9999", 1*time.Second)
+        if err != nil {
+            return err
+        }
+        conn.Close()
+        return nil
+    }
+    
+    for i := 0; i < 10; i++ {
+        err := cb.Call(connect)
+        if err != nil {
+            fmt.Printf("Attempt %d failed: %v\n", i+1, err)
+        } else {
+            fmt.Printf("Attempt %d succeeded\n", i+1)
+        }
+        
+        time.Sleep(1 * time.Second)
+    }
+}
+```
+
+Circuit breakers track failure rates and open the circuit after exceeding  
+thresholds. This prevents wasting resources on failing services and allows  
+time for recovery.  
+
+## Request Batching
+
+Batching groups multiple requests into single network operations for  
+efficiency.  
+
+```go
+package main
+
+import (
+    "fmt"
+    "net"
+    "strings"
+    "sync"
+    "time"
+)
+
+type Batcher struct {
+    conn        net.Conn
+    batchSize   int
+    flushInterval time.Duration
+    
+    mu      sync.Mutex
+    buffer  []string
+    stopChan chan struct{}
+}
+
+func NewBatcher(conn net.Conn, batchSize int, interval time.Duration) *Batcher {
+    b := &Batcher{
+        conn:          conn,
+        batchSize:     batchSize,
+        flushInterval: interval,
+        buffer:        make([]string, 0, batchSize),
+        stopChan:      make(chan struct{}),
+    }
+    
+    go b.autoFlush()
+    
+    return b
+}
+
+func (b *Batcher) Add(item string) error {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    
+    b.buffer = append(b.buffer, item)
+    
+    if len(b.buffer) >= b.batchSize {
+        return b.flushLocked()
+    }
+    
+    return nil
+}
+
+func (b *Batcher) Flush() error {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    return b.flushLocked()
+}
+
+func (b *Batcher) flushLocked() error {
+    if len(b.buffer) == 0 {
+        return nil
+    }
+    
+    batch := strings.Join(b.buffer, ",")
+    message := fmt.Sprintf("BATCH:%s\n", batch)
+    
+    _, err := b.conn.Write([]byte(message))
+    if err != nil {
+        return err
+    }
+    
+    fmt.Printf("Flushed batch of %d items\n", len(b.buffer))
+    b.buffer = b.buffer[:0]
+    
+    return nil
+}
+
+func (b *Batcher) autoFlush() {
+    ticker := time.NewTicker(b.flushInterval)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ticker.C:
+            b.Flush()
+        case <-b.stopChan:
+            return
+        }
+    }
+}
+
+func (b *Batcher) Close() error {
+    close(b.stopChan)
+    b.Flush()
+    return nil
+}
+
+func main() {
+    go startBatchServer()
+    
+    time.Sleep(100 * time.Millisecond)
+    
+    conn, err := net.Dial("tcp", "localhost:8080")
+    if err != nil {
+        fmt.Printf("Dial failed: %v\n", err)
+        return
+    }
+    defer conn.Close()
+    
+    batcher := NewBatcher(conn, 5, 2*time.Second)
+    defer batcher.Close()
+    
+    for i := 1; i <= 12; i++ {
+        batcher.Add(fmt.Sprintf("item%d", i))
+        time.Sleep(300 * time.Millisecond)
+    }
+    
+    time.Sleep(1 * time.Second)
+}
+
+func startBatchServer() {
+    listener, _ := net.Listen("tcp", ":8080")
+    defer listener.Close()
+    
+    conn, _ := listener.Accept()
+    defer conn.Close()
+    
+    buffer := make([]byte, 4096)
+    for {
+        n, err := conn.Read(buffer)
+        if err != nil {
+            return
+        }
+        fmt.Printf("Server received: %s", string(buffer[:n]))
+    }
+}
+```
+
+Request batching accumulates items and sends them together, either when the  
+batch is full or after a timeout. This amortizes network overhead across  
+multiple operations, improving throughput.  
+
