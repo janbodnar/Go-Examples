@@ -936,11 +936,11 @@ func main() {
     
     // Case-insensitive Unicode matching
     mixedCaseText := "CAFÉ café Café МОСКВА москва Москва"
-    casePattern := regexp.MustCompile(`(?i)\bcafé\b`)
+    casePattern := regexp.MustCompile(`(?i)café`)
     cafeMatches := casePattern.FindAllString(mixedCaseText, -1)
     fmt.Printf("\nCase-insensitive 'café': %v\n", cafeMatches)
     
-    cyrillicPattern := regexp.MustCompile(`(?i)\bмосква\b`)
+    cyrillicPattern := regexp.MustCompile(`(?i)москва`)
     moscowMatches := cyrillicPattern.FindAllString(mixedCaseText, -1)
     fmt.Printf("Case-insensitive 'москва': %v\n", moscowMatches)
     
