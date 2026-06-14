@@ -274,17 +274,6 @@ func main() {
 Jinja template 
 
 ```go
-// To run this example instead of main.go:
-//
-//	1. Rename the function below from jinja2Main → main:
-//	   sed -i 's/func jinja2Main()/func main()/' jinja2_example.go
-//
-//	2. (Optional) Temporarily move main.go aside so there's no conflict:
-//	   mv main.go main.go.bak
-//
-//	3. Run:
-//	   DEEPSEEK_API_KEY="sk-..." go run .
-
 package main
 
 import (
