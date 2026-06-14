@@ -165,3 +165,110 @@ func main() {
 	}
 }
 ```
+
+## Templates
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/prompt"
+	"github.com/cloudwego/eino/schema"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Step 1: Create a chat model backed by DeepSeek V4 Flash.
+	// DeepSeek exposes an OpenAI-compatible API, so we use the OpenAI adapter.
+	// Set the DEEPSEEK_API_KEY environment variable before running.
+	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		APIKey:  os.Getenv("DEEPSEEK_API_KEY"), // required: your DeepSeek API key
+		Model:   "deepseek-v4-flash",           // the DeepSeek model ID
+		BaseURL: "https://api.deepseek.com/v1", // OpenAI-compatible endpoint
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Step 2: Define a prompt template using FString syntax.
+	// Variables like {user_name} and {current_date} are injected at runtime.
+	chatTemplate := prompt.FromMessages(
+		schema.FString,
+		schema.SystemMessage("You are a friendly assistant speaking to {user_name}.\nToday's date is {current_date}. Keep your answers warm and concise."),
+		schema.UserMessage("{question}"),
+	)
+
+	// Step 3: Prepare dynamic values for the template variables.
+	// These could come from user input, a database, or any runtime source.
+	vars := map[string]any{
+		"user_name":    "Alice",
+		"current_date": time.Now().Format("2006-01-02"),
+		"question":     "What can you help me with today?",
+	}
+
+	// Step 4: Render the template into concrete messages.
+	messages, err := chatTemplate.Format(ctx, vars)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("Messages:")
+	for _, msg := range messages {
+		fmt.Printf("%s: %s\n", msg.Role, msg.Content)
+	}
+
+	// Step 5: Wrap the model in an ADK (Agent Development Kit) ChatModelAgent.
+	// The agent combines the model with a name, description, and system instruction.
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "hello_agent",
+		Description: "A friendly greeting assistant",
+		Instruction: "You are a friendly assistant. Please respond to the user in a warm tone.",
+		Model:       model,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Step 6: Create a Runner that orchestrates the agent execution.
+	// EnableStreaming=true delivers partial tokens as they are generated.
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent:           agent,
+		EnableStreaming: true,
+	})
+
+	// Step 7: Copy rendered messages into ADK input.
+	input := make([]adk.Message, len(messages))
+	copy(input, messages)
+
+	// Step 8: Run the agent and consume the stream of events.
+	// Each event may contain a partial or full message output.
+	events := runner.Run(ctx, input)
+	for {
+		event, ok := events.Next()
+		if !ok {
+			break
+		}
+
+		if event.Err != nil {
+			log.Printf("error: %v", event.Err)
+			break
+		}
+
+		if msg, err := event.Output.MessageOutput.GetMessage(); err == nil {
+			fmt.Printf("Agent: %s\n", msg.Content)
+		}
+	}
+}
+```
+
+
