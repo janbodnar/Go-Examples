@@ -866,6 +866,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -1041,33 +1042,41 @@ Wind: %.1f km/h at %.0f°
 }
 
 // parseQuery reads the weather query from CLI positional arguments or stdin.
-// It also handles -h/--help and -m/--model flags.
+// Flags are handled by the standard flag package.
 func parseQuery() string {
-	args := os.Args[1:]
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-h", "--help":
-			fmt.Println(`Temperature CLI App — get current weather for any city using DeepSeek + Open-Meteo
+	modelFlag := flag.String("m", "", "DeepSeek model name (default: deepseek-v4-flash)")
+	helpFlag := flag.Bool("h", false, "Show this help message")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Temperature CLI App — get current weather for any city using DeepSeek + Open-Meteo
 
 Usage: weathertool [options] [city/query]
 
 Options:
-  -h, --help        Show this help message
-  -m, --model MODEL  DeepSeek model name (default: deepseek-v4-flash)
-                     Can also be set via WEATHER_MODEL env var.`)
-			os.Exit(0)
-		case "-m", "--model":
-			if i+1 < len(args) {
-				os.Setenv("WEATHER_MODEL", args[i+1])
-				i++
-			}
-		default:
-			// Everything after the first non-flag argument is the query.
-			return strings.Join(args[i:], " ")
-		}
+`)
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, `
+The model can also be set via the WEATHER_MODEL environment variable.
+`)
+	}
+	flag.Parse()
+
+	if *helpFlag {
+		flag.Usage()
+		os.Exit(0)
 	}
 
-	// If no positional arguments, try reading from stdin (pipe or redirect).
+	if *modelFlag != "" {
+		os.Setenv("WEATHER_MODEL", *modelFlag)
+	}
+
+	// Positional arguments form the query.
+	query := strings.Join(flag.Args(), " ")
+	if query != "" {
+		return query
+	}
+
+	// Fall back to reading from stdin (pipe or redirect).
 	info, _ := os.Stdin.Stat()
 	if (info.Mode()&os.ModeCharDevice) == 0 || info.Size() > 0 {
 		data, _ := io.ReadAll(os.Stdin)
