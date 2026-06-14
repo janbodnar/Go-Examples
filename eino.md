@@ -623,3 +623,233 @@ func main() {
 }
 ```
 
+## Tool call
+
+This example demonstrates how to build a **tool-using AI agent** The agent is given access  
+to the system's GNU `bc` calculator as a callable tool. When the user asks a math question  
+(e.g., *"What is the square root of 1764 plus 15% of 240?"*), the agent decides whether  
+to invoke the `bc` tool, pipes the expression to `bc -l` via stdin, receives the result,  
+and then formulates a natural-language answer. 
+
+The example wires up the full pipeline: loading the API key from a `.env` file, configuring  
+the DeepSeek chat model, registering the tool by introspecting a Go function with `utils.InferTool`,  composing everything into an agent via `adk.NewChatModelAgent`, and driving three test queries  
+through a runner that streams back messages. The output is pretty-printed, showing reasoning  
+from the LLM (if available), tool calls, tool results, and the final assistant response.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/cloudwego/eino-ext/components/model/deepseek"
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/components/tool/utils"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
+	"github.com/joho/godotenv"
+)
+
+// BcInput defines the input schema for the bc tool.
+// The json tags and jsonschema_description are used by eino to automatically
+// generate a JSON Schema that the LLM uses to know what arguments to provide.
+type BcInput struct {
+	Expression string `json:"expression" jsonschema_description:"Mathematical expression for bc, e.g. sqrt(1764) + 15 * 240 / 100, or scale=10; 4*a(1)"`
+}
+
+// runBc is the tool function bound to the "bc" tool. It is called by the LLM
+// when it decides it needs to evaluate a math expression.
+//
+// The function signature must follow eino's tool convention:
+//
+//	func(ctx context.Context, input *InputStruct) (string, error)
+//
+// It pipes the expression to the system's bc(1) with -l (math library enabled)
+// and returns the computed result as a string.
+func runBc(_ context.Context, input *BcInput) (string, error) {
+	// Extract the expression provided by the LLM.
+	expr := input.Expression
+	if expr == "" {
+		return "", fmt.Errorf("expression is required")
+	}
+
+	log.Printf("[DEBUG] Calling bc with expression: %s", expr)
+
+	// Build the command: bc -l reads expressions from stdin.
+	cmd := exec.Command("bc", "-l")
+	cmd.Stdin = strings.NewReader(expr + "\n")
+
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("bc error: %s", string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("failed to run bc: %w", err)
+	}
+
+	result := strings.TrimSpace(string(out))
+	return fmt.Sprintf("Result: %s", result), nil
+}
+
+func main() {
+	// ── 1. Load environment ──────────────────────────────────────────────
+	// godotenv loads variables from a .env file (if present) before we read
+	// them with os.Getenv. This keeps the API key out of the source code.
+	if err := godotenv.Load(); err != nil {
+		fmt.Println("No .env file found, using environment variables")
+	}
+
+	ctx := context.Background()
+
+	// ── 2. Set up the DeepSeek chat model ────────────────────────────────
+	// This is the LLM backend that the agent uses for reasoning and tool
+	// selection. We configure it with the model name, API key, and generation
+	// parameters like temperature and max tokens.
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		log.Fatal("DEEPSEEK_API_KEY environment variable is not set")
+	}
+
+	cm, err := deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{
+		APIKey:      apiKey,
+		Model:       "deepseek-v4-flash",
+		BaseURL:     "https://api.deepseek.com",
+		Timeout:     60 * time.Second,
+		MaxTokens:   4096,
+		Temperature: 0.7,
+	})
+	if err != nil {
+		log.Fatalf("failed to create DeepSeek chat model: %v", err)
+	}
+
+	// ── 3. Register the bc tool ──────────────────────────────────────────
+	// utils.InferTool introspects the runBc function's signature and the
+	// BcInput struct's JSON tags to automatically generate an OpenAI-compatible
+	// tool definition. The LLM sees the description and input schema and can
+	// decide to call "bc" when it needs to evaluate a math expression.
+	bcTool, err := utils.InferTool("bc",
+		"Evaluates a mathematical expression using the GNU bc command with math library (-l). "+
+			"Supports sqrt(), sin(), cos(), arctangent a(), exponentials e(), logarithms l(), "+
+			"scale for decimal precision, and standard arithmetic. "+
+			"Example: 'scale=10; sqrt(1764) + 15 * 240 / 100' or '4*a(1)' to compute pi.",
+		runBc)
+	if err != nil {
+		log.Fatalf("failed to create bc tool: %v", err)
+	}
+
+	// ── 4. Create the agent ──────────────────────────────────────────────
+	// The agent ties together the LLM, the tool(s), and a system instruction.
+	// When a query comes in, the agent:
+	//   1. Sends the query + tool definitions to the LLM.
+	//   2. If the LLM requests a tool call, executes it and feeds the result
+	//      back to the LLM for the final answer.
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "bc_calc_agent",
+		Description: "An AI assistant with access to the bc command-line calculator for precise math.",
+		Instruction: `You are a helpful math assistant with access to the GNU bc calculator tool.
+
+- Use "bc" to evaluate any mathematical expressions.
+- bc runs with -l (math library), supporting sqrt(), s()/c() for sin/cos, a() for arctan, e()/l() for exp/log, and arbitrary precision via the "scale" variable.
+- Provide your answer concisely after receiving the bc result.`,
+		Model: cm,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: []tool.BaseTool{bcTool},
+			},
+		},
+	})
+	if err != nil {
+		log.Fatalf("failed to create agent: %v", err)
+	}
+
+	// ── 5. Create the runner ─────────────────────────────────────────────
+	// The runner is the execution engine. It processes queries through the
+	// agent, handling the LLM-tool loop automatically. With EnableStreaming
+	// set to false, each response is delivered as a single message once done.
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent:           agent,
+		EnableStreaming: false,
+	})
+
+	// ── 6. Run a few example queries ─────────────────────────────────────
+	// Each query is sent to the runner. The agent decides whether to call the
+	// "bc" tool, then returns the final answer. We iterate over the stream of
+	// events to print each message as it arrives.
+	queries := []string{
+		"What is the square root of 1764 plus 15% of 240?",
+		"Calculate pi to 10 decimal places.",
+		"What is 2^10?",
+	}
+
+	for i, q := range queries {
+		fmt.Printf("\n%s Query %d: %s %s\n",
+			strings.Repeat("━", 15), i+1, q, strings.Repeat("━", 15))
+
+		iter := runner.Query(ctx, q)
+		for {
+			event, ok := iter.Next()
+			if !ok {
+				break
+			}
+			if event.Err != nil {
+				log.Printf("  [ERROR] %v", event.Err)
+				break
+			}
+			if event.Output == nil || event.Output.MessageOutput == nil {
+				continue
+			}
+			msg, err := event.Output.MessageOutput.GetMessage()
+			if err != nil || msg == nil {
+				continue
+			}
+			printMessage(msg)
+		}
+	}
+
+	fmt.Printf("\n%s All done %s\n", strings.Repeat("━", 15), strings.Repeat("━", 15))
+}
+
+// printMessage pretty-prints each message from the agent stream to stdout.
+//
+// Messages have different roles depending on where they come from:
+//   - Assistant: the LLM's text output, reasoning, or a request to call a tool.
+//   - Tool:      the result returned by the tool function (e.g. the bc output).
+func printMessage(msg *schema.Message) {
+	switch msg.Role {
+	case schema.Assistant:
+		// DeepSeek models can return a separate reasoning/chain-of-thought field.
+		if reasoning, ok := deepseek.GetReasoningContent(msg); ok && reasoning != "" {
+			fmt.Printf("  [Reasoning] %s\n", reasoning)
+		}
+		// The final text answer from the LLM (after it has processed tool results).
+		if msg.Content != "" {
+			fmt.Printf("  [Assistant] %s\n", msg.Content)
+		}
+		// If the LLM decided to invoke a tool, the tool-call details are here.
+		for _, tc := range msg.ToolCalls {
+			fmt.Printf("  [Tool call] %s(%s)\n", tc.Function.Name, tc.Function.Arguments)
+		}
+	case schema.Tool:
+		// The raw output from the tool execution, truncated for readability.
+		if msg.Content != "" {
+			preview := msg.Content
+			if len(preview) > 120 {
+				preview = preview[:120] + "..."
+			}
+			fmt.Printf("  [Tool result] %s\n", preview)
+		}
+	default:
+		if msg.Content != "" {
+			fmt.Printf("  [%s] %s\n", msg.Role, msg.Content)
+		}
+	}
+}
+```
+
