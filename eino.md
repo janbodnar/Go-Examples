@@ -372,3 +372,89 @@ func main() {
 }
 ```
 
+## Extract data
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/schema"
+)
+
+type Person struct {
+	Name string `json:"name"`
+	Age  int    `json:"age"`
+	City string `json:"city"`
+}
+
+type PeopleExtraction struct {
+	People []Person `json:"people"`
+}
+
+func main() {
+	ctx := context.Background()
+
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		log.Fatal("Error: DEEPSEEK_API_KEY environment variable is not set.")
+	}
+
+	chatModel, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		APIKey:  apiKey,
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-flash",
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create chat model: %v", err)
+	}
+
+	text := `John Doe is a software engineer living in New York. He is 30 years old
+and enjoys hiking and photography. Jane Smith is a graphic designer based in San
+Francisco. She is 28 years old and loves painting and traveling.`
+
+	systemPrompt := `You are a precise data extraction assistant. Always respond 
+with valid JSON only — no markdown fences, no extra text.`
+
+	userPrompt := fmt.Sprintf(
+		"Extract all people from the following text. Return a JSON object with a 'people'\n"+
+			"array, each entry having fields: name (string), age (number), city (string).\n\n"+
+			"Text: %s", text)
+
+	resp, err := chatModel.Generate(ctx, []*schema.Message{
+		{
+			Role:    schema.System,
+			Content: systemPrompt,
+		},
+		{
+			Role:    schema.User,
+			Content: userPrompt,
+		},
+	})
+	if err != nil {
+		log.Fatalf("Generate failed: %v", err)
+	}
+
+	var result PeopleExtraction
+	if err := json.Unmarshal([]byte(resp.Content), &result); err != nil {
+		log.Fatalf("Failed to parse response: %v", err)
+	}
+
+	fmt.Printf("Extracted info: %+v\n", result)
+
+	fmt.Println("\nPeople found:")
+	for _, person := range result.People {
+		fmt.Printf("- %s, %d years old, from %s\n", person.Name, person.Age, person.City)
+	}
+}
+```
+
