@@ -271,4 +271,115 @@ func main() {
 }
 ```
 
+Jinja template 
+
+```go
+// To run this example instead of main.go:
+//
+//	1. Rename the function below from jinja2Main → main:
+//	   sed -i 's/func jinja2Main()/func main()/' jinja2_example.go
+//
+//	2. (Optional) Temporarily move main.go aside so there's no conflict:
+//	   mv main.go main.go.bak
+//
+//	3. Run:
+//	   DEEPSEEK_API_KEY="sk-..." go run .
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/prompt"
+	"github.com/cloudwego/eino/schema"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Step 1: Create the DeepSeek model (same as before).
+	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		APIKey:  os.Getenv("DEEPSEEK_API_KEY"),
+		Model:   "deepseek-v4-flash",
+		BaseURL: "https://api.deepseek.com/v1",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Step 2: Define a prompt template using Jinja2 syntax.
+	// Variables use {{double_curlies}} — perfect for multi-turn scenarios.
+	// MessagesPlaceholder("chat_history", true) injects past messages if provided.
+	chatTemplate := prompt.FromMessages(
+		schema.Jinja2,
+		schema.SystemMessage("You are a {{role}} expert. Answer in {{language}}."),
+		schema.MessagesPlaceholder("chat_history", true),
+		schema.UserMessage("{{query}}"),
+	)
+
+	// Step 3: Prepare variables — including a chat history with a prior exchange.
+	vars := map[string]any{
+		"role":     "cybersecurity",
+		"language": "simple, plain English",
+		"chat_history": []*schema.Message{
+			schema.UserMessage("What is a phishing attack?"),
+			schema.AssistantMessage("Phishing is a social engineering attack where attackers pose as trusted entities to steal sensitive data.", nil),
+		},
+		"query": "How can I recognize one?",
+	}
+
+	// Step 4: Render the template (Jinja2 engine handles substitution).
+	messages, err := chatTemplate.Format(ctx, vars)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("=== Rendered Messages (Jinja2) ===")
+	for i, msg := range messages {
+		fmt.Printf("[%d] %s: %s\n", i+1, msg.Role, msg.Content)
+	}
+
+	// Step 5: Wrap in ADK agent (SystemMessage from template replaces Instruction).
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "jinja2_agent",
+		Description: "Demonstrates Jinja2 template injection",
+		Model:       model,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Step 6: Runner.
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent:           agent,
+		EnableStreaming: true,
+	})
+
+	// Step 7: Run.
+	input := make([]adk.Message, len(messages))
+	copy(input, messages)
+
+	fmt.Println("\n=== Agent Response ===")
+	events := runner.Run(ctx, input)
+	for {
+		event, ok := events.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			log.Printf("error: %v", event.Err)
+			break
+		}
+		if msg, err := event.Output.MessageOutput.GetMessage(); err == nil {
+			fmt.Printf("Agent: %s\n", msg.Content)
+		}
+	}
+}
+```
 
