@@ -460,6 +460,16 @@ with valid JSON only — no markdown fences, no extra text.`
 
 ## Reasoning effort 
 
+
+In this example, we demonstrate how to control the **reasoning effort** of an Eino-powered  chat model. Many modern LLM backends support configurable reasoning depth, giving developers  fine-grained control over the trade-off between response speed, token cost, and solution  quality. By adjusting the reasoning effort level, you can instruct the model to perform  shallow, fast reasoning for simple tasks — or deeper, more deliberate analysis for complex  problems that demand higher accuracy.
+
+The example illustrates two complementary approaches: 
+
+1. **Static configuration via `ChatModelConfig`** — set the effort level at model creation  time, so every call uses the same depth. 
+2. **Per-request functional options** — create a single model instance and vary the effort  dynamically per `Generate()` call using `WithReasoningEffort` and `WithExtraFields`. 
+
+Both approaches are demonstrated against DeepSeek V4 Flash, with the chain-of-thought  (`thinking`) mode enabled to surface the model's internal reasoning alongside the final  answer.
+
 ```go
 package main
 
