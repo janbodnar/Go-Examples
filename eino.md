@@ -853,3 +853,281 @@ func printMessage(msg *schema.Message) {
 }
 ```
 
+## Weather tool
+
+The code example fetches the current weather for any city.  
+It uses DeepSeek (via Eino/OpenAI adapter) to extract the city name from  
+natural-language queries, then calls the Open-Meteo geocoding and forecast  
+APIs directly to retrieve and display the weather report.  
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/schema"
+)
+
+// cityExtraction is the JSON structure the LLM returns after extracting
+// a city name from the user's query.
+type cityExtraction struct {
+	City string `json:"city"`
+}
+
+// coordinates holds the geographic result of a city geocoding lookup.
+type coordinates struct {
+	Name      string
+	Country   string
+	Latitude  float64
+	Longitude float64
+}
+
+// geocodingResponse matches the JSON shape of the Open-Meteo Geocoding API.
+type geocodingResponse struct {
+	Results []struct {
+		Name      string  `json:"name"`
+		Country   string  `json:"country"`
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"results"`
+}
+
+// weatherResponse matches the JSON shape of the Open-Meteo Forecast API
+// when only "current_weather" is requested.
+type weatherResponse struct {
+	CurrentWeather struct {
+		Temperature   float64 `json:"temperature"`
+		WindSpeed     float64 `json:"windspeed"`
+		WindDirection float64 `json:"winddirection"`
+		WeatherCode   int     `json:"weathercode"`
+		Time          string  `json:"time"`
+	} `json:"current_weather"`
+}
+
+// weatherCodes maps WMO weather codes returned by Open-Meteo to
+// human-readable descriptions.
+var weatherCodes = map[int]string{
+	0:  "Clear sky",
+	1:  "Mainly clear",
+	2:  "Partly cloudy",
+	3:  "Overcast",
+	45: "Fog",
+	48: "Depositing rime fog",
+	51: "Light drizzle",
+	53: "Moderate drizzle",
+	55: "Dense drizzle",
+	61: "Slight rain",
+	63: "Moderate rain",
+	65: "Heavy rain",
+	71: "Slight snow fall",
+	73: "Moderate snow fall",
+	75: "Heavy snow fall",
+	77: "Snow grains",
+	80: "Slight rain showers",
+	81: "Moderate rain showers",
+	82: "Violent rain showers",
+	85: "Slight snow showers",
+	86: "Heavy snow showers",
+	95: "Thunderstorm",
+	96: "Thunderstorm with slight hail",
+	99: "Thunderstorm with heavy hail",
+}
+
+func main() {
+	ctx := context.Background()
+
+	// Read the user's query from CLI arguments or stdin.
+	query := parseQuery()
+	if query == "" {
+		log.Fatal("Error: No query provided. Pass a city name/query as argument or pipe input.")
+	}
+
+	// The LLM call requires a DeepSeek API key.
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		log.Fatal("Error: DEEPSEEK_API_KEY environment variable is not set.\nPlease set it: export DEEPSEEK_API_KEY='your-key-here'")
+	}
+
+	// Model can be overridden via the WEATHER_MODEL env var or -m flag.
+	modelName := "deepseek-v4-flash"
+	if v := os.Getenv("WEATHER_MODEL"); v != "" {
+		modelName = v
+	}
+
+	// Configure the chat model with JSON response mode so the LLM
+	// returns structured data instead of free-form text.
+	chatModel, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		APIKey:  apiKey,
+		BaseURL: "https://api.deepseek.com",
+		Model:   modelName,
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create chat model: %v", err)
+	}
+
+	// Step 1 — delegate city extraction to the LLM.
+	// The system prompt instructs it to output only JSON.
+	systemPrompt := `You are a precise city-name extractor. Respond with valid JSON only — no markdown fences, no extra text.`
+	userPrompt := fmt.Sprintf(
+		`Extract the city name from the user's weather query. Return a JSON object with a single "city" field (string). If no city is mentioned, set "city" to an empty string.
+Query: %s`, query)
+
+	resp, err := chatModel.Generate(ctx, []*schema.Message{
+		{Role: schema.System, Content: systemPrompt},
+		{Role: schema.User, Content: userPrompt},
+	})
+	if err != nil {
+		log.Fatalf("LLM call failed: %v", err)
+	}
+
+	var extracted cityExtraction
+	if err := json.Unmarshal([]byte(resp.Content), &extracted); err != nil {
+		log.Fatalf("Failed to parse LLM response: %v", err)
+	}
+
+	cityName := strings.TrimSpace(extracted.City)
+	if cityName == "" {
+		log.Fatal("Error: Could not extract a city name from the query. Try something like 'What is the weather in London?'")
+	}
+
+	fmt.Printf("\nProcessing query: '%s'\n", query)
+
+	// Step 2 — resolve city name to coordinates via Open-Meteo Geocoding API.
+	coords, err := geocode(cityName)
+	if err != nil {
+		log.Fatalf("Geocoding failed: %v", err)
+	}
+
+	// Step 3 — fetch current weather for those coordinates.
+	weather, err := fetchWeather(coords.Latitude, coords.Longitude)
+	if err != nil {
+		log.Fatalf("Weather fetch failed: %v", err)
+	}
+
+	// Step 4 — look up the human-readable description for the WMO weather code.
+	desc := weatherCodes[weather.CurrentWeather.WeatherCode]
+	if desc == "" {
+		desc = "Unknown"
+	}
+
+	// Step 5 — print the formatted weather report.
+	fmt.Printf(`City: %s, %s
+Coordinates: %.2f°N, %.2f°E
+Time: %s
+Temperature: %.1f°C
+Weather: %s
+Wind: %.1f km/h at %.0f°
+`, coords.Name, coords.Country,
+		coords.Latitude, coords.Longitude,
+		weather.CurrentWeather.Time,
+		weather.CurrentWeather.Temperature,
+		desc,
+		weather.CurrentWeather.WindSpeed, weather.CurrentWeather.WindDirection)
+}
+
+// parseQuery reads the weather query from CLI positional arguments or stdin.
+// It also handles -h/--help and -m/--model flags.
+func parseQuery() string {
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			fmt.Println(`Temperature CLI App — get current weather for any city using DeepSeek + Open-Meteo
+
+Usage: weathertool [options] [city/query]
+
+Options:
+  -h, --help        Show this help message
+  -m, --model MODEL  DeepSeek model name (default: deepseek-v4-flash)
+                     Can also be set via WEATHER_MODEL env var.`)
+			os.Exit(0)
+		case "-m", "--model":
+			if i+1 < len(args) {
+				os.Setenv("WEATHER_MODEL", args[i+1])
+				i++
+			}
+		default:
+			// Everything after the first non-flag argument is the query.
+			return strings.Join(args[i:], " ")
+		}
+	}
+
+	// If no positional arguments, try reading from stdin (pipe or redirect).
+	info, _ := os.Stdin.Stat()
+	if (info.Mode()&os.ModeCharDevice) == 0 || info.Size() > 0 {
+		data, _ := io.ReadAll(os.Stdin)
+		return strings.TrimSpace(string(data))
+	}
+
+	return ""
+}
+
+// geocode resolves a city name to geographic coordinates using the
+// Open-Meteo Geocoding API. Returns the first matching result.
+func geocode(cityName string) (*coordinates, error) {
+	apiURL := fmt.Sprintf(
+		"https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json",
+		url.QueryEscape(cityName),
+	)
+
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var apiResp geocodingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode geocoding response: %w", err)
+	}
+
+	if len(apiResp.Results) == 0 {
+		return nil, fmt.Errorf("city '%s' not found", cityName)
+	}
+
+	r := apiResp.Results[0]
+	return &coordinates{
+		Name:      r.Name,
+		Country:   r.Country,
+		Latitude:  r.Latitude,
+		Longitude: r.Longitude,
+	}, nil
+}
+
+// fetchWeather retrieves the current weather for the given latitude and
+// longitude from the Open-Meteo Forecast API.
+func fetchWeather(lat, lon float64) (*weatherResponse, error) {
+	apiURL := fmt.Sprintf(
+		"https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current_weather=true&temperature_unit=celsius",
+		lat, lon,
+	)
+
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result weatherResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode weather response: %w", err)
+	}
+
+	return &result, nil
+}
+```
