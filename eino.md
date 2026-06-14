@@ -458,3 +458,158 @@ with valid JSON only — no markdown fences, no extra text.`
 }
 ```
 
+## Reasoning effort 
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/schema"
+)
+
+func main() {
+	ctx := context.Background()
+
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		log.Fatal("DEEPSEEK_API_KEY environment variable is not set")
+	}
+
+	question := "9.11 and 9.8, which is greater? Explain step by step."
+
+	// Reasoning effort levels available in Eino's OpenAI adapter.
+	// These mirror the OpenAI API constants:
+	//   Reason. Effort  |  OpenAI value  |  DeepSeek mapping
+	//   ────────────────┼────────────────┼───────────────────
+	//   Low             |  "low"         |  →  "high"
+	//   Medium          |  "medium"      |  →  "high"
+	//   High            |  "high"        |  →  "high" / "max" (for agent requests)
+	//
+	// DeepSeek V4 Flash maps "low" and "medium" to "high" for compatibility,
+	// so all three levels produce similar reasoning length on DeepSeek.
+	// The API accepts them regardless; the mapping happens server-side.
+
+	levels := []struct {
+		label  string
+		effort openai.ReasoningEffortLevel
+	}{
+		{"Low", openai.ReasoningEffortLevelLow},
+		{"Medium", openai.ReasoningEffortLevelMedium},
+		{"High", openai.ReasoningEffortLevelHigh},
+	}
+
+	// ── Approach 1: static ChatModelConfig ──────────────────────────────────
+	//
+	// Here we create a NEW ChatModel per effort level. The ReasoningEffort
+	// is set in ChatModelConfig at creation time and every Generate() call
+	// on that instance uses the same level. This is simpler but means you
+	// need separate model instances if you want different effort levels.
+
+	for _, lvl := range levels {
+		fmt.Printf("\n══════════════ Reasoning Effort: %s ══════════════\n", lvl.label)
+		fmt.Printf("Question: %s\n\n", question)
+
+		// ChatModelConfig.ReasoningEffort sets a static default that all
+		// Generate() calls on this instance will use.
+		cm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+			APIKey:          apiKey,
+			BaseURL:         "https://api.deepseek.com/v1",
+			Model:           "deepseek-v4-flash",
+			Timeout:         120 * time.Second,
+			ReasoningEffort: lvl.effort,
+			// DeepSeek requires "thinking" in extra_body to enable the
+			// chain-of-thought mode. Eino passes ExtraFields as extra_body.
+			ExtraFields: map[string]any{
+				"thinking": map[string]any{"type": "enabled"},
+			},
+		})
+		if err != nil {
+			log.Fatalf("Failed to create chat model: %v", err)
+		}
+
+		resp, err := cm.Generate(ctx, []*schema.Message{
+			schema.UserMessage(question),
+		})
+		if err != nil {
+			log.Printf("Error: %v\n", err)
+			continue
+		}
+
+		// schema.Message exposes ReasoningContent directly — the Eino
+		// adapter automatically populates it from the API response's
+		// reasoning_content field.
+		if resp.ReasoningContent != "" {
+			fmt.Printf("─── Reasoning Content ───\n%s\n\n", resp.ReasoningContent)
+		}
+		if resp.Content != "" {
+			fmt.Printf("─── Final Answer ───\n%s\n", resp.Content)
+		}
+	}
+
+	// ── Approach 2: per-request WithReasoningEffort option ──────────────────
+	//
+	// Here we create ONE ChatModel WITHOUT reasoning effort in the config,
+	// then pass it as a functional option to each Generate() call. This lets
+	// you reuse the same model instance but vary the effort per request —
+	// useful when different prompts need different reasoning depth (e.g. a
+	// simple classification needs "low", a complex analysis needs "high").
+
+	fmt.Printf("\n══════════════ Per-Request Options ══════════════\n")
+
+	cm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		APIKey:  apiKey,
+		BaseURL: "https://api.deepseek.com/v1",
+		Model:   "deepseek-v4-flash",
+		Timeout: 120 * time.Second,
+		// Note: no ReasoningEffort or ExtraFields here — those will be
+		// supplied per-request via functional options.
+	})
+	if err != nil {
+		log.Fatalf("Failed to create chat model: %v", err)
+	}
+
+	efforts := []openai.ReasoningEffortLevel{
+		openai.ReasoningEffortLevelLow,
+		openai.ReasoningEffortLevelMedium,
+		openai.ReasoningEffortLevelHigh,
+	}
+	labels := []string{"Low", "Medium", "High"}
+
+	for i, effort := range efforts {
+		msg := fmt.Sprintf("Explain the concept of %s reasoning effort in one paragraph.",
+			labels[i])
+
+		// WithReasoningEffort and WithExtraFields are per-request functional
+		// options. They override any config-level defaults and are scoped
+		// to just this single Generate() call.
+		resp, err := cm.Generate(ctx, []*schema.Message{
+			schema.UserMessage(msg),
+		},
+			openai.WithReasoningEffort(effort),
+			openai.WithExtraFields(map[string]any{
+				"thinking": map[string]any{"type": "enabled"},
+			}),
+		)
+		if err != nil {
+			log.Printf("Error with %s effort: %v\n", labels[i], err)
+			continue
+		}
+
+		fmt.Printf("\n─── %s Effort ───\n", labels[i])
+		if resp.ReasoningContent != "" {
+			fmt.Printf("Reasoning: %s...\n",
+				resp.ReasoningContent[:min(len(resp.ReasoningContent), 200)])
+		}
+		fmt.Printf("Answer: %s\n",
+			resp.Content[:min(len(resp.Content), 300)])
+	}
+}
+```
+
