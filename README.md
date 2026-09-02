@@ -577,6 +577,35 @@ maintaining type safety. The `PrintAll` function works with any type `T`,
 providing better performance than interface{}-based solutions and catching  
 type errors at compile time rather than runtime.
 
+```go
+package main
+
+import (
+	"fmt"
+	"math/rand"
+)
+
+func sample[T any](items []T, k int) []T {
+	if k > len(items) {
+		k = len(items)
+	}
+	perm := rand.Perm(len(items))
+
+	fmt.Println(perm)
+
+	result := make([]T, k)
+	for i := 0; i < k; i++ {
+		result[i] = items[perm[i]]
+	}
+	return result
+}
+
+func main() {
+	words := []string{"war", "cup", "small", "round", "big", "nest"}
+	fmt.Println(sample(words, 3))
+}
+```
+
 ## DeepSeek via API
 
 This example demonstrates HTTP client usage for API interactions, JSON  
