@@ -534,7 +534,7 @@ The comma ok idiom safely checks whether the assertion succeeds. This example
 filters and prints only string values from a mixed-type argument list,  
 demonstrating safe type checking at runtime.
 
-Using generics:  
+## Using generics 
 
 Generics, introduced in Go 1.18, provide type-safe alternatives to using  
 `any` for operations that work with multiple types. They offer better  
